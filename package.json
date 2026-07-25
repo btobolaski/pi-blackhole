@@ -80,7 +80,7 @@
       "oxfmt --no-error-on-unmatched-pattern"
     ]
   },
-  "packageManager": "pnpm@12.10.0",
+  "packageManager": "pnpm@12.9.0",
   "pi": {
     "extensions": [
       "./dist/index.js"
