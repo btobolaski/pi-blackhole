@@ -12,7 +12,7 @@ import {
   type AgentLoopConfig,
   type AgentTool,
 } from "@earendil-works/pi-agent-core";
-import type { Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import {
   createBridgeStreamFn,
   createProviderFetch,
@@ -23,6 +23,7 @@ import { Type } from "typebox";
 import type { Static } from "typebox";
 import { hashId } from "../../ids.js";
 import { AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "../../model-budget.js";
+import { emitAssistantMessages } from "../../usage-log.js";
 import { OBSERVER_SYSTEM } from "./prompts.js";
 import { nowTimestamp, truncateRecordContent } from "../../serialize.js";
 import type { Observation, Relevance } from "../../ledger/index.js";
@@ -51,6 +52,9 @@ interface RunObserverArgs {
   providerIdleTimeoutMs?: number;
   /** Model registry for streamSimple resolution (custom providers, OAuth). */
   modelRegistry?: any;
+  /** Called once per assistant message produced by the agent run. Used to
+   *  capture real `Usage` for the pi session log. See `om/usage-log.ts`. */
+  onAssistantMessage?: (message: AssistantMessage) => void;
 }
 
 const RelevanceSchema = Type.Union([
@@ -293,6 +297,8 @@ ${conversation}`;
     // Drain events; the tool's execute already collects records.
     if (event.type === "agent_end") {
       const msgs = ((event as any).messages || []) as Array<{
+        role?: string;
+        usage?: unknown;
         stopReason?: string;
         errorMessage?: string;
       }>;
@@ -300,6 +306,7 @@ ${conversation}`;
       if (lastMsg?.stopReason === "error") {
         agentError = lastMsg.errorMessage ?? "Unknown API error";
       }
+      emitAssistantMessages(args.onAssistantMessage, msgs);
     }
   }
   await stream.result();

@@ -11,7 +11,7 @@ import {
   type AgentLoopConfig,
   type AgentTool,
 } from "@earendil-works/pi-agent-core";
-import type { Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import {
   createBridgeStreamFn,
   createProviderFetch,
@@ -21,6 +21,7 @@ import { streamSimple } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
 import type { Static } from "typebox";
 import { debugLog } from "../../debug-log.js";
+import { emitAssistantMessages } from "../../usage-log.js";
 import { AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "../../model-budget.js";
 import { reflectionToSummaryLine, type Observation, type Reflection } from "../../ledger/index.js";
 import { DROPPER_SYSTEM } from "./prompts.js";
@@ -57,6 +58,9 @@ interface RunDropperArgs {
   providerIdleTimeoutMs?: number;
   /** Model registry for streamSimple resolution (custom providers, OAuth). */
   modelRegistry?: any;
+  /** Called once per assistant message produced by the agent run. Used to
+   *  capture real `Usage` for the pi session log. See `om/usage-log.ts`. */
+  onAssistantMessage?: (message: AssistantMessage) => void;
 }
 
 const DROP_SKIP_FULLNESS = 0.1;
@@ -374,6 +378,8 @@ export async function runDropper(args: RunDropperArgs): Promise<string[] | undef
     // Tool execution collects candidate ids.
     if (event.type === "agent_end") {
       const msgs = ((event as any).messages || []) as Array<{
+        role?: string;
+        usage?: unknown;
         stopReason?: string;
         errorMessage?: string;
       }>;
@@ -381,6 +387,7 @@ export async function runDropper(args: RunDropperArgs): Promise<string[] | undef
       if (lastMsg?.stopReason === "error") {
         agentError = lastMsg.errorMessage ?? "Unknown API error";
       }
+      emitAssistantMessages(args.onAssistantMessage, msgs);
     }
   }
   await stream.result();

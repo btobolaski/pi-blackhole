@@ -31,6 +31,7 @@ Use these terms consistently. The user will encounter them in the config and in 
 | **Compaction** | When the extension compresses old conversation to save context space. Happens automatically or on demand. |
 | **Observational memory** | Durable facts and decisions that survive compaction — the agent remembers them even after old messages are compressed. |
 | **Workers** | Background tasks that extract facts and keep memory tidy. They use separate (cheap/free) models so your main model isn't disturbed. |
+| **Usage log** | Optional accounting for observer, reflector, and dropper model usage. Enabled by `usageLog` and written beside the main session log. |
 | **Fallback chain** | If the worker's primary model fails (rate limit, timeout), a backup model is tried automatically. Then another. Last resort is your main conversation model. |
 | **Cooldown** | If a model keeps failing, it's temporarily skipped — prevents hammering a broken API. Cooldowns survive Pi restarts. |
 
@@ -60,6 +61,7 @@ src/
 │   ├── configure-overlay.ts   # The /blackhole configure TUI overlay — shows which keys are editable
 │   ├── model-budget.ts        # effectiveContextWindow() — context window override resolution order
 │   ├── debug-log.ts           # Debug logging (rotation, format)
+│   ├── usage-log.ts           # OM worker usage logging in pi session-log format
 │   ├── retryable-error.ts     # Regex patterns for retryable error detection
 │   ├── compaction-trigger.ts  # Auto-compaction trigger on agent_end — wait loop, idle polling, session identity checks
 │   └── ledger/
@@ -519,6 +521,7 @@ These are preserved by `saveUnifiedConfig()` and ignored by the runtime. Good fo
 | `~/.pi/agent/pi-blackhole/pi-blackhole-cooldown.json` | Persisted model cooldowns (survives restarts) |
 | `~/.pi/agent/pi-blackhole/<sessionId>-pending.json` | Per-session pending state (manual compaction mode) |
 | `~/.pi/agent/pi-blackhole/debug.ndjson` | Debug logging output (when `debugLog: true`). Rotates at 10 MB (renamed to `.1`, then overwritten). |
+| `{sessionDir}/{sessionId}_memory.jsonl` | OM worker usage log (when `usageLog: true`), in pi session-log format. |
 | `/tmp/pi-blackhole-debug.json` | Debug snapshot (when `debug: true`) — overwritten each compaction |
 
 ### Environment variable overrides

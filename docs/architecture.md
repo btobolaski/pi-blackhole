@@ -89,6 +89,7 @@ src/
     status-overlay.ts         # Status display overlay TUI
     key-matcher.ts            # Key matching for overlay
     debug-log.ts              # JSONL debug logging
+    usage-log.ts              # OM worker usage logging in Pi session-log format
     agents/
       observer/               # Observer agent (agent.ts, prompts.ts)
       reflector/              # Reflector agent (agent.ts, prompts.ts)
