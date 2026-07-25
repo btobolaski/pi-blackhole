@@ -12,6 +12,7 @@ import { matchesSkippedProvider } from "../core/provider-skip.js";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ConfiguredModel } from "./config.js";
 import { debugLog, withDebugLogContext } from "./debug-log.js";
+import { createUsageLogger, type UsageLogger } from "./usage-log.js";
 import { type ResolveResult, type Runtime, type RuntimeGeneration } from "./runtime.js";
 import { withProviderAttributionHeaders } from "./provider-stream.js";
 import {
@@ -79,7 +80,11 @@ export type ConsolidationCtx = {
   };
   model: unknown;
   modelRegistry: any;
-  sessionManager: { getBranch: () => unknown; getSessionId: () => string };
+  sessionManager: {
+    getBranch: () => unknown;
+    getSessionId: () => string;
+    getSessionDir: () => string;
+  };
 };
 
 type StageOutcome = "continue" | "abort";
@@ -536,11 +541,37 @@ export async function runConsolidationPipeline(
   if (!runtime.isGenerationActive(generation)) return;
   const resolveModel = makeModelResolver(runtime, ctx, generation);
 
+  // One usage logger is shared across all stages and fallback attempts so every
+  // OM assistant message is appended to the same per-session usage log.
+  let usageLogger: UsageLogger | undefined;
+  if (runtime.config.usageLog !== false) {
+    try {
+      usageLogger = createUsageLogger({
+        sessionDir: ctx.sessionManager.getSessionDir(),
+        sessionId: ctx.sessionManager.getSessionId(),
+        cwd: ctx.cwd,
+      });
+    } catch (error) {
+      if (isStaleExtensionContextError(error)) {
+        debugLog("pipeline.stale_ctx", { error: String(error) });
+        return;
+      }
+      throw error;
+    }
+  }
+
   runtime.consolidationPhase = "observer";
   runtime.failedInCycle.clear();
   runtime.resolveFailureNotified = false;
   try {
-    const observerOutcome = await runObserverStage(pi, runtime, ctx, generation, resolveModel);
+    const observerOutcome = await runObserverStage(
+      pi,
+      runtime,
+      ctx,
+      generation,
+      resolveModel,
+      usageLogger,
+    );
     if (!runtime.isGenerationActive(generation) || observerOutcome === "abort") return;
   } catch (error) {
     if (!runtime.isGenerationActive(generation)) return;
@@ -555,7 +586,14 @@ export async function runConsolidationPipeline(
   runtime.resolveFailureNotified = false;
   let reflectorResult: ReflectorStageResult;
   try {
-    reflectorResult = await runReflectorStage(pi, runtime, ctx, generation, resolveModel);
+    reflectorResult = await runReflectorStage(
+      pi,
+      runtime,
+      ctx,
+      generation,
+      resolveModel,
+      usageLogger,
+    );
     if (!runtime.isGenerationActive(generation) || reflectorResult.outcome === "abort") return;
   } catch (error) {
     if (!runtime.isGenerationActive(generation)) return;
@@ -577,6 +615,7 @@ export async function runConsolidationPipeline(
       resolveModel,
       reflectorResult.sameRunReflections,
       reflectorResult.effectiveReflectionCoverageId,
+      usageLogger,
     );
   } catch (error) {
     if (!runtime.isGenerationActive(generation)) return;
@@ -613,6 +652,7 @@ export async function runObserverStage(
   ctx: ConsolidationCtx,
   generation: RuntimeGeneration,
   resolveModel: (stage: "observer") => Promise<ResolvedModel | undefined>,
+  usageLogger: UsageLogger | undefined,
 ): Promise<StageOutcome> {
   if (!runtime.isGenerationActive(generation)) return "abort";
   let entries: Entry[];
@@ -827,6 +867,7 @@ export async function runObserverStage(
         signal: generation.signal,
         modelRegistry: ctx.modelRegistry,
         sessionId,
+        onAssistantMessage: usageLogger,
       });
       if (!runtime.isGenerationActive(generation)) return "abort";
 
@@ -943,6 +984,7 @@ async function runReflectorStage(
   ctx: ConsolidationCtx,
   generation: RuntimeGeneration,
   resolveModel: (stage: "reflector") => Promise<ResolvedModel | undefined>,
+  usageLogger: UsageLogger | undefined,
 ): Promise<ReflectorStageResult> {
   if (!runtime.isGenerationActive(generation)) return { outcome: "abort", sameRunReflections: [] };
   let entries: Entry[];
@@ -1125,6 +1167,7 @@ async function runReflectorStage(
         signal: generation.signal,
         modelRegistry: ctx.modelRegistry,
         sessionId,
+        onAssistantMessage: usageLogger,
       });
       if (!runtime.isGenerationActive(generation))
         return { outcome: "abort", sameRunReflections: [] };
@@ -1206,6 +1249,7 @@ async function runDropperStage(
   resolveModel: (stage: "dropper") => Promise<ResolvedModel | undefined>,
   sameRunReflections: Reflection[],
   sameRunReflectionCoverageId: string | undefined,
+  usageLogger: UsageLogger | undefined,
 ): Promise<StageOutcome> {
   if (!runtime.isGenerationActive(generation)) return "abort";
   let entries: Entry[];
@@ -1379,6 +1423,7 @@ async function runDropperStage(
         signal: generation.signal,
         modelRegistry: ctx.modelRegistry,
         sessionId,
+        onAssistantMessage: usageLogger,
       });
       if (!runtime.isGenerationActive(generation)) return "abort";
       const latestReflectionCoverageId = isManualMode(runtime.config)

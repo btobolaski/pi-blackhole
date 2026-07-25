@@ -6,7 +6,7 @@
  * and throws if the API errored without collecting any tool results.
  */
 import { agentLoop, type AgentLoopConfig, type AgentTool } from "@earendil-works/pi-agent-core";
-import type { Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { buildAgentContext } from "../agent-context.js";
 import { createTurnCap, type LegacyTurnCapOption } from "../turn-cap.js";
 import {
@@ -19,6 +19,7 @@ import { Type } from "typebox";
 import type { Static } from "typebox";
 import { hashId } from "../../ids.js";
 import { AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "../../model-budget.js";
+import { emitAssistantMessages } from "../../usage-log.js";
 import { truncateRecordContent } from "../../serialize.js";
 import { REFLECTOR_SYSTEM } from "./prompts.js";
 import { estimateStringTokens } from "../../tokens.js";
@@ -59,6 +60,9 @@ interface RunReflectorArgs {
    * OpenCode `x-opencode-session`) without per-provider branching upstream.
    */
   sessionId?: string;
+  /** Called once per assistant message produced by the agent run. Used to
+   *  capture real `Usage` for the pi session log. See `om/usage-log.ts`. */
+  onAssistantMessage?: (message: AssistantMessage) => void;
 }
 
 const RecordReflectionsSchema = Type.Object({
@@ -200,6 +204,8 @@ export async function runReflector(args: RunReflectorArgs): Promise<Reflection[]
     // Tool execution collects records.
     if (event.type === "agent_end") {
       const msgs = ((event as any).messages || []) as Array<{
+        role?: string;
+        usage?: unknown;
         stopReason?: string;
         errorMessage?: string;
       }>;
@@ -207,6 +213,7 @@ export async function runReflector(args: RunReflectorArgs): Promise<Reflection[]
       if (lastMsg?.stopReason === "error") {
         agentError = lastMsg.errorMessage ?? "Unknown API error";
       }
+      emitAssistantMessages(args.onAssistantMessage, msgs);
     }
   }
   await stream.result();

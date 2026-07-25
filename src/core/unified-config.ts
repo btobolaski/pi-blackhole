@@ -258,6 +258,10 @@ export interface UnifiedConfig {
   debugLog: boolean;
   /** Show the blackhole footer status bar (token gauges + worker events). */
   statusBar: boolean;
+  /** Writes per-assistant-message Usage from OM agents to
+   *  `{sessionDir}/{sessionId}_memory.jsonl` in pi session log format.
+   *  Default true. */
+  usageLog: boolean;
 }
 
 // ── Defaults ─────────────────────────────────────────────────────────────────
@@ -310,6 +314,7 @@ export const DEFAULTS: UnifiedConfig = {
   memory: true,
   debugLog: false,
   statusBar: true,
+  usageLog: true,
 };
 
 /**
@@ -560,6 +565,7 @@ function parseConfig(raw: Record<string, unknown>): Partial<UnifiedConfig> {
   if (typeof raw.fullFoldAlways === "boolean") c.fullFoldAlways = raw.fullFoldAlways;
   if (typeof raw.debugLog === "boolean") c.debugLog = raw.debugLog;
   if (typeof raw.statusBar === "boolean") c.statusBar = raw.statusBar;
+  if (typeof raw.usageLog === "boolean") c.usageLog = raw.usageLog;
 
   // Numeric fields — use nonNegativeInt for keys where 0 is meaningful
   // (observerPreambleMaxTokens 0 = auto, retainedToolOutputMaxTokens 0 = disabled)
@@ -600,6 +606,7 @@ function parseConfig(raw: Record<string, unknown>): Partial<UnifiedConfig> {
   for (const k of THRESHOLD_BLUNT_KEYS) {
     if (raw[k] !== undefined) (c as Record<string, unknown>)[k] = raw[k];
   }
+  // SAFETY: c is a plain record of parsed config fields; normalization only updates its keys.
   normalizeThresholdKnobs(c as unknown as Record<string, unknown>);
   for (const k of numKeys) {
     // observerPreambleMaxTokens and providerIdleTimeoutMs accept 0 (disabled/inherit);

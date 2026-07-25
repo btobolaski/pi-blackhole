@@ -891,7 +891,11 @@ function makePipelineFixture(options: {
     hasUI: false,
     model: undefined,
     modelRegistry: {},
-    sessionManager: { getBranch: () => entries, getSessionId: () => "cursor-session" },
+    sessionManager: {
+      getBranch: () => entries,
+      getSessionId: () => "cursor-session",
+      getSessionDir: () => "/tmp",
+    },
   };
   return {
     runtime,
