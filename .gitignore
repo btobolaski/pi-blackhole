@@ -27,3 +27,4 @@ tmp/
 .agent/
 # vitest json reporter output (local runs only)
 .vitest/
+.direnv
