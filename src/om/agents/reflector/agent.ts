@@ -12,8 +12,15 @@
  * only debug-logging it.
  */
 import { agentLoop, type AgentLoopConfig, type AgentTool } from "@earendil-works/pi-agent-core";
-import type { CacheRetention, Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
+import type {
+  AssistantMessage,
+  CacheRetention,
+  Message,
+  Model,
+  ModelThinkingLevel,
+} from "@earendil-works/pi-ai";
 import { agentCompletionError, agentFailureStopReason } from "../completion.js";
+import { emitAssistantMessages } from "../../usage-log.js";
 import { buildAgentContext } from "../agent-context.js";
 import { createTurnCap, type LegacyTurnCapOption } from "../turn-cap.js";
 import {
@@ -86,6 +93,8 @@ interface RunReflectorArgs {
    * support.
    */
   cacheRetention?: CacheRetention;
+  /** Capture real usage from every worker assistant message. */
+  onAssistantMessage?: (message: AssistantMessage) => void;
 }
 
 function joinOrEmpty(items: string[]): string {
@@ -307,6 +316,8 @@ export async function runReflector(args: RunReflectorArgs): Promise<ReflectorRes
       // Tool execution collects records.
       if (event.type === "agent_end") {
         const msgs = ((event as any).messages || []) as Array<{
+          role?: string;
+          usage?: unknown;
           stopReason?: string;
           errorMessage?: string;
         }>;
@@ -321,6 +332,7 @@ export async function runReflector(args: RunReflectorArgs): Promise<ReflectorRes
           closedByCompleteBatch || turnCap?.exhausted,
         );
         failureKind = agentFailureStopReason(msgs);
+        emitAssistantMessages(args.onAssistantMessage, msgs);
       }
     }
     await stream.result();

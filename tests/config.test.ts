@@ -61,6 +61,7 @@ describe("Config defaults", () => {
     expect(config.agentMaxTurns).toBe(16);
     expect(config.memory).toBe(true);
     expect(config.debugLog).toBe(false);
+    expect(config.usageLog).toBe(true);
     expect(config.showWorkerNotifications).toBe(true);
     expect(config.model).toBeUndefined();
     expect(config.observerModel).toBeUndefined();
@@ -218,6 +219,20 @@ describe("providerIdleTimeoutMs", () => {
     const { loadUnifiedConfig } = await import("../src/core/unified-config.js");
     writeConfig({ providerIdleTimeoutMs: -100 });
     expect(loadUnifiedConfig(testDir).providerIdleTimeoutMs).toBeUndefined();
+  });
+});
+
+describe("usageLog", () => {
+  it("can be disabled", async () => {
+    const { loadUnifiedConfig } = await import("../src/core/unified-config.js");
+    writeConfig({ usageLog: false });
+    expect(loadUnifiedConfig(testDir).usageLog).toBe(false);
+  });
+
+  it("ignores non-boolean values", async () => {
+    const { loadUnifiedConfig } = await import("../src/core/unified-config.js");
+    writeConfig({ usageLog: "yes" });
+    expect(loadUnifiedConfig(testDir).usageLog).toBe(true);
   });
 });
 

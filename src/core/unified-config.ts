@@ -274,6 +274,8 @@ export interface UnifiedConfig {
   debugLog: boolean;
   /** Show the blackhole footer status bar (token gauges + worker events). */
   statusBar: boolean;
+  /** Write OM worker usage in Pi session-log format. Default true. */
+  usageLog: boolean;
   /** Show routine observer/reflector/dropper progress toasts. Warnings,
    *  errors, model fallback/unavailability and compaction notices are
    *  unaffected. */
@@ -336,6 +338,7 @@ export const DEFAULTS: UnifiedConfig = {
   memory: true,
   debugLog: false,
   statusBar: true,
+  usageLog: true,
   showWorkerNotifications: true,
 };
 
@@ -605,6 +608,7 @@ function parseConfig(raw: Record<string, unknown>): Partial<UnifiedConfig> {
   if (typeof raw.fullFoldAlways === "boolean") c.fullFoldAlways = raw.fullFoldAlways;
   if (typeof raw.debugLog === "boolean") c.debugLog = raw.debugLog;
   if (typeof raw.statusBar === "boolean") c.statusBar = raw.statusBar;
+  if (typeof raw.usageLog === "boolean") c.usageLog = raw.usageLog;
   if (typeof raw.showWorkerNotifications === "boolean")
     c.showWorkerNotifications = raw.showWorkerNotifications;
 

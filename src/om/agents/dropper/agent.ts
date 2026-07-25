@@ -11,8 +11,15 @@
  * turn cap cut off.
  */
 import { agentLoop, type AgentLoopConfig, type AgentTool } from "@earendil-works/pi-agent-core";
-import type { CacheRetention, Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
+import type {
+  AssistantMessage,
+  CacheRetention,
+  Message,
+  Model,
+  ModelThinkingLevel,
+} from "@earendil-works/pi-ai";
 import { agentCompletionError, agentFailureStopReason } from "../completion.js";
+import { emitAssistantMessages } from "../../usage-log.js";
 import { buildAgentContext } from "../agent-context.js";
 import { createTurnCap, type LegacyTurnCapOption } from "../turn-cap.js";
 import {
@@ -98,6 +105,8 @@ interface RunDropperArgs {
    * support.
    */
   cacheRetention?: CacheRetention;
+  /** Capture real usage from every worker assistant message. */
+  onAssistantMessage?: (message: AssistantMessage) => void;
 }
 
 export {
@@ -359,6 +368,8 @@ export async function runDropper(args: RunDropperArgs): Promise<string[] | undef
       // Tool execution collects candidate ids.
       if (event.type === "agent_end") {
         const msgs = ((event as any).messages || []) as Array<{
+          role?: string;
+          usage?: unknown;
           stopReason?: string;
           errorMessage?: string;
         }>;
@@ -369,6 +380,7 @@ export async function runDropper(args: RunDropperArgs): Promise<string[] | undef
         // flag, so only a turn-cap end on a tool-work turn is exempt.
         agentError = agentCompletionError(msgs, signal, turnCap?.exhausted);
         failureKind = agentFailureStopReason(msgs);
+        emitAssistantMessages(args.onAssistantMessage, msgs);
       }
     }
     await stream.result();

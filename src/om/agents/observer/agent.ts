@@ -10,8 +10,15 @@
  * cut off mid-chunk.
  */
 import { agentLoop, type AgentLoopConfig, type AgentTool } from "@earendil-works/pi-agent-core";
-import type { CacheRetention, Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
+import type {
+  AssistantMessage,
+  CacheRetention,
+  Message,
+  Model,
+  ModelThinkingLevel,
+} from "@earendil-works/pi-ai";
 import { agentCompletionError, agentFailureStopReason } from "../completion.js";
+import { emitAssistantMessages } from "../../usage-log.js";
 import { buildAgentContext } from "../agent-context.js";
 import { createTurnCap, type LegacyTurnCapOption } from "../turn-cap.js";
 import {
@@ -79,6 +86,8 @@ interface RunObserverArgs {
    * support.
    */
   cacheRetention?: CacheRetention;
+  /** Capture real usage from every worker assistant message. */
+  onAssistantMessage?: (message: AssistantMessage) => void;
 }
 
 export { OBSERVATION_TIMESTAMP_PATTERN } from "./tool-schema.js";
@@ -352,6 +361,8 @@ ${conversation}`;
       // Drain events; the tool's execute already collects records.
       if (event.type === "agent_end") {
         const msgs = ((event as any).messages || []) as Array<{
+          role?: string;
+          usage?: unknown;
           stopReason?: string;
           errorMessage?: string;
         }>;
@@ -365,6 +376,7 @@ ${conversation}`;
           closedByCompleteBatch || turnCap?.exhausted,
         );
         failureKind = agentFailureStopReason(msgs);
+        emitAssistantMessages(args.onAssistantMessage, msgs);
       }
     }
     await stream.result();

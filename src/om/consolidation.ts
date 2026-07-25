@@ -12,6 +12,7 @@ import { matchesSkippedProvider } from "../core/provider-skip.js";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ConfiguredModel } from "./config.js";
 import { debugLog, withDebugLogContext } from "./debug-log.js";
+import { createUsageLogger, type UsageLogger } from "./usage-log.js";
 import { type ResolveResult, type Runtime, type RuntimeGeneration } from "./runtime.js";
 import { withProviderAttributionHeaders } from "./provider-stream.js";
 import { runWorkerAttempt, WorkerAttemptTimeoutError } from "./worker-attempt.js";
@@ -111,7 +112,11 @@ export type ConsolidationCtx = {
   };
   model: unknown;
   modelRegistry: any;
-  sessionManager: { getBranch: () => unknown; getSessionId: () => string };
+  sessionManager: {
+    getBranch: () => unknown;
+    getSessionId: () => string;
+    getSessionDir: () => string;
+  };
 };
 
 type StageOutcome = "continue" | "abort";
@@ -686,13 +691,33 @@ export async function runConsolidationPipeline(
 ): Promise<void> {
   if (!runtime.isGenerationActive(generation)) return;
   const resolveModel = makeModelResolver(runtime, ctx, generation);
+  let usageLogger: UsageLogger | undefined;
+  if (runtime.config.usageLog !== false) {
+    try {
+      usageLogger = createUsageLogger({
+        sessionDir: ctx.sessionManager.getSessionDir(),
+        sessionId: ctx.sessionManager.getSessionId(),
+        cwd: ctx.cwd,
+      });
+    } catch (error) {
+      if (isStaleExtensionContextError(error)) return;
+      throw error;
+    }
+  }
 
   runtime.consolidationPhase = "observer";
   runtime.failedInCycle.clear();
   runtime.sizeSkippedInCycle.clear();
   runtime.resolveFailureNotified = false;
   try {
-    const observerOutcome = await runObserverStage(pi, runtime, ctx, generation, resolveModel);
+    const observerOutcome = await runObserverStage(
+      pi,
+      runtime,
+      ctx,
+      generation,
+      resolveModel,
+      usageLogger,
+    );
     if (!runtime.isGenerationActive(generation) || observerOutcome === "abort") return;
   } catch (error) {
     if (!runtime.isGenerationActive(generation)) return;
@@ -708,7 +733,14 @@ export async function runConsolidationPipeline(
   runtime.resolveFailureNotified = false;
   let reflectorResult: ReflectorStageResult;
   try {
-    reflectorResult = await runReflectorStage(pi, runtime, ctx, generation, resolveModel);
+    reflectorResult = await runReflectorStage(
+      pi,
+      runtime,
+      ctx,
+      generation,
+      resolveModel,
+      usageLogger,
+    );
     if (!runtime.isGenerationActive(generation) || reflectorResult.outcome === "abort") return;
   } catch (error) {
     if (!runtime.isGenerationActive(generation)) return;
@@ -731,6 +763,7 @@ export async function runConsolidationPipeline(
       resolveModel,
       reflectorResult.sameRunReflections,
       reflectorResult.effectiveReflectionCoverageId,
+      usageLogger,
     );
   } catch (error) {
     if (!runtime.isGenerationActive(generation)) return;
@@ -859,6 +892,7 @@ export async function runObserverStage(
   ctx: ConsolidationCtx,
   generation: RuntimeGeneration,
   resolveModel: (stage: "observer") => Promise<ResolvedModel | undefined>,
+  usageLogger: UsageLogger | undefined = undefined,
   drain = false,
   drainRemaining: number = OBSERVER_DRAIN_MAX_BATCHES,
 ): Promise<StageOutcome> {
@@ -946,7 +980,16 @@ export async function runObserverStage(
   const continueSources = (): StageOutcome | Promise<StageOutcome> => {
     if (drainRemaining <= 0) return "continue";
     if (!coversUpToId || coversUpToId === lastSourceEntryId) return "continue";
-    return runObserverStage(pi, runtime, ctx, generation, resolveModel, true, drainRemaining - 1);
+    return runObserverStage(
+      pi,
+      runtime,
+      ctx,
+      generation,
+      resolveModel,
+      usageLogger,
+      true,
+      drainRemaining - 1,
+    );
   };
   let chunkTokens = estimateStringTokens(chunk);
   // Issue #110 follow-up: expose the post-cap size on the normal path (the
@@ -1261,6 +1304,7 @@ export async function runObserverStage(
             modelRegistry: ctx.modelRegistry,
             sessionId,
             cacheRetention: runtime.config.cacheRetention,
+            onAssistantMessage: usageLogger,
           }),
       );
       if (!runtime.isGenerationActive(generation)) return "abort";
@@ -1562,6 +1606,7 @@ export async function runReflectorStage(
   ctx: ConsolidationCtx,
   generation: RuntimeGeneration,
   resolveModel: (stage: "reflector") => Promise<ResolvedModel | undefined>,
+  usageLogger: UsageLogger | undefined = undefined,
 ): Promise<ReflectorStageResult> {
   if (!runtime.isGenerationActive(generation)) return { outcome: "abort", sameRunReflections: [] };
   let entries: Entry[];
@@ -1842,6 +1887,7 @@ export async function runReflectorStage(
               modelRegistry: ctx.modelRegistry,
               sessionId,
               cacheRetention: runtime.config.cacheRetention,
+              onAssistantMessage: usageLogger,
             }),
         );
         if (!runtime.isGenerationActive(generation))
@@ -1994,6 +2040,7 @@ export async function runReflectorStage(
             modelRegistry: ctx.modelRegistry,
             sessionId,
             cacheRetention: runtime.config.cacheRetention,
+            onAssistantMessage: usageLogger,
           }),
       );
       if (!runtime.isGenerationActive(generation))
@@ -2181,6 +2228,7 @@ export async function runDropperStage(
   resolveModel: (stage: "dropper") => Promise<ResolvedModel | undefined>,
   sameRunReflections: Reflection[],
   sameRunReflectionCoverageId: string | undefined,
+  usageLogger: UsageLogger | undefined = undefined,
 ): Promise<StageOutcome> {
   if (!runtime.isGenerationActive(generation)) return "abort";
   let entries: Entry[];
@@ -2502,6 +2550,7 @@ export async function runDropperStage(
               modelRegistry: ctx.modelRegistry,
               sessionId,
               cacheRetention: runtime.config.cacheRetention,
+              onAssistantMessage: usageLogger,
             }),
         );
         if (!runtime.isGenerationActive(generation)) return "abort";
@@ -2656,6 +2705,7 @@ export async function runDropperStage(
             modelRegistry: ctx.modelRegistry,
             sessionId,
             cacheRetention: runtime.config.cacheRetention,
+            onAssistantMessage: usageLogger,
           }),
       );
       if (!runtime.isGenerationActive(generation)) return "abort";
