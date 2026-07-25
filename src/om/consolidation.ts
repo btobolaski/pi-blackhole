@@ -15,6 +15,7 @@ import { runReflector } from "./agents/reflector/agent.js";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ConfiguredModel } from "./config.js";
 import { debugLog, withDebugLogContext } from "./debug-log.js";
+import { createUsageLogger, type UsageLogger } from "./usage-log.js";
 import { type ResolveResult, type Runtime } from "./runtime.js";
 import {
   isRetryableError,
@@ -75,7 +76,11 @@ export type ConsolidationCtx = {
   };
   model: unknown;
   modelRegistry: any;
-  sessionManager: { getBranch: () => unknown; getSessionId: () => string };
+  sessionManager: {
+    getBranch: () => unknown;
+    getSessionId: () => string;
+    getSessionDir: () => string;
+  };
 };
 
 type StageOutcome = "continue" | "abort";
@@ -605,6 +610,25 @@ export async function runConsolidationPipeline(
 ): Promise<void> {
   const resolveModel = makeModelResolver(runtime, ctx);
 
+  // One usage logger is shared across all stages and fallback attempts so every
+  // OM assistant message is appended to the same per-session usage log.
+  let usageLogger: UsageLogger | undefined;
+  if (runtime.config.usageLog !== false) {
+    try {
+      usageLogger = createUsageLogger({
+        sessionDir: ctx.sessionManager.getSessionDir(),
+        sessionId: ctx.sessionManager.getSessionId(),
+        cwd: ctx.cwd,
+      });
+    } catch (error) {
+      if (isStaleExtensionContextError(error)) {
+        debugLog("pipeline.stale_ctx", { error: String(error) });
+        return;
+      }
+      throw error;
+    }
+  }
+
   runtime.consolidationPhase = "observer";
   runtime.failedInCycle.clear();
   runtime.resolveFailureNotified = false;
@@ -614,6 +638,7 @@ export async function runConsolidationPipeline(
       runtime,
       ctx,
       resolveModel,
+      usageLogger,
     );
     if (observerOutcome === "abort") return;
   } catch (error) {
@@ -632,7 +657,13 @@ export async function runConsolidationPipeline(
   runtime.resolveFailureNotified = false;
   let reflectorResult: ReflectorStageResult;
   try {
-    reflectorResult = await runReflectorStage(pi, runtime, ctx, resolveModel);
+    reflectorResult = await runReflectorStage(
+      pi,
+      runtime,
+      ctx,
+      resolveModel,
+      usageLogger,
+    );
     if (reflectorResult.outcome === "abort") return;
   } catch (error) {
     debugLog("reflector.error", {
@@ -656,6 +687,7 @@ export async function runConsolidationPipeline(
       resolveModel,
       reflectorResult.sameRunReflections,
       reflectorResult.effectiveReflectionCoverageId,
+      usageLogger,
     );
   } catch (error) {
     debugLog("dropper.error", {
@@ -694,6 +726,7 @@ async function runObserverStage(
   runtime: Runtime,
   ctx: ConsolidationCtx,
   resolveModel: (stage: "observer") => Promise<ResolvedModel | undefined>,
+  usageLogger: UsageLogger | undefined,
 ): Promise<StageOutcome> {
   let entries: Entry[];
   let sessionId: string;
@@ -884,6 +917,7 @@ async function runObserverStage(
           stageModelForThinking,
         ),
         providerIdleTimeoutMs: runtime.config.providerIdleTimeoutMs,
+        onAssistantMessage: usageLogger,
       });
 
       if (result.observations && result.observations.length > 0) {
@@ -1001,6 +1035,7 @@ async function runReflectorStage(
   runtime: Runtime,
   ctx: ConsolidationCtx,
   resolveModel: (stage: "reflector") => Promise<ResolvedModel | undefined>,
+  usageLogger: UsageLogger | undefined,
 ): Promise<ReflectorStageResult> {
   let entries: Entry[];
   let sessionId: string;
@@ -1223,6 +1258,7 @@ async function runReflectorStage(
           stageModelForThinking,
         ),
         providerIdleTimeoutMs: runtime.config.providerIdleTimeoutMs,
+        onAssistantMessage: usageLogger,
       });
 
       if (!reflections || reflections.length === 0) {
@@ -1303,6 +1339,7 @@ async function runDropperStage(
   resolveModel: (stage: "dropper") => Promise<ResolvedModel | undefined>,
   sameRunReflections: Reflection[],
   sameRunReflectionCoverageId: string | undefined,
+  usageLogger: UsageLogger | undefined,
 ): Promise<StageOutcome> {
   let entries: Entry[];
   let sessionId: string;
@@ -1522,6 +1559,7 @@ async function runDropperStage(
           stageModelForThinking,
         ),
         providerIdleTimeoutMs: runtime.config.providerIdleTimeoutMs,
+        onAssistantMessage: usageLogger,
       });
       const latestReflectionCoverageId = isManualMode(runtime.config)
         ? pending?.reflection?.coversUpToId

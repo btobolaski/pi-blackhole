@@ -109,6 +109,7 @@
   "sessionFallback": true,
   "debug": false,
   "debugLog": false,
+  "usageLog": true,
 
   "_notes": [
     "v2 config surface:",

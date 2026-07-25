@@ -302,6 +302,7 @@ Everything else has sensible defaults.
 | `providerIdleTimeoutMs` | unset | Body-idle timeout for background provider streams (ms); `0` = disabled, unset = inherit pi's default |
 | `debug` | `false` | Pre-compaction snapshot to `/tmp/pi-blackhole-debug.json` |
 | `debugLog` | `false` | Continuous JSONL debug log to `~/.pi/agent/pi-blackhole/debug.ndjson` |
+| `usageLog` | `true` | Writes OM agent token usage (`Usage` from each `AssistantMessage`) to `{sessionDir}/{sessionId}_memory.jsonl` in pi session log format |
 
 **Environment override:** `PI_BLACKHOLE_PASSIVE=true` sets `compaction: "off"` + `memory: false` without touching the config file. Also accepts legacy `PI_VCC_OM_PASSIVE` / `PI_OBSERVATIONAL_MEMORY_PASSIVE`.
 

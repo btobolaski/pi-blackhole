@@ -1,3 +1,9 @@
+## [Unreleased]
+
+### Added
+
+- **`usageLog` config option.** New boolean config key (default `true`) that controls whether OM agent usage data is written to `{sessionDir}/{sessionId}_memory.jsonl`. When enabled, the observer, reflector, and dropper capture real `Usage` from each `AssistantMessage` produced by their `agentLoop()` runs and write it in pi session log format alongside the main session log. Messages are sanitized to match the parser schema (`cacheWrite1h`, `redacted`, `thoughtSignature` stripped). The session header is written once per file across consolidation runs, with `parentId` chaining resumed from the last written entry. Set `"usageLog": false` to disable.
+
 ## [0.4.4] - 2026-08-06
 
 ### Added

@@ -53,7 +53,8 @@ The config file must contain **valid JSON**. A trailing comma, partial write, or
 
   // ── Debug ──
   "debug": false,                 // Write debug snapshots to /tmp
-  "debugLog": false               // Write debug JSONL to agent directory
+  "debugLog": false,              // Write debug JSONL to agent directory
+  "usageLog": true                // Write OM agent token usage to {sessionDir}/{sessionId}_memory.jsonl
 }
 ```
 
@@ -380,6 +381,7 @@ Each model config supports the following fields:
 |-----|------|---------|-------------|
 | `debug` | boolean | false | Writes detailed debug snapshots to `/tmp/pi-blackhole-debug.json` |
 | `debugLog` | boolean | false | Writes structured JSONL debug logs to the agent directory |
+| `usageLog` | boolean | true | Writes per-assistant-message `Usage` from the OM agents (observer/reflector/dropper) to `{sessionDir}/{sessionId}_memory.jsonl` in pi session log format, alongside the main session log. Set to `false` to disable. |
 
 ## Deprecated Keys
 
