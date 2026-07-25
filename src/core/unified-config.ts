@@ -290,6 +290,10 @@ export interface UnifiedConfig {
    *  errors, model fallback/unavailability and compaction notices are
    *  unaffected. */
   showWorkerNotifications: boolean;
+  /** Writes per-assistant-message Usage from OM agents to
+   *  `{sessionDir}/{sessionId}_memory.jsonl` in pi session log format.
+   *  Default true. */
+  usageLog: boolean;
 }
 
 // ── Defaults ─────────────────────────────────────────────────────────────────
@@ -353,6 +357,7 @@ export const DEFAULTS: UnifiedConfig = {
   debugLog: false,
   statusBar: true,
   showWorkerNotifications: true,
+  usageLog: true,
 };
 
 /**
@@ -643,6 +648,7 @@ function parseConfig(raw: Record<string, unknown>): Partial<UnifiedConfig> {
   if (typeof raw.statusBar === "boolean") c.statusBar = raw.statusBar;
   if (typeof raw.showWorkerNotifications === "boolean")
     c.showWorkerNotifications = raw.showWorkerNotifications;
+  if (typeof raw.usageLog === "boolean") c.usageLog = raw.usageLog;
 
   // Numeric fields — use nonNegativeInt for keys where 0 is meaningful
   // (observerPreambleMaxTokens 0 = auto, retainedToolOutputMaxTokens 0 = disabled)

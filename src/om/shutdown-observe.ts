@@ -1,7 +1,12 @@
 /** Best-effort observer-only flush, bounded across waiting and model work. */
 import type { ExtensionAPI, SessionShutdownEvent } from "@earendil-works/pi-coding-agent";
 import { matchesSkippedProvider } from "../core/provider-skip.js";
-import { makeModelResolver, runObserverStage, type ConsolidationCtx } from "./consolidation.js";
+import {
+  createWorkerUsageLogger,
+  makeModelResolver,
+  runObserverStage,
+  type ConsolidationCtx,
+} from "./consolidation.js";
 import { debugLog, withDebugLogContext } from "./debug-log.js";
 import type { Runtime } from "./runtime.js";
 import { runWorkerAttempt } from "./worker-attempt.js";
@@ -66,12 +71,22 @@ export async function observeTailOnShutdown(
         const resolve = makeModelResolver(runtime, ctx, generation);
         // Resolution may walk unavailable candidates, but shutdown never retries
         // a request or drains another chunk after this one attempt.
-        const outcome = await runObserverStage(pi, runtime, ctx, generation, resolve, false, 0, {
-          dueAfterTokens: SHUTDOWN_OBSERVE_MIN_TOKENS,
-          maxAttempts: 1,
-          maxTurns: 1,
-          signal,
-        });
+        const outcome = await runObserverStage(
+          pi,
+          runtime,
+          ctx,
+          generation,
+          resolve,
+          false,
+          0,
+          {
+            dueAfterTokens: SHUTDOWN_OBSERVE_MIN_TOKENS,
+            maxAttempts: 1,
+            maxTurns: 1,
+            signal,
+          },
+          createWorkerUsageLogger(runtime, ctx),
+        );
         const cursor = runtime.getCursor("observer");
         if (
           outcome !== "abort" &&

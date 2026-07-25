@@ -15,7 +15,13 @@
  * moving the cursor, never discarded.
  */
 import { agentLoop, type AgentLoopConfig, type AgentTool } from "@earendil-works/pi-agent-core";
-import type { CacheRetention, Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
+import type {
+  AssistantMessage,
+  CacheRetention,
+  Message,
+  Model,
+  ModelThinkingLevel,
+} from "@earendil-works/pi-ai";
 import { agentCompletionError, agentFailureStopReason } from "../completion.js";
 import { buildAgentContext } from "../agent-context.js";
 import { createTurnCap, type LegacyTurnCapOption } from "../turn-cap.js";
@@ -28,6 +34,7 @@ import {
 import { streamSimple } from "@earendil-works/pi-ai/compat";
 import { hashId } from "../../ids.js";
 import { AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "../../model-budget.js";
+import { emitAssistantMessages } from "../../usage-log.js";
 import { OBSERVER_SYSTEM } from "./prompts.js";
 import { RecordObservationsSchema, type RecordObservationsArgs } from "./tool-schema.js";
 import { nowTimestamp, truncateRecordContent } from "../../serialize.js";
@@ -87,6 +94,9 @@ interface RunObserverArgs {
    * support.
    */
   cacheRetention?: CacheRetention;
+  /** Called once per assistant message produced by the agent run. Used to
+   *  capture real `Usage` for the pi session log. See `om/usage-log.ts`. */
+  onAssistantMessage?: (message: AssistantMessage) => void;
 }
 
 export { OBSERVATION_TIMESTAMP_PATTERN } from "./tool-schema.js";
@@ -416,6 +426,8 @@ ${conversation}`;
       // Drain events; the tool's execute already collects records.
       if (event.type === "agent_end") {
         const msgs = ((event as any).messages || []) as Array<{
+          role?: string;
+          usage?: unknown;
           stopReason?: string;
           errorMessage?: string;
         }>;
@@ -429,6 +441,7 @@ ${conversation}`;
           closedByCompleteBatch || turnCap?.exhausted,
         );
         failureKind = agentFailureStopReason(msgs);
+        emitAssistantMessages(args.onAssistantMessage, msgs);
       }
     }
     await stream.result();

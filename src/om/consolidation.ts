@@ -14,6 +14,7 @@ import { matchesSkippedProvider } from "../core/provider-skip.js";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ConfiguredModel } from "./config.js";
 import { debugLog, withDebugLogContext } from "./debug-log.js";
+import { createUsageLogger, type UsageLogger } from "./usage-log.js";
 import { type ResolveResult, type Runtime, type RuntimeGeneration } from "./runtime.js";
 import { withProviderAttributionHeaders } from "./provider-stream.js";
 import { runWorkerAttempt, WorkerAttemptTimeoutError } from "./worker-attempt.js";
@@ -128,6 +129,7 @@ export type ConsolidationCtx = {
   sessionManager: {
     getBranch: () => unknown;
     getSessionId: () => string;
+    getSessionDir?: () => string;
     isPersisted?: () => boolean;
   };
 };
@@ -780,6 +782,20 @@ function maybeLaunchConsolidation(pi: ExtensionAPI, runtime: Runtime, ctx: Conso
 
 // ── Pipeline ─────────────────────────────────────────────────────────────────
 
+export function createWorkerUsageLogger(
+  runtime: Runtime,
+  ctx: ConsolidationCtx,
+): UsageLogger | undefined {
+  if (runtime.config.usageLog === false) return undefined;
+  const sessionDir = ctx.sessionManager.getSessionDir?.();
+  if (!sessionDir) return undefined;
+  return createUsageLogger({
+    sessionDir,
+    sessionId: ctx.sessionManager.getSessionId(),
+    cwd: ctx.cwd,
+  });
+}
+
 export async function runConsolidationPipeline(
   pi: ExtensionAPI,
   runtime: Runtime,
@@ -789,13 +805,38 @@ export async function runConsolidationPipeline(
   if (!runtime.isGenerationActive(generation)) return;
   const resolveModel = makeModelResolver(runtime, ctx, generation);
 
+  // One usage logger is shared across all stages and fallback attempts so every
+  // OM assistant message is appended to the same per-session usage log.
+  let usageLogger: UsageLogger | undefined;
+  if (runtime.config.usageLog !== false) {
+    try {
+      usageLogger = createWorkerUsageLogger(runtime, ctx);
+    } catch (error) {
+      if (isStaleExtensionContextError(error)) {
+        debugLog("pipeline.stale_ctx", { error: String(error) });
+        return;
+      }
+      throw error;
+    }
+  }
+
   runtime.consolidationPhase = "observer";
   runtime.failedInCycle.clear();
   runtime.turnCapSkippedInCycle.clear();
   runtime.sizeSkippedInCycle.clear();
   runtime.resolveFailureNotified = false;
   try {
-    const observerOutcome = await runObserverStage(pi, runtime, ctx, generation, resolveModel);
+    const observerOutcome = await runObserverStage(
+      pi,
+      runtime,
+      ctx,
+      generation,
+      resolveModel,
+      false,
+      undefined,
+      undefined,
+      usageLogger,
+    );
     if (!runtime.isGenerationActive(generation) || observerOutcome === "abort") return;
   } catch (error) {
     if (!runtime.isGenerationActive(generation)) return;
@@ -812,7 +853,14 @@ export async function runConsolidationPipeline(
   runtime.resolveFailureNotified = false;
   let reflectorResult: ReflectorStageResult;
   try {
-    reflectorResult = await runReflectorStage(pi, runtime, ctx, generation, resolveModel);
+    reflectorResult = await runReflectorStage(
+      pi,
+      runtime,
+      ctx,
+      generation,
+      resolveModel,
+      usageLogger,
+    );
     if (!runtime.isGenerationActive(generation) || reflectorResult.outcome === "abort") return;
   } catch (error) {
     if (!runtime.isGenerationActive(generation)) return;
@@ -836,6 +884,7 @@ export async function runConsolidationPipeline(
       resolveModel,
       reflectorResult.sameRunReflections,
       reflectorResult.effectiveReflectionCoverageId,
+      usageLogger,
     );
   } catch (error) {
     if (!runtime.isGenerationActive(generation)) return;
@@ -968,6 +1017,7 @@ export async function runObserverStage(
   drain = false,
   drainRemaining: number = OBSERVER_DRAIN_MAX_BATCHES,
   options?: { dueAfterTokens: number; maxAttempts: number; maxTurns: number; signal: AbortSignal },
+  usageLogger?: UsageLogger,
 ): Promise<StageOutcome> {
   if (options)
     generation = { ...generation, signal: AbortSignal.any([generation.signal, options.signal]) };
@@ -1044,7 +1094,17 @@ export async function runObserverStage(
   const continueSources = (): StageOutcome | Promise<StageOutcome> => {
     if (options || drainRemaining <= 0) return "continue";
     if (!coversUpToId || coversUpToId === lastSourceEntryId) return "continue";
-    return runObserverStage(pi, runtime, ctx, generation, resolveModel, true, drainRemaining - 1);
+    return runObserverStage(
+      pi,
+      runtime,
+      ctx,
+      generation,
+      resolveModel,
+      true,
+      drainRemaining - 1,
+      undefined,
+      usageLogger,
+    );
   };
   let chunkTokens = estimateStringTokens(chunk);
   // Issue #110 follow-up: expose the post-cap size on the normal path (the
@@ -1410,6 +1470,7 @@ export async function runObserverStage(
             modelRegistry: ctx.modelRegistry,
             sessionId,
             cacheRetention: runtime.config.cacheRetention,
+            onAssistantMessage: usageLogger,
           }),
       );
       if (!runtime.isGenerationActive(generation)) return "abort";
@@ -1899,6 +1960,7 @@ export async function runReflectorStage(
   ctx: ConsolidationCtx,
   generation: RuntimeGeneration,
   resolveModel: (stage: "reflector") => Promise<ResolvedModel | undefined>,
+  usageLogger: UsageLogger | undefined,
 ): Promise<ReflectorStageResult> {
   if (!runtime.isGenerationActive(generation)) return { outcome: "abort", sameRunReflections: [] };
   let entries: Entry[];
@@ -2195,6 +2257,7 @@ export async function runReflectorStage(
               existingObservationsSummary: input.existingObservationsSummary || undefined,
               maxTurns: runtime.config.agentMaxTurns,
               thinkingLevel: stageThinkingLevel(runtime, "reflector", stageModelForBatch),
+              onAssistantMessage: usageLogger,
               providerIdleTimeoutMs: runtime.config.providerIdleTimeoutMs,
               signal,
               modelRegistry: ctx.modelRegistry,
@@ -2356,6 +2419,7 @@ export async function runReflectorStage(
             modelRegistry: ctx.modelRegistry,
             sessionId,
             cacheRetention: runtime.config.cacheRetention,
+            onAssistantMessage: usageLogger,
           }),
       );
       if (!runtime.isGenerationActive(generation))
@@ -2543,6 +2607,7 @@ export async function runDropperStage(
   resolveModel: (stage: "dropper") => Promise<ResolvedModel | undefined>,
   sameRunReflections: Reflection[],
   sameRunReflectionCoverageId: string | undefined,
+  usageLogger: UsageLogger | undefined,
 ): Promise<StageOutcome> {
   if (!runtime.isGenerationActive(generation)) return "abort";
   let entries: Entry[];
@@ -2872,6 +2937,7 @@ export async function runDropperStage(
               maxOutputTokens: workerOutputAllowance(best.ctx, bestModel),
               maxTurns: runtime.config.agentMaxTurns,
               thinkingLevel: stageThinkingLevel(runtime, "dropper", stageModelForBatch),
+              onAssistantMessage: usageLogger,
               providerIdleTimeoutMs: runtime.config.providerIdleTimeoutMs,
               signal,
               modelRegistry: ctx.modelRegistry,
@@ -3032,6 +3098,7 @@ export async function runDropperStage(
             modelRegistry: ctx.modelRegistry,
             sessionId,
             cacheRetention: runtime.config.cacheRetention,
+            onAssistantMessage: usageLogger,
           }),
       );
       if (!runtime.isGenerationActive(generation)) return "abort";

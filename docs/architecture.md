@@ -87,6 +87,7 @@ src/
     clipboard.ts              # Clipboard helpers
     key-matcher.ts            # visibleWidth + key matching helpers
     debug-log.ts              # JSONL debug logging
+    usage-log.ts              # OM worker usage logging in Pi session-log format
     agents/
       observer/               # Observer agent (agent.ts, prompts.ts)
       reflector/              # Reflector agent (agent.ts, prompts.ts)

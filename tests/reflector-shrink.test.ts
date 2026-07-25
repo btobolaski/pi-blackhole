@@ -39,6 +39,7 @@ vi.mock("../src/om/cooldown.js", async (importOriginal) => {
 });
 
 import type { ConsolidationCtx } from "../src/om/consolidation.js";
+import type { UsageLogger } from "../src/om/usage-log.js";
 import { WorkerStreamError } from "../src/om/retryable-error.js";
 import { Runtime } from "../src/om/runtime.js";
 import {
@@ -50,6 +51,7 @@ import {
 } from "./fixtures/session.js";
 
 interface ReflectorCall {
+  onAssistantMessage?: UsageLogger;
   observations: TestObservation[];
   reflections: unknown[];
 }
@@ -146,7 +148,12 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-async function runStage(runtime: Runtime, entries: TestEntry[], registry: unknown) {
+async function runStage(
+  runtime: Runtime,
+  entries: TestEntry[],
+  registry: unknown,
+  usageLogger?: UsageLogger,
+) {
   const { makeModelResolver, runReflectorStage } = await import("../src/om/consolidation.js");
   const ctx = ctxWith(entries, registry);
   const generation = runtime.captureGeneration("test-session");
@@ -157,11 +164,26 @@ async function runStage(runtime: Runtime, entries: TestEntry[], registry: unknow
     ctx,
     generation,
     makeModelResolver(runtime, ctx, generation),
+    usageLogger,
   );
   return { outcome, appendEntry };
 }
 
 describe("reflector shrink-to-fit batching", () => {
+  test("forwards usage logging to every shrunk batch", async () => {
+    const { entries } = poolBranch(13, 10_000);
+    const runtime = makeRuntime();
+    runtime.config.reflectorModel = { provider: "test-shr", id: "usage" };
+    const logger = vi.fn<UsageLogger>();
+
+    await runStage(runtime, entries, fakeRegistry(50_000, 2000), logger);
+
+    expect(runReflectorSpy.mock.calls.length).toBeGreaterThan(1);
+    expect(runReflectorSpy.mock.calls.every(([args]) => args.onAssistantMessage === logger)).toBe(
+      true,
+    );
+  });
+
   test("unsplittable output-length batch skips by size without cooling or advancing", async () => {
     const { entries } = poolBranch(13, 10_000);
     const runtime = makeRuntime();

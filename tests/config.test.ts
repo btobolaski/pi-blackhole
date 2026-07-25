@@ -62,6 +62,7 @@ describe("Config defaults", () => {
     expect(config.memory).toBe(true);
     expect(config.debugLog).toBe(false);
     expect(config.showWorkerNotifications).toBe(true);
+    expect(config.usageLog).toBe(true);
     expect(config.model).toBeUndefined();
     expect(config.observerModel).toBeUndefined();
     expect(config.reflectorModel).toBeUndefined();
@@ -392,6 +393,22 @@ describe("cacheRetention", () => {
     }
     writeConfig({ cacheRetention: "long" });
     expect(await modalCacheRetention({ cacheRetention: "long" })).toBe("long");
+  });
+});
+
+describe("usageLog", () => {
+  it("can be set to false explicitly", async () => {
+    const { loadUnifiedConfig } = await import("../src/core/unified-config.js");
+    writeConfig({ usageLog: false });
+    const config = loadUnifiedConfig(testDir);
+    expect(config.usageLog).toBe(false);
+  });
+
+  it("falls back to true for non-boolean values", async () => {
+    const { loadUnifiedConfig } = await import("../src/core/unified-config.js");
+    writeConfig({ usageLog: "yes" });
+    const config = loadUnifiedConfig(testDir);
+    expect(config.usageLog).toBe(true);
   });
 });
 

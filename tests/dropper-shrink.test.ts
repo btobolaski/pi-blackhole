@@ -41,6 +41,7 @@ vi.mock("../src/om/cooldown.js", async (importOriginal) => {
 });
 
 import type { ConsolidationCtx } from "../src/om/consolidation.js";
+import type { UsageLogger } from "../src/om/usage-log.js";
 import { WorkerStreamError } from "../src/om/retryable-error.js";
 import { Runtime } from "../src/om/runtime.js";
 import {
@@ -52,6 +53,7 @@ import {
 } from "./fixtures/session.js";
 
 interface DropperCall {
+  onAssistantMessage?: UsageLogger;
   observations: TestObservation[];
 }
 
@@ -138,7 +140,12 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-async function runStage(runtime: Runtime, entries: TestEntry[], registry: unknown) {
+async function runStage(
+  runtime: Runtime,
+  entries: TestEntry[],
+  registry: unknown,
+  usageLogger?: UsageLogger,
+) {
   const { makeModelResolver, runDropperStage } = await import("../src/om/consolidation.js");
   const ctx = ctxWith(entries, registry);
   const generation = runtime.captureGeneration("test-session");
@@ -151,11 +158,27 @@ async function runStage(runtime: Runtime, entries: TestEntry[], registry: unknow
     makeModelResolver(runtime, ctx, generation),
     [],
     undefined,
+    usageLogger,
   );
   return { outcome, appendEntry };
 }
 
 describe("dropper shrink-to-fit batching", () => {
+  test("forwards usage logging to every shrunk batch", async () => {
+    const { entries } = poolBranch(13, 10_000, 10_000);
+    const runtime = makeRuntime();
+    runtime.config.dropperModel = { provider: "test-shr", id: "usage" };
+    runtime.config.observationsPoolMaxTokens = 2000;
+    const logger = vi.fn<UsageLogger>();
+
+    await runStage(runtime, entries, fakeRegistry(50_000, 2000), logger);
+
+    expect(runDropperSpy.mock.calls.length).toBeGreaterThan(1);
+    expect(runDropperSpy.mock.calls.every(([args]) => args.onAssistantMessage === logger)).toBe(
+      true,
+    );
+  });
+
   test("unsplittable output-length batch skips by size without cooling or advancing", async () => {
     const { entries } = poolBranch(13, 10_000, 10_000);
     const runtime = makeRuntime();

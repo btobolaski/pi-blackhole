@@ -21,6 +21,7 @@ import {
   type Model,
 } from "@earendil-works/pi-ai";
 import { Runtime } from "../src/om/runtime.js";
+import * as usageLog from "../src/om/usage-log.js";
 import { registerConsolidationTrigger } from "../src/om/consolidation.js";
 import { readPendingState } from "../src/om/pending.js";
 import { createExtensionApiDouble } from "./fixtures/pi-extension-api.js";
@@ -129,6 +130,17 @@ function shutdown(reason: SessionShutdownEvent["reason"] = "quit") {
   if (!handler) throw new Error("Shutdown handler not registered");
   return handler({ type: "session_shutdown", reason }, runner.createContext());
 }
+
+test.each([true, false])("shutdown honors usageLog=%s", async (enabled) => {
+  runtime.config.usageLog = enabled;
+  const logger = vi.fn<usageLog.UsageLogger>();
+  vi.spyOn(usageLog, "createUsageLogger").mockReturnValue(logger);
+
+  await shutdown();
+
+  expect(requests).toHaveBeenCalledTimes(1);
+  expect(logger).toHaveBeenCalledTimes(enabled ? 1 : 0);
+});
 
 test.each(["quit", "new", "resume", "fork"] as const)(
   "%s hook caps real agent loop at one provider request",
