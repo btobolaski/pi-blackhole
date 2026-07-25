@@ -25,3 +25,4 @@ tmp/
 *:Zone.Identifier
 
 .agent/
+.direnv
