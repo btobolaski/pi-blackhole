@@ -31,6 +31,7 @@ function fixture() {
   runtime.configLoaded = true;
   runtime.config.observeAfterTokens = 1;
   runtime.config.reflectAfterTokens = 1;
+  runtime.config.usageLog = false;
   runtime.loadCursorsFromPending = vi.fn();
   runtime.scheduleCursorFlush = vi.fn();
   runtime.resolveModel = vi.fn(async () => ({
@@ -63,7 +64,11 @@ function fixture() {
     hasUI: false,
     model: undefined,
     modelRegistry: {},
-    sessionManager: { getBranch: () => entries, getSessionId: () => "lazy-workers" },
+    sessionManager: {
+      getBranch: () => entries,
+      getSessionId: () => "lazy-workers",
+      getSessionDir: () => "/tmp",
+    },
   };
   return { runtime, entries, pi, ctx, handlers };
 }

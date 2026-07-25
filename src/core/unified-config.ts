@@ -187,6 +187,10 @@ export interface UnifiedConfig {
   memory: boolean;
   /** Writes debug JSONL to agent directory. */
   debugLog: boolean;
+  /** Writes per-assistant-message Usage from OM agents to
+   *  `{sessionDir}/{sessionId}_memory.jsonl` in pi session log format.
+   *  Default true. */
+  usageLog: boolean;
 }
 
 // ── Defaults ─────────────────────────────────────────────────────────────────
@@ -221,6 +225,7 @@ export const DEFAULTS: UnifiedConfig = {
 
   memory: true,
   debugLog: false,
+  usageLog: true,
 };
 
 // ── Parsing helpers ──────────────────────────────────────────────────────────
@@ -332,6 +337,7 @@ function parseConfig(raw: Record<string, unknown>): Partial<UnifiedConfig> {
   if (typeof raw.memory === "boolean") c.memory = raw.memory;
   if (typeof raw.fullFoldAlways === "boolean") c.fullFoldAlways = raw.fullFoldAlways;
   if (typeof raw.debugLog === "boolean") c.debugLog = raw.debugLog;
+  if (typeof raw.usageLog === "boolean") c.usageLog = raw.usageLog;
 
   // Numeric fields — use nonNegativeInt for keys where 0 is meaningful
   // (observerPreambleMaxTokens 0 = auto, retainedToolOutputMaxTokens 0 = disabled)
