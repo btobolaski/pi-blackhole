@@ -58,7 +58,7 @@ src/
     render-entries.ts         # Message → RenderedEntry
     sanitize.ts               # ANSI/control char stripping
     lineage.ts                # Active lineage entry ID extraction
-    recall-scope.ts           # scope:lineage|all, mode:hybrid|file|touched parsing
+    recall-scope.ts           # mode:hybrid|file|touched parsing (recall)
     skill-collapse.ts         # <skill> tag → [skill: X]
     tool-args.ts              # Tool argument extraction
     unified-config.ts         # Unified config loading/merging/migration

@@ -4,24 +4,20 @@ export interface LineageEntryLike {
 
 export interface LineageSessionManagerLike {
   getBranch: () => LineageEntryLike[];
-  getEntries?: () => LineageEntryLike[];
 }
 
+/**
+ * Entry IDs of the active lineage (current branch, including compacted
+ * ancestors). Fails closed: an empty branch or a throwing `getBranch` yields
+ * an empty allow-set, never all entries — recall must not widen to abandoned
+ * rewind branches when lineage is unavailable.
+ */
 export const getActiveLineageEntryIds = (
   sessionManager: LineageSessionManagerLike,
 ): Set<string> => {
   try {
     const branch = sessionManager.getBranch() ?? [];
-    if (branch.length > 0) {
-      return new Set(branch.map((e) => e.id).filter((id): id is string => Boolean(id)));
-    }
-  } catch {
-    // fall through to defensive fallback
-  }
-
-  try {
-    const all = sessionManager.getEntries?.() ?? [];
-    return new Set(all.map((e) => e.id).filter((id): id is string => Boolean(id)));
+    return new Set(branch.map((e) => e.id).filter((id): id is string => Boolean(id)));
   } catch {
     return new Set();
   }
