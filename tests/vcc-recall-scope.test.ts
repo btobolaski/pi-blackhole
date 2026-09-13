@@ -1,19 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { normalizeRecallScope, parseRecallScope } from "../src/core/recall-scope.js";
-
-describe("normalizeRecallScope", () => {
-  it("defaults to active lineage", () => {
-    expect(normalizeRecallScope()).toBe("lineage");
-    expect(normalizeRecallScope("lineage")).toBe("lineage");
-    expect(normalizeRecallScope("unknown")).toBe("lineage");
-    expect(normalizeRecallScope(123)).toBe("lineage");
-  });
-
-  it("accepts all scope", () => {
-    expect(normalizeRecallScope("all")).toBe("all");
-    expect(normalizeRecallScope("ALL")).toBe("all");
-  });
-});
+import { parseRecallMode } from "../src/core/recall-scope.js";
 
 describe("normalizeRecallMode", () => {
   it("defaults to hybrid", async () => {
@@ -41,44 +27,33 @@ describe("normalizeRecallMode", () => {
   });
 });
 
-describe("parseRecallScope", () => {
-  it("removes scope token from command text", () => {
-    expect(parseRecallScope("license scope:all page:2")).toEqual({
-      scope: "all",
-      mode: "hybrid",
-      text: "license page:2",
-    });
-  });
-
-  it("defaults to lineage when no scope token is present", () => {
-    expect(parseRecallScope("license page:2")).toEqual({
-      scope: "lineage",
-      mode: "hybrid",
-      text: "license page:2",
-    });
-  });
-
+describe("parseRecallMode", () => {
   it("parses mode token from command text", () => {
-    expect(parseRecallScope("login mode:file scope:all")).toEqual({
-      scope: "all",
+    expect(parseRecallMode("login mode:file")).toEqual({
       mode: "file",
       text: "login",
     });
   });
 
   it("defaults to hybrid when no mode token is present", () => {
-    expect(parseRecallScope("login scope:all")).toEqual({
-      scope: "all",
+    expect(parseRecallMode("login page:2")).toEqual({
       mode: "hybrid",
-      text: "login",
+      text: "login page:2",
     });
   });
 
   it("parses touched mode from command text", () => {
-    expect(parseRecallScope("mode:touched")).toEqual({
-      scope: "lineage",
+    expect(parseRecallMode("mode:touched")).toEqual({
       mode: "touched",
       text: "",
+    });
+  });
+
+  it("treats legacy scope:all text as ordinary query text (no compatibility parsing)", () => {
+    // scope is removed: the token must survive into the query untouched
+    expect(parseRecallMode("license scope:all page:2")).toEqual({
+      mode: "hybrid",
+      text: "license scope:all page:2",
     });
   });
 });

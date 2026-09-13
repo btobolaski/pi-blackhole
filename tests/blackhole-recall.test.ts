@@ -164,7 +164,7 @@ describe("/blackhole-recall command", () => {
     expect(notifyCalls[0].level).toBe("error");
   });
 
-  it("scope:all includes off-lineage results", async () => {
+  it("treats legacy scope:all text as ordinary query text, never widening lineage", async () => {
     const { pi, handlerMap, sentMessages, createSessionFile } = createMockEnvironment();
     registerVccRecallCommand(pi as any);
 
@@ -184,8 +184,9 @@ describe("/blackhole-recall command", () => {
     await handlerMap.get("blackhole-recall")!("Secret scope:all", ctx);
 
     expect(sentMessages).toHaveLength(1);
-    expect(sentMessages[0].content).toContain("1 matches");
-    expect(sentMessages[0].content).toContain("Secret info");
+    expect(sentMessages[0].content).toContain('No matches for "Secret scope:all"');
+    expect(sentMessages[0].content).not.toContain("Secret info");
+    expect(sentMessages[0].content).not.toContain("scope: all");
   });
 
   it("pagination via page:N works", async () => {

@@ -69,7 +69,7 @@ Both halves share a single hook and a single output. Together they keep the agen
 | `/blackhole-memory`         | Memory pipeline status & token counters _(Same as `/blackhole-memory status`)_                                                                          |
 | `/blackhole-memory view`    | Show visible observations and reflections (after compaction trimming), copied to clipboard                                                              |
 | `/blackhole-memory full`    | Show **all** recorded memory (including dropped observations), copied to clipboard                                                                      |
-| `/blackhole-recall <query>` | Search session history. Supports `page:N`, `scope:all`, `mode:file                                                                                      | touched`, regex *(Also available to agent as `recall` tool)* |
+| `/blackhole-recall <query>` | Search session history (active lineage only). Supports `page:N`, `mode:file` / `mode:touched`, regex _(Also available to agent as `recall` tool)_       |
 | `/blackhole-export`         | Export distilled project memory (observations/reflections across past sessions + pending buffers) to import-ready markdown _(Options: `out:<path>.md`)_ |
 
 All commands work regardless of `compaction` mode — only _when_ auto-compaction fires changes. See [Compaction modes](#compaction-modes) below.
@@ -88,7 +88,8 @@ The agent gets one unified `recall` tool that handles every form of historical l
 | `mode:file`     | Search only write/edit file content.                                                                                                                                                 |
 | `mode:touched`  | Aggregate all files written/edited across the session, grouped by path.                                                                                                              |
 | Regex           | Pattern search (e.g. `fork.*pi-vcc`, `hook\|inject`).                                                                                                                                |
-| `scope:all`     | Search across all session lineages (default: active lineage only).                                                                                                                   |
+
+Recall reads only the active lineage — the current branch, including its compacted ancestors. Abandoned rewind branches are not retrievable, and there is no scope escape hatch. This does not erase content that was already copied elsewhere (compaction summaries, OM observations) and does not delete session files.
 
 When the agent expands a session entry (`#N`), related observations and reflections from the session ledger are automatically shown alongside the expanded content — so the agent gets the raw transcript _and_ the durable fact layer in one call.
 

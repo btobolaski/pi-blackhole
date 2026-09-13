@@ -19,7 +19,7 @@ import {
   DEFAULT_RECALL_RESPONSE_MAX_CHARS,
 } from "../core/recall-budget";
 import { getActiveLineageEntryIds } from "../core/lineage";
-import { normalizeRecallScope, normalizeRecallMode } from "../core/recall-scope";
+import { normalizeRecallMode } from "../core/recall-scope";
 import { parseDrillDown, expandEntryFile } from "../core/drill-down.js";
 import { recallMemorySources, type Entry } from "../om/ledger/recall.js";
 import { renderRecallSourceEntries } from "../om/serialize.js";
@@ -90,7 +90,6 @@ async function vccRecall(
     query?: string;
     expand?: number[];
     page?: number;
-    scope?: "lineage" | "all";
     mode?: string;
   },
   ctx: any,
@@ -103,10 +102,8 @@ async function vccRecall(
       details: undefined,
     };
   }
-  const scope = normalizeRecallScope(params.scope);
   const mode = normalizeRecallMode(params.mode);
-  const lineageEntryIds =
-    scope === "lineage" ? getActiveLineageEntryIds(ctx.sessionManager) : undefined;
+  const lineageEntryIds = getActiveLineageEntryIds(ctx.sessionManager);
 
   // ── "touched" mode: aggregate file operations ──
   if (mode === "touched") {
@@ -131,7 +128,7 @@ async function vccRecall(
         content: [
           {
             type: "text" as const,
-            text: `Cannot expand indices outside ${scope === "all" ? "session history" : "active lineage"}: ${invalid.join(", ")}`,
+            text: `Cannot expand indices outside active lineage: ${invalid.join(", ")}`,
           },
         ],
         details: undefined,
@@ -151,9 +148,7 @@ async function vccRecall(
 
     // Expand-only path (no query): return expanded entries immediately
     if (!params.query) {
-      const entriesHeader =
-        (scope === "all" ? "Scope: all\n\n" : "") +
-        `Session history (${expandedFullEntries.length} entries):`;
+      const entriesHeader = `Session history (${expandedFullEntries.length} entries):`;
       const entryBlocks = expandedFullEntries.map((e) => formatRecallEntry(e as SearchHit));
 
       // Coupling: look up related OM observations
@@ -227,7 +222,7 @@ async function vccRecall(
         content: [
           {
             type: "text" as const,
-            text: `Page ${page} is outside the available range 1-${totalPages} (${allResults.length} matches${scope === "all" ? " (scope: all)" : ""}${truncationNote}). Use a page between 1 and ${totalPages}.`,
+            text: `Page ${page} is outside the available range 1-${totalPages} (${allResults.length} matches${truncationNote}). Use a page between 1 and ${totalPages}.`,
           },
         ],
         details: undefined,
@@ -246,16 +241,12 @@ async function vccRecall(
         details: undefined,
       };
     }
-    const scopeSuffix = scope === "all" ? " (scope: all)" : "";
     const matchCount = allResults.length - appendedExpandCount;
     const header =
       totalPages > 1
-        ? `Page ${page}/${totalPages} (${matchCount} matches${appendedExpandCount > 0 ? ` + ${appendedExpandCount} expanded` : ""}${scopeSuffix}${truncationNote})`
-        : `${matchCount} matches${appendedExpandCount > 0 ? ` (+ ${appendedExpandCount} expanded)` : ""}${scopeSuffix}${truncationNote}`;
-    const footer =
-      page < totalPages
-        ? `\n--- Use page:${page + 1}${scope === "all" ? " with scope:'all'" : ""} for more results ---`
-        : "";
+        ? `Page ${page}/${totalPages} (${matchCount} matches${appendedExpandCount > 0 ? ` + ${appendedExpandCount} expanded` : ""}${truncationNote})`
+        : `${matchCount} matches${appendedExpandCount > 0 ? ` (+ ${appendedExpandCount} expanded)` : ""}${truncationNote}`;
+    const footer = page < totalPages ? `\n--- Use page:${page + 1} for more results ---` : "";
 
     let output: string;
     {
@@ -296,8 +287,7 @@ async function vccRecall(
   }
 
   // No query: show recent entries (expand already merged above)
-  const recentHeader =
-    (scope === "all" ? "Scope: all\n\n" : "") + `Session history (${allResults.length} entries):`;
+  const recentHeader = `Session history (${allResults.length} entries):`;
   const recentBlocks = allResults.map((e) => formatRecallEntry(e));
   const cappedRecent = capRecallBlocks({
     header: recentHeader,
@@ -364,7 +354,9 @@ async function omRecall(memoryId: string, ctx: any, maxChars = DEFAULT_RECALL_RE
     try {
       const sessionFile = ctx.sessionManager.getSessionFile();
       if (sessionFile) {
-        const { rendered } = await Promise.resolve(loadAllMessages(sessionFile, false));
+        const { rendered } = await Promise.resolve(
+          loadAllMessages(sessionFile, false, getActiveLineageEntryIds(ctx.sessionManager)),
+        );
         const idToIndex = buildIndexMap(rendered);
         const indexAnnotation = formatEntryIndexAnnotation(
           result.observations.flatMap((o) => o.sourceEntryIds),
@@ -421,7 +413,7 @@ export function registerRecallTool(
     promptSnippet:
       "Search session history + file write/edit content by text/regex. #N expand, #N:path / #N:text drill-down with optional :offset:limit or :full, mode:file/touched.",
     promptGuidelines: [
-      "Use recall — literal text/regex search across session history and file write/edit content. #N expands an entry; #N:path with optional :offset:limit or :full drills down into file content; #N:text pages a message body; 12-char hex ids recover observation/reflection sources. mode:file for file-content-only, mode:touched for aggregated files-by-path. scope:'all' to search the full session. If no results, try fewer terms or a regex pattern.",
+      "Use recall — literal text/regex search across session history and file write/edit content. #N expands an entry; #N:path with optional :offset:limit or :full drills down into file content; #N:text pages a message body; 12-char hex ids recover observation/reflection sources. mode:file for file-content-only, mode:touched for aggregated files-by-path. If no results, try fewer terms or a regex pattern.",
       "Use recall — when a drill-down path matches multiple files, options are listed. Narrow with a more specific path substring. Only full-file writes are indexed for text search (edit diffs are not).",
     ],
     parameters: Type.Object({
@@ -442,11 +434,6 @@ export function registerRecallTool(
           description: "Page number (1-based) for paginated results. Default: 1.",
         }),
       ),
-      scope: Type.Optional(
-        StringEnum(["lineage", "all"] as const, {
-          description: "Search scope. lineage = active lineage (default), all = entire session.",
-        }),
-      ),
       mode: Type.Optional(
         StringEnum(["hybrid", "file", "touched"] as const, {
           description:
@@ -464,32 +451,27 @@ export function registerRecallTool(
         };
       }
 
-      const scope = normalizeRecallScope(params.scope);
-      const lineageEntryIds =
-        scope === "lineage" ? getActiveLineageEntryIds(ctx.sessionManager) : undefined;
+      const lineageEntryIds = getActiveLineageEntryIds(ctx.sessionManager);
 
-      // Drill-down: #N:path resolves to file-scoped tool content. Anchored so
+      // Drill-down: #N:path resolves to file-scoped tool content, anchored so
       // inline mentions like "see #42:auth.ts" are never treated as drill-down.
-      // Honors scope like every other recall path: the target entry must be on
-      // the active lineage unless scope:'all'. Membership is checked against
-      // global indices; expandEntryFile keeps loading unfiltered so #N stays
-      // aligned with the global message index.
+      // Membership is checked against lineage-filtered global indices, while
+      // expandEntryFile keeps loading unfiltered so #N stays aligned with the
+      // global message index.
       const q = params.query?.trim();
       if (q && parseDrillDown(q)) {
         const parsed = parseDrillDown(q)!;
-        if (lineageEntryIds) {
-          const { rendered } = loadAllMessages(sessionFile, false, lineageEntryIds);
-          if (!rendered.some((m) => m.index === parsed.index)) {
-            return {
-              content: [
-                {
-                  type: "text" as const,
-                  text: `Cannot expand indices outside active lineage: ${parsed.index}. Use scope:'all' to reach other branches.`,
-                },
-              ],
-              details: undefined,
-            };
-          }
+        const { rendered } = loadAllMessages(sessionFile, false, lineageEntryIds);
+        if (!rendered.some((m) => m.index === parsed.index)) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `Cannot expand indices outside active lineage: ${parsed.index}.`,
+              },
+            ],
+            details: undefined,
+          };
         }
         const text = expandEntryFile(
           sessionFile,

@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { mkdtempSync, writeFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -109,6 +109,35 @@ describe("loadAllMessages", () => {
     }
   });
 });
+
+it.each([true, false])(
+  "isolates empty and unfiltered caches (unfiltered first: %s)",
+  (unfilteredFirst) => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-vcc-cache-"));
+    const file = join(dir, "session.jsonl");
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
+    try {
+      writeFileSync(
+        file,
+        JSON.stringify({
+          type: "message",
+          id: "m1",
+          message: { role: "user", content: "cached evidence" },
+        }) + "\n",
+        "utf8",
+      );
+      const empty = new Set<string>();
+      // Unchanged mtime and frozen time keep the first result cached.
+      loadAllMessages(file, false, unfilteredFirst ? undefined : empty);
+      const result = loadAllMessages(file, false, unfilteredFirst ? empty : undefined);
+      expect(result.entryIds).toEqual(unfilteredFirst ? [] : ["m1"]);
+      expect(result.rendered.map((entry) => entry.index)).toEqual(unfilteredFirst ? [] : [0]);
+    } finally {
+      clock.mockRestore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);
 
 describe("loadAllMessages large-file hardening (upstream pi-vcc #26)", () => {
   it("loads JSONL incrementally across read-chunk boundaries", () => {

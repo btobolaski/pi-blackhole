@@ -4,6 +4,10 @@
 
 - **`usageLog` config option.** New boolean config key (default `true`) that controls whether OM agent usage data is written to `{sessionDir}/{sessionId}_memory.jsonl`. When enabled, the observer, reflector, and dropper capture real `Usage` from each `AssistantMessage` produced by their `agentLoop()` runs and write it in pi session log format alongside the main session log. Messages are sanitized to match the parser schema (`cacheWrite1h`, `redacted`, `thoughtSignature` stripped). The session header is written once per file across consolidation runs, with `parentId` chaining resumed from the last written entry. Set `"usageLog": false` to disable.
 
+### Changed
+
+- **Recall is lineage-only; the `scope` option is removed.** The `recall` tool no longer accepts a `scope` parameter, and `/blackhole-recall` no longer parses `scope:all` (legacy `scope:all` text is treated as ordinary query text). Every recall path — search, recent entries, `mode:file`/`mode:touched`, `#N` expand, `#N:path`/`#N:text` drill-down, and OM source-`#N` annotations — reads only the active lineage (the current branch, including its compacted ancestors), so abandoned rewind branches are never retrievable; lineage lookups fail closed when unavailable. This removes recall _access_ to rewound history; already-copied content (compaction summaries, OM observations) and session files are untouched.
+
 ---
 
 ## [0.5.3] - 2026-09-10
