@@ -9,25 +9,26 @@ describe("getActiveLineageEntryIds", () => {
     expect([...ids]).toEqual(["a", "b", "c"]);
   });
 
-  it("falls back to getEntries when getBranch throws", () => {
-    const ids = getActiveLineageEntryIds({
+  it("fails closed on an empty branch instead of falling back to getEntries", () => {
+    // Named variable (not an inline literal) so the getEntries stub stays
+    // armed without tripping excess-property checks: the fallback must not
+    // fire even though getEntries would return entries.
+    const sessionManagerWithFallback = {
+      getBranch: () => [],
+      getEntries: () => [{ id: "x" }, { id: "y" }],
+    };
+    const ids = getActiveLineageEntryIds(sessionManagerWithFallback);
+    expect(ids.size).toBe(0);
+  });
+
+  it("fails closed when getBranch throws, even with getEntries available", () => {
+    const sessionManagerWithFallback = {
       getBranch: () => {
         throw new Error("boom");
       },
       getEntries: () => [{ id: "x" }, { id: "y" }],
-    });
-    expect([...ids]).toEqual(["x", "y"]);
-  });
-
-  it("returns empty set when both branch and entries are unavailable", () => {
-    const ids = getActiveLineageEntryIds({
-      getBranch: () => {
-        throw new Error("boom");
-      },
-      getEntries: () => {
-        throw new Error("boom2");
-      },
-    });
+    };
+    const ids = getActiveLineageEntryIds(sessionManagerWithFallback);
     expect(ids.size).toBe(0);
   });
 });

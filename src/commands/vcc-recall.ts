@@ -15,7 +15,7 @@ import { loadAllMessages } from "../core/load-messages.js";
 import { searchEntriesDetailed, getTouchedFiles } from "../core/search-entries.js";
 import { formatRecallOutput, formatTouchedOutput } from "../core/format-recall.js";
 import { getActiveLineageEntryIds } from "../core/lineage.js";
-import { parseRecallScope } from "../core/recall-scope.js";
+import { parseRecallMode } from "../core/recall-scope.js";
 import {
   findObservationsForEntryIds,
   findReflectionsForEntryIds,
@@ -49,7 +49,7 @@ async function augmentWithObservations(
 export const registerVccRecallCommand = (pi: ExtensionAPI) => {
   pi.registerCommand("blackhole-recall", {
     description:
-      "Search session history. Defaults to active lineage. Usage: /blackhole-recall <query> [page:N] [scope:all] [mode:file|touched]",
+      "Search session history. Active lineage only. Usage: /blackhole-recall <query> [page:N] [mode:file|touched]",
     handler: async (args: string, ctx) => {
       const sessionFile = ctx.sessionManager.getSessionFile();
       if (!sessionFile) {
@@ -58,9 +58,8 @@ export const registerVccRecallCommand = (pi: ExtensionAPI) => {
       }
 
       const raw = args.trim();
-      const parsed = parseRecallScope(raw);
-      const lineageEntryIds =
-        parsed.scope === "lineage" ? getActiveLineageEntryIds(ctx.sessionManager) : undefined;
+      const parsed = parseRecallMode(raw);
+      const lineageEntryIds = getActiveLineageEntryIds(ctx.sessionManager);
       const mode = parsed.mode;
 
       if (mode === "touched") {
@@ -80,7 +79,7 @@ export const registerVccRecallCommand = (pi: ExtensionAPI) => {
         // No query: show recent entries
         const { rendered } = loadAllMessages(sessionFile, false, lineageEntryIds);
         const recent = rendered.slice(-DEFAULT_RECENT);
-        const base = (parsed.scope === "all" ? "Scope: all\n\n" : "") + formatRecallOutput(recent);
+        const base = formatRecallOutput(recent);
         const output = await augmentWithObservations(base, recent, ctx);
         pi.sendMessage(
           { customType: "blackhole-recall", content: output, display: true },
@@ -97,7 +96,7 @@ export const registerVccRecallCommand = (pi: ExtensionAPI) => {
       if (!query) {
         const { rendered } = loadAllMessages(sessionFile, false, lineageEntryIds);
         const recent = rendered.slice(-DEFAULT_RECENT);
-        const base = (parsed.scope === "all" ? "Scope: all\n\n" : "") + formatRecallOutput(recent);
+        const base = formatRecallOutput(recent);
         const output = await augmentWithObservations(base, recent, ctx);
         pi.sendMessage(
           { customType: "blackhole-recall", content: output, display: true },
@@ -116,7 +115,6 @@ export const registerVccRecallCommand = (pi: ExtensionAPI) => {
       const start = (page - 1) * PAGE_SIZE;
       const pageResults = allResults.slice(start, start + PAGE_SIZE);
       const totalPages = Math.ceil(allResults.length / PAGE_SIZE);
-      const scopeSuffix = parsed.scope === "all" ? " (scope: all)" : "";
       // Say both the visible and real total: the hard cap can discard genuine
       // matches, so the capped count alone would understate the real total.
       // Neutral wording ("showing", not "showing top"): regex-path hits are
@@ -129,16 +127,15 @@ export const registerVccRecallCommand = (pi: ExtensionAPI) => {
       // the page just isn't reachable. Say so explicitly instead of falling
       // through to formatRecallOutput's zero-hit message, which would be false.
       if (allResults.length > 0 && page > totalPages) {
-        const scopeArg = parsed.scope === "all" ? " scope:all" : "";
         const guidance = truncated
-          ? `Use /blackhole-recall ${query}${scopeArg} page:N with N between 1 and ${totalPages}.`
-          : `Use /blackhole-recall ${query}${scopeArg} page:N with N between 1 and ${totalPages}, or refine your query.`;
+          ? `Use /blackhole-recall ${query} page:N with N between 1 and ${totalPages}.`
+          : `Use /blackhole-recall ${query} page:N with N between 1 and ${totalPages}, or refine your query.`;
         pi.sendMessage(
           {
             customType: "blackhole-recall",
             content:
               `Page ${page} is outside the available range 1-${totalPages} ` +
-              `(${allResults.length} matches${scopeSuffix}${capNote}). ${guidance}`,
+              `(${allResults.length} matches${capNote}). ${guidance}`,
             display: true,
           },
           { triggerTurn: true },
@@ -147,12 +144,10 @@ export const registerVccRecallCommand = (pi: ExtensionAPI) => {
       }
       const header =
         totalPages > 1
-          ? `Page ${page}/${totalPages} (${totalBeforeCap} total matches${capNote}${scopeSuffix})`
-          : `${totalBeforeCap} matches${capNote}${scopeSuffix}`;
+          ? `Page ${page}/${totalPages} (${totalBeforeCap} total matches${capNote})`
+          : `${totalBeforeCap} matches${capNote}`;
       const footer =
-        page < totalPages
-          ? `\n--- /blackhole-recall ${query}${parsed.scope === "all" ? " scope:all" : ""} page:${page + 1} ---`
-          : "";
+        page < totalPages ? `\n--- /blackhole-recall ${query} page:${page + 1} ---` : "";
       const base = formatRecallOutput(pageResults, query, header) + footer;
       const output = await augmentWithObservations(base, pageResults, ctx);
       pi.sendMessage(

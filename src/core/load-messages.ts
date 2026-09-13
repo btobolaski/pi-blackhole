@@ -28,8 +28,10 @@ function cacheKey(
   allowedEntryIds: Set<string> | undefined,
 ): string {
   let hash = `${sessionFile}::${full}`;
-  if (allowedEntryIds && allowedEntryIds.size > 0) {
-    // Include the full set as sorted JSON for collision-free caching
+  if (allowedEntryIds) {
+    // Include the full set as sorted JSON for collision-free caching. An
+    // empty allow-set keys differently from undefined (unfiltered) so a
+    // stale hit can never widen results in either lookup order.
     hash += `::${JSON.stringify([...allowedEntryIds].sort())}`;
   }
   return hash;
@@ -91,7 +93,8 @@ export const loadAllMessages = (
   full: boolean,
   allowedEntryIds?: Set<string>,
 ): LoadedMessages => {
-  // Check cache first (same sessionFile + full flag + lineage size — approximate)
+  // Check cache first (key = sessionFile + full flag + the full allowed-ID
+  // set, with an empty allow-set distinct from unfiltered/undefined)
   const cached = getCached(sessionFile, full, allowedEntryIds);
   if (cached) return cached;
 
