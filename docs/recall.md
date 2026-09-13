@@ -46,7 +46,7 @@ The knob is `recallResponseMaxChars` (env `PI_BLACKHOLE_RECALL_RESPONSE_MAX_CHAR
 
 Recovers source evidence for a specific observation or reflection from the session ledger. Parsed by `MEMORY_ID_PATTERN` (`/^[a-f0-9]{12}$/`).
 
-Calls `omRecall(id)` → `recallMemorySources()` from [[src/om/ledger/recall.ts]]. Shows observations (with `[dropped]` marker for tombstoned ones), reflections, and source entries. Annotates sources with `#N` indices via `buildIndexMap()` + `formatEntryIndexAnnotation()`.
+Calls `omRecall(id)` → `recallMemorySources()` from [[src/om/ledger/recall.ts]]. Ledger lookup uses the current branch only. Shows observations (with `[dropped]` marker for tombstoned ones), reflections, and source entries. Annotates sources with `#N` indices via `buildIndexMap()` + `formatEntryIndexAnnotation()`; only sources on the current lineage get an index, so abandoned source entries are never advertised as reachable `#N` refs.
 
 ### Free text search (BM25)
 
@@ -76,13 +76,15 @@ Stopwords removed from query terms before scoring. Each term is classified indiv
 
 `getFileIndicators()` counts lines per file in content-bearing tool calls. `computeFileMatches()` filters lines matching query regex with snippets (`±2` context lines). `getTouchedFiles()` aggregates entries per path for `mode:touched`.
 
-### Scope
+### Active lineage only
 
-`scope:lineage` (default) searches only the active lineage. `scope:all` searches across all session lineages. Active lineage extracted via [[src/core/lineage.ts]] `getActiveLineageEntryIds()`.
+Every recall path — search, recent entries, `mode:file`/`mode:touched`, `#N` expand, `#N:path`/`#N:text` drill-down, and OM source-`#N` annotations — reads only the active lineage: the current branch, including its compacted ancestors. Abandoned rewind branches are never retrievable, and there is no scope escape hatch. Active lineage is extracted via [[src/core/lineage.ts]] `getActiveLineageEntryIds()`, which fails closed: an empty or unavailable branch yields an empty allow-set (no results) rather than falling back to all entries.
+
+Recall restricting itself to the active lineage does not erase content that was already copied elsewhere (e.g. text duplicated into compaction summaries or OM observations) and does not delete session files.
 
 ### Pagination
 
-`page:N` (1-based, default 5 results per page). Expand entries merged before pagination for consistent counts. Footer includes scope hint.
+`page:N` (1-based, default 5 results per page). Expand entries merged before pagination for consistent counts.
 
 ## OM coupling
 
@@ -104,7 +106,6 @@ The command renders to the TUI for the human operator, so it is intentionally no
 /blackhole-recall auth token                        # active-lineage search, ranked
 /blackhole-recall auth token page:2                 # paginated (5 results/page)
 /blackhole-recall hook|inject                       # regex
-/blackhole-recall fail.*build scope:all             # regex across all lineages
 /blackhole-recall mode:file                         # search only write/edit file content
 /blackhole-recall mode:touched                      # aggregate view of all files touched
 /blackhole-recall                                   # recent 25 entries
@@ -119,7 +120,7 @@ All session access goes through `loadAllMessages()` in [[src/core/load-messages.
 - Max 3 entries
 - 2-second TTL
 - mtime-based invalidation (detects file changes between cache hits)
-- Cache key includes `allowedEntryIds` set (sorted JSON for collision-free lineage filtering)
+- Cache key includes the full `allowedEntryIds` set (sorted JSON); an empty allow-set keys differently from unfiltered, so a stale cache hit can never widen results
 - Parse errors logged via `console.warn()` but don't throw
 
 ## Content indexing

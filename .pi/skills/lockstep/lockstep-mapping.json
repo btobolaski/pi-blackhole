@@ -126,7 +126,8 @@
       "upstream": "pi-vcc",
       "path": "src/core/lineage.ts",
       "ours": "src/core/lineage.ts",
-      "status": "UNCHANGED"
+      "status": "MODIFIED",
+      "_note": "Fail-closed lineage extraction; no getEntries fallback."
     },
     {
       "upstream": "pi-vcc",
@@ -150,7 +151,8 @@
       "upstream": "pi-vcc",
       "path": "src/core/recall-scope.ts",
       "ours": "src/core/recall-scope.ts",
-      "status": "UNCHANGED"
+      "status": "MODIFIED",
+      "_note": "Scope option removed; only parseRecallMode and normalizeRecallMode remain."
     },
     {
       "upstream": "pi-vcc",
