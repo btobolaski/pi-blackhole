@@ -1,6 +1,8 @@
 /**
  * Observational memory usage logging — writes pi-format JSONL to
- * `{sessionDir}/{sessionId}_memory.jsonl`, alongside the main session log.
+ * `{sessionDir}/memory-logs/{sessionId}_memory.jsonl`. The subdirectory keeps
+ * usage data under the session tree without exposing it to pi's shallow
+ * session discovery (resume picker and UUID lookup).
  *
  * The OM agents (observer/reflector/dropper) run via the low-level
  * `agentLoop()` API from `@earendil-works/pi-agent-core`, which bypasses pi's
@@ -165,7 +167,7 @@ function readExistingState(logPath: string): ExistingLogState {
  * written.
  */
 export function createUsageLogger(ctx: UsageLogContext): UsageLogger {
-  const logPath = join(ctx.sessionDir, `${ctx.sessionId}_memory.jsonl`);
+  const logPath = join(ctx.sessionDir, "memory-logs", `${ctx.sessionId}_memory.jsonl`);
   const existing = readExistingState(logPath);
   // Fresh: write a new header on first message. Resumable: skip header, chain
   // from the last id. Corrupt: skip header (avoid duplicating onto nonempty

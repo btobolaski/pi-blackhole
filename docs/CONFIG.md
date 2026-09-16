@@ -7,6 +7,7 @@ Pi-blackhole's configuration lives at `~/.pi/agent/pi-blackhole/pi-blackhole-con
 The config file must contain **valid JSON**. A trailing comma, partial write, or sync-conflict copy will cause the entire file to be rejected — and previously, the overlay would silently fall back to defaults and then overwrite your model configs on save.
 
 **Current behavior:**
+
 - Invalid JSON is logged as a warning and surfaced as a yellow notification in the TUI
 - The `/blackhole configure` overlay shows a red error banner and **blocks Ctrl+S** until the file is fixed
 - The overlay preserves unknown keys (e.g. `observerModel`, `reflectorModel`) on valid files — only keys in the overlay's field list are managed there
@@ -72,7 +73,7 @@ The config file must contain **valid JSON**. A trailing comma, partial write, or
   // ── Debug ──
   "debug": false,                 // Write debug snapshots to /tmp
   "debugLog": false,              // Write debug JSONL to agent directory
-  "usageLog": true                // Write OM agent token usage to {sessionDir}/{sessionId}_memory.jsonl
+  "usageLog": true                // Write OM agent token usage to {sessionDir}/memory-logs/{sessionId}_memory.jsonl
 }
 ```
 
@@ -83,7 +84,7 @@ The config file must contain **valid JSON**. A trailing comma, partial write, or
 Controls when compaction triggers. Replaces the old `noAutoCompact` and partially replaces `passive`.
 
 | Value | Auto-trigger | `/compact` (Pi built-in) | `/blackhole` |
-|-------|:---:|:---:|:---:|
+| ------- | :---: | :---: | :---: |
 | `"auto"` | blackhole fires at the auto-compaction threshold ✓ | blackhole handles | blackhole handles |
 | `"manual"` | skipped | Pi handles ✓ | blackhole handles |
 | `"off"` | skipped (Pi handles) | Pi handles ✓ | blackhole handles |
@@ -115,7 +116,7 @@ Replaces the old `overrideDefaultCompaction`.
 **Interaction matrix:**
 
 | `compaction` | `compactionEngine` | Auto-trigger | `/compact` | `/blackhole` |
-|:---:|:---:|---|---|---|
+| :---: | :---: | --- | --- | --- |
 | auto | blackhole | blackhole fires at the auto-compaction threshold ✓ | blackhole handles | blackhole handles |
 | auto | pi-default | trigger skips (Pi decides when) | Pi handles | blackhole handles |
 | manual | (any) | skipped | Pi handles ✓ | blackhole handles |
@@ -147,7 +148,7 @@ minimal (last user at m5):
 **Effective behavior (how the hook resolves it):**
 
 | Invocation | `tailBehavior` config | Effective |
-|------------|:--------------------:|:---------:|
+| ------------ | :--------------------: | :---------: |
 | Manual `/blackhole` | not set | `"minimal"` (aggressive) |
 | Manual `/blackhole` | `"pi-default"` | `"pi-default"` |
 | Auto-triggered | not set | `"minimal"` (aggressive) |
@@ -170,7 +171,7 @@ Controls the **mid-run** auto-compaction trigger. Pi's `agent_end` event only fi
 Only applies when `compaction: "auto"` and `compactionEngine: "blackhole"`.
 
 | Value | Behavior |
-|-------|----------|
+| ------- | ---------- |
 | `"resume"` *(experimental)* | Compact transparently at an awaited `turn_end`, then continue inside the **same** agent run and outer `session.prompt()` promise. No run abort and no synthetic continuation message. |
 | `"pause"` | Use Pi's native interrupting `ctx.compact()` at the threshold, then stop. The user continues manually. |
 | `"off"` | No mid-run evaluation; only check the threshold when the agent finishes a run (default). |
@@ -488,7 +489,7 @@ Model overrides are **first-class config keys**, not "unknown keys". They are fu
 ### Primary models
 
 | Key | Description |
-|-----|-------------|
+| ----- | ------------- |
 | `model` | Base model override for all memory workers. Tried after stage-specific models and fallbacks. |
 | `observerModel` | Primary observer model (most frequent worker). |
 | `reflectorModel` | Primary reflector model (synthesizes durable facts). |
@@ -497,7 +498,7 @@ Model overrides are **first-class config keys**, not "unknown keys". They are fu
 ### Fallback arrays
 
 | Key | Description |
-|-----|-------------|
+| ----- | ------------- |
 | `observerFallbackModels` | Ordered fallback array for observer, tried after `observerModel`. |
 | `reflectorFallbackModels` | Ordered fallback array for reflector, tried after `reflectorModel`. |
 | `dropperFallbackModels` | Ordered fallback array for dropper, tried after `dropperModel`. |
@@ -507,7 +508,7 @@ Model overrides are **first-class config keys**, not "unknown keys". They are fu
 Each model config supports the following fields:
 
 | Field | Type | Description |
-|-------|------|-------------|
+| ------- | ------ | ------------- |
 | `provider` | string | Provider name (required). |
 | `id` | string | Model ID (required). |
 | `thinking` | enum | Thinking level: `"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"`. Defaults to `"low"` when unset. |
@@ -539,14 +540,18 @@ Each model config supports the following fields:
 |-----|------|---------|-------------|
 | `debug` | boolean | false | Writes detailed debug snapshots to `/tmp/pi-blackhole-debug.json` |
 | `debugLog` | boolean | false | Writes structured JSONL debug logs to the agent directory |
-| `usageLog` | boolean | true | Writes per-assistant-message `Usage` from the OM agents (observer/reflector/dropper) to `{sessionDir}/{sessionId}_memory.jsonl` in pi session log format, alongside the main session log. Set to `false` to disable. |
+| `usageLog` | boolean | true | Writes per-assistant-message `Usage` from the OM agents (observer/reflector/dropper) to `{sessionDir}/memory-logs/{sessionId}_memory.jsonl` in pi session log format. Set to `false` to disable. |
+
+The `memory-logs/` subdirectory keeps usage logs under the session tree for recursive usage reporting, but outside pi's shallow resume discovery. The log format and session UUID are unchanged.
+
+Existing `{sessionDir}/{sessionId}_memory.jsonl` files are **not automatically moved** and can still appear in `pi --resume` or shadow the real session in `pi --session <uuid>`. After stopping sessions using the old logger, manually relocate those OM usage logs into the corresponding `memory-logs/` subdirectory; leave the main session files untouched. Do not overwrite an existing destination log. Until relocation, use `pi --session <full-path-to-main-session.jsonl>` to bypass UUID lookup.
 
 ## Deprecated Keys
 
 These keys are still accepted for backward compatibility but are silently migrated to the new surface on load. They are removed from the in-memory config object and not written back by the overlay.
 
 | Key | Replacement |
-|-----|-------------|
+| ----- | ------------- |
 | `overrideDefaultCompaction` | `compactionEngine` + `tailBehavior` |
 | `noAutoCompact` | `compaction: "manual"` |
 | `passive` | `compaction: "off"` + `memory: false` |
@@ -560,7 +565,7 @@ Boolean parsing accepts `1`, `true`, `yes`, `on` (and `0`, `false`, `no`, `off`)
 ### Compaction mode
 
 | Variable | Overrides | Example |
-|----------|-----------|---------|
+| ---------- | ----------- | --------- |
 | `PI_BLACKHOLE_COMPACTION` | `compaction` (`auto` \| `manual` \| `off`) | `PI_BLACKHOLE_COMPACTION=manual` |
 | `PI_BLACKHOLE_COMPACTION_ENGINE` | `compactionEngine` (`blackhole` \| `pi-default`) | `PI_BLACKHOLE_COMPACTION_ENGINE=pi-default` |
 | `PI_BLACKHOLE_MID_RUN_COMPACTION` | `midRunCompaction` (`resume` \| `pause` \| `off`) | `PI_BLACKHOLE_MID_RUN_COMPACTION=resume` |
@@ -571,7 +576,7 @@ Boolean parsing accepts `1`, `true`, `yes`, `on` (and `0`, `false`, `no`, `off`)
 Sets `compaction: "off"` + `memory: false` when truthy. All three names remain supported:
 
 | Variable | Notes |
-|----------|-------|
+| ---------- | ------- |
 | `PI_BLACKHOLE_PASSIVE` | Current name |
 | `PI_VCC_OM_PASSIVE` | Legacy pi-vcc name |
 | `PI_OBSERVATIONAL_MEMORY_PASSIVE` | Legacy pi-observational-memory name |
@@ -581,7 +586,7 @@ Sets `compaction: "off"` + `memory: false` when truthy. All three names remain s
 Boolean fields:
 
 | Variable | Overrides |
-|----------|-----------|
+| ---------- | ----------- |
 | `PI_BLACKHOLE_MEMORY` | `memory` |
 | `PI_BLACKHOLE_DEBUG` | `debug` (debug snapshots) |
 | `PI_BLACKHOLE_DEBUG_LOG` | `debugLog` (JSONL logging) |
@@ -591,7 +596,7 @@ Boolean fields:
 Integer fields (invalid values fall back; `reflectionsPoolMaxTokens` also accepts `0` to disable its cap):
 
 | Variable | Overrides |
-|----------|-----------|
+| ---------- | ----------- |
 | `PI_BLACKHOLE_COMPACT_AFTER_TOKENS` | `compactAfterTokens` |
 | `PI_BLACKHOLE_COMPACT_RESERVE_TOKENS` | `compactReserveTokens` |
 | `PI_BLACKHOLE_RETAINED_TOOL_OUTPUT_MAX_TOKENS` | `retainedToolOutputMaxTokens` |
@@ -611,7 +616,7 @@ Integer fields (invalid values fall back; `reflectionsPoolMaxTokens` also accept
 Float fields (must be in `(0, 1]`):
 
 | Variable | Overrides |
-|----------|-----------|
+| ---------- | ----------- |
 | `PI_BLACKHOLE_COMPACT_AFTER_RATIO` | `compactAfterRatio` |
 | `PI_BLACKHOLE_DROPPER_PRESSURE_THRESHOLD` | `dropperPressureThreshold` |
 | `PI_BLACKHOLE_DROPPER_POOL_FULLNESS_THRESHOLD` | `dropperPoolFullnessThreshold` |
@@ -713,6 +718,7 @@ Controls how auto-compaction summaries are stored and presented to the model. On
 | `"append"` | Each auto-compaction appends one immutable provider-visible segment (`S1 \| S2 \| …`). The model sees all prior compaction segments alongside the current conversation. Every stored summary remains a complete fallback. |
 
 **In `append` mode:**
+
 - Auto-compactions append a new segment to the chain; earlier segments stay visible to the model.
 - Explicit `/blackhole` rebases the active chain into one clean segment and starts a new chain.
 - Legacy v1 summaries (from before this feature) enter through one marked rebase.
