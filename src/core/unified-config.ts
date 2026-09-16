@@ -274,7 +274,7 @@ export interface UnifiedConfig {
   debugLog: boolean;
   /** Show the blackhole footer status bar (token gauges + worker events). */
   statusBar: boolean;
-  /** Write OM worker usage in Pi session-log format. Default true. */
+  /** Write OM usage to `{sessionDir}/memory-logs/{sessionId}_memory.jsonl`. Default true. */
   usageLog: boolean;
   /** Show routine observer/reflector/dropper progress toasts. Warnings,
    *  errors, model fallback/unavailability and compaction notices are
