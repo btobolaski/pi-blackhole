@@ -4,14 +4,15 @@
  * agents.
  *
  * The logger writes pi-format JSONL (a `session` header + `message` lines)
- * to `{sessionDir}/{sessionId}_memory.jsonl`, matching the schema in
+ * to `{sessionDir}/memory-logs/{sessionId}_memory.jsonl`, matching the schema in
  * `moriarty-workspace-3/crates/pi_logs/src/parser.rs`.
  */
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 
 import { createUsageLogger, sanitizeForLog, type UsageLogger } from "../src/om/usage-log.js";
 import { runObserver } from "../src/om/agents/observer/agent.js";
@@ -92,6 +93,35 @@ const SESSION_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
 // ── createUsageLogger ───────────────────────────────────────────────────────
 
 describe("createUsageLogger", () => {
+  it.each(["project", "global"])(
+    "excludes newer OM logs from %s resume candidates, even with the same UUID",
+    async (scope) => {
+      const dir = makeTmpDir();
+      try {
+        vi.stubEnv("PI_CODING_AGENT_DIR", dir);
+        const cwd = join(dir, "project");
+        const session = SessionManager.create(cwd);
+        session.appendMessage(makeAssistantMessage());
+        const log = createUsageLogger({
+          sessionDir: session.getSessionDir(),
+          sessionId: session.getSessionId(),
+          cwd,
+        });
+        log(makeAssistantMessage({ timestamp: 1_700_000_060_000 }));
+
+        // These are the actual discovery APIs used by --resume and --session.
+        const sessions =
+          scope === "project" ? await SessionManager.list(cwd) : await SessionManager.listAll();
+        expect(sessions.map(({ id, path }) => ({ id, path }))).toEqual([
+          { id: session.getSessionId(), path: session.getSessionFile() },
+        ]);
+      } finally {
+        vi.unstubAllEnvs();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("writes a session header then one message line per AssistantMessage", () => {
     const dir = makeTmpDir();
     try {
@@ -102,7 +132,7 @@ describe("createUsageLogger", () => {
       });
       log(makeAssistantMessage());
 
-      const path = join(dir, `${SESSION_ID}_memory.jsonl`);
+      const path = join(dir, "memory-logs", `${SESSION_ID}_memory.jsonl`);
       expect(existsSync(path)).toBe(true);
       const lines = readJsonl(path);
 
@@ -142,7 +172,7 @@ describe("createUsageLogger", () => {
       log(makeAssistantMessage({ model: "m2" }));
       log(makeAssistantMessage({ model: "m3" }));
 
-      const lines = readJsonl(join(dir, `${SESSION_ID}_memory.jsonl`));
+      const lines = readJsonl(join(dir, "memory-logs", `${SESSION_ID}_memory.jsonl`));
       expect(lines).toHaveLength(4);
       expect(lines.filter((l) => l.type === "session")).toHaveLength(1);
       expect(lines.filter((l) => l.type === "message")).toHaveLength(3);
@@ -163,7 +193,7 @@ describe("createUsageLogger", () => {
       log(makeAssistantMessage());
       log(makeAssistantMessage());
 
-      const lines = readJsonl(join(dir, `${SESSION_ID}_memory.jsonl`));
+      const lines = readJsonl(join(dir, "memory-logs", `${SESSION_ID}_memory.jsonl`));
       const messages = lines.filter((l) => l.type === "message");
 
       expect(messages[0].parentId).toBe(SESSION_ID);
@@ -174,7 +204,7 @@ describe("createUsageLogger", () => {
     }
   });
 
-  it("creates the session directory if it does not exist", () => {
+  it("creates the nested memory log directory if it does not exist", () => {
     const dir = makeTmpDir();
     const nested = join(dir, "deep", "nested");
     try {
@@ -185,7 +215,7 @@ describe("createUsageLogger", () => {
       });
       log(makeAssistantMessage());
 
-      expect(existsSync(join(nested, `${SESSION_ID}_memory.jsonl`))).toBe(true);
+      expect(existsSync(join(nested, "memory-logs", `${SESSION_ID}_memory.jsonl`))).toBe(true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -196,7 +226,7 @@ describe("createUsageLogger", () => {
     // The second logger must resume appending without a second session header
     // and must chain parentId from the last written entry.
     const dir = makeTmpDir();
-    const path = join(dir, `${SESSION_ID}_memory.jsonl`);
+    const path = join(dir, "memory-logs", `${SESSION_ID}_memory.jsonl`);
     try {
       const log1 = createUsageLogger({
         sessionDir: dir,
@@ -233,8 +263,9 @@ describe("createUsageLogger", () => {
     // A nonempty but corrupt log must not get a second session header appended.
     // The logger skips the header and chains message lines from the session id.
     const dir = makeTmpDir();
-    const path = join(dir, `${SESSION_ID}_memory.jsonl`);
+    const path = join(dir, "memory-logs", `${SESSION_ID}_memory.jsonl`);
     try {
+      mkdirSync(join(dir, "memory-logs"));
       writeFileSync(path, "this is not valid json\n");
 
       const log = createUsageLogger({
@@ -384,7 +415,9 @@ describe("createUsageLogger error handling", () => {
       }).not.toThrow();
 
       // No file should have been created
-      expect(existsSync(join(badSessionDir, `${SESSION_ID}_memory.jsonl`))).toBe(false);
+      expect(existsSync(join(badSessionDir, "memory-logs", `${SESSION_ID}_memory.jsonl`))).toBe(
+        false,
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -397,7 +430,7 @@ describe("createUsageLogger error handling", () => {
     // and must not advance lastId, so a later successful message chains from
     // the last written entry rather than a phantom id.
     const dir = makeTmpDir();
-    const path = join(dir, `${SESSION_ID}_memory.jsonl`);
+    const path = join(dir, "memory-logs", `${SESSION_ID}_memory.jsonl`);
     try {
       const log = createUsageLogger({
         sessionDir: dir,

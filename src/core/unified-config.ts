@@ -259,7 +259,7 @@ export interface UnifiedConfig {
   /** Show the blackhole footer status bar (token gauges + worker events). */
   statusBar: boolean;
   /** Writes per-assistant-message Usage from OM agents to
-   *  `{sessionDir}/{sessionId}_memory.jsonl` in pi session log format.
+   *  `{sessionDir}/memory-logs/{sessionId}_memory.jsonl` in pi session log format.
    *  Default true. */
   usageLog: boolean;
 }
