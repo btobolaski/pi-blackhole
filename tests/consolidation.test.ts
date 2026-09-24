@@ -1,18 +1,25 @@
-import { afterEach, beforeEach, describe, test, expect, vi } from "vitest";
-import { rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { afterEach, beforeEach, describe, test, expect, vi } from "vitest";
+import { serializeSourceAddressedBranchEntries } from "../src/om/serialize.js";
 import { Runtime } from "../src/om/runtime.js";
+import { estimateStringTokens } from "../src/om/tokens.js";
 import {
   makeModelResolver,
+  maybeLaunchConsolidation,
   runConsolidationPipeline,
+  runObserverStage,
   capSourceEntriesToTokens,
+  capCatchUp,
   type ConsolidationCtx,
 } from "../src/om/consolidation.js";
 import {
   branchSummary,
   compactionEntry,
   customMessage,
+  observation,
   observationsRecordedEntry,
   rawMessage,
   reflection,
@@ -20,7 +27,9 @@ import {
   textCustomMessage,
   type TestEntry,
 } from "./fixtures/session.js";
+import { unfinishedObserverCatchUps } from "../src/om/ledger/index.js";
 import { createExtensionApiDouble } from "./fixtures/pi-extension-api.js";
+import { readPendingState as readPendingStateRaw } from "../src/om/pending.js";
 
 /** Cursor round trips write real pending files, so redirect the agent dir. */
 const cursorTestDir = join(tmpdir(), `pi-blackhole-consolidation-cursors-${Date.now()}`);
@@ -850,6 +859,8 @@ interface PipelineFixture {
   runtime: Runtime;
   entries: TestEntry[];
   run(): Promise<void>;
+  start(): void;
+  launch(): Promise<void>;
 }
 
 /**
@@ -903,6 +914,15 @@ function makePipelineFixture(options: {
     run: async () => {
       await runConsolidationPipeline(pi, runtime, ctx, runtime.captureGeneration("cursor-session"));
     },
+    start: () => {
+      maybeLaunchConsolidation(pi, runtime, ctx);
+    },
+    launch: async () => {
+      maybeLaunchConsolidation(pi, runtime, ctx);
+      const task = runtime.consolidationPromise;
+      if (!task) throw new Error("catch-up was not launched");
+      await task;
+    },
   };
 }
 
@@ -916,44 +936,914 @@ function observerChunkArg(callIndex = 0): ObserverAgentInput {
 }
 
 const smallSource = (id: string) => rawMessage(id, `SMALL-${id} ${"x".repeat(120)}`);
+const catchUpEntries = (...ids: string[]) => [
+  ...ids.map(smallSource),
+  compactionEntry("compact", { firstKeptEntryId: ids.at(-1), summary: "folded" }),
+];
+function launchCtx(entries: TestEntry[], notify?: ReturnType<typeof vi.fn>): ConsolidationCtx {
+  return {
+    cwd: "/tmp",
+    hasUI: !!notify,
+    ui: notify ? { notify } : undefined,
+    model: undefined,
+    modelRegistry: {},
+    sessionManager: {
+      getBranch: () => entries,
+      getSessionId: () => "cursor-session",
+      getSessionDir: () => "/tmp",
+    },
+  };
+}
+function appendCatchUpJob(
+  entries: TestEntry[],
+  compactionId: string,
+  fromId: string,
+  throughId: string,
+) {
+  entries.push({
+    type: "custom",
+    id: `job-${compactionId}`,
+    parentId: entries.at(-1)?.id ?? null,
+    timestamp: "2026-05-02T10:00:00.000Z",
+    customType: "om.observer.catch-up.job",
+    data: { version: 1, compactionId, fromId, throughId },
+  });
+}
+
+function recordObservations(input: ObserverAgentInput) {
+  const firstSourceId = input.allowedSourceEntryIds[0];
+  if (!firstSourceId) throw new Error("observer received no source IDs");
+  return {
+    observations: [
+      {
+        id: `aaaa${firstSourceId.padEnd(8, "a").slice(0, 8)}`,
+        content: "fact",
+        timestamp: "2026-05-02T10:00:00.000Z",
+        relevance: "medium" as const,
+        sourceEntryIds: input.allowedSourceEntryIds,
+        tokenCount: 1,
+      },
+    ],
+  };
+}
+
+function catchUpFixture(entries: TestEntry[], through: string, from = through, cap?: number) {
+  const fixture = makePipelineFixture({ observeAfterTokens: 5_000, entries });
+  if (cap !== undefined) fixture.runtime.config.observerChunkMaxTokens = cap;
+  appendCatchUpJob(entries, "compact", from, through);
+  return fixture;
+}
 
 beforeEach(() => {
   agents.runObserver.mockReset();
   agents.runObserver.mockResolvedValue({
     observations: [],
-    emptyReason: { kind: "no_new_content" as const },
+    emptyReason: { kind: "no_new_content" },
   });
   agents.runReflector.mockReset();
   agents.runDropper.mockReset();
 });
-
 afterEach(() => {
   rmSync(cursorTestDir, { recursive: true, force: true });
+  vi.restoreAllMocks();
 });
 
-describe("repeated consolidation pipeline cycles", () => {
+describe("branch-local observer catch-up jobs", () => {
+  test("a newest-first manual batch cannot hide older queued sources", async () => {
+    const entries = catchUpEntries("older", "summary");
+    const fixture = catchUpFixture(entries, "summary", "older");
+    fixture.runtime.config.compaction = "manual";
+    const { savePendingObservation } = await import("../src/om/pending.js");
+    savePendingObservation("cursor-session", {
+      coversUpToId: "summary",
+      data: { observations: [] },
+    });
+    agents.runObserver.mockResolvedValue({
+      observations: [],
+      emptyReason: { kind: "no_new_content" },
+    });
+    await fixture.run();
+    expect(observerChunkArg().allowedSourceEntryIds).toEqual(["older", "summary"]);
+  });
+  test("runs a post-compaction job without blocking launch and records completion in history", async () => {
+    const entries = catchUpEntries("summary");
+    const fixture = catchUpFixture(entries, "summary");
+    agents.runObserver.mockImplementation(async (input) => recordObservations(input));
+
+    fixture.start();
+    expect(agents.runObserver).not.toHaveBeenCalled();
+    await fixture.runtime.consolidationPromise;
+
+    expect(observerChunkArg().allowedSourceEntryIds).toEqual(["summary"]);
+    expect(
+      entries.filter((entry) => entry.customType === "om.observer.catch-up.progress").at(-1)?.data,
+    ).toEqual({
+      version: 1,
+      compactionId: "compact",
+      complete: true,
+    });
+    expect(readPendingStateRaw("cursor-session").observerCatchUpRanges).toBeUndefined();
+  });
+
+  test("drains bounded CJK slices oldest-first and resumes from history after restart", async () => {
+    const entries = [
+      rawMessage("huge", `START-${"中".repeat(400)}-END`),
+      smallSource("summary"),
+      compactionEntry("compact", { firstKeptEntryId: "summary", summary: "folded" }),
+    ];
+    const first = catchUpFixture(entries, "summary", "huge", 40);
+    let calls = 0;
+    agents.runObserver.mockImplementation(async (input) => {
+      calls += 1;
+      if (calls === 1) return recordObservations(input);
+      throw new Error("stop after persisted slice");
+    });
+    await first.run();
+    const firstProgress = entries.find(
+      (entry) => entry.customType === "om.observer.catch-up.progress",
+    );
+    if (
+      !firstProgress ||
+      typeof firstProgress.data !== "object" ||
+      firstProgress.data === null ||
+      !("nextSourceId" in firstProgress.data) ||
+      !("offset" in firstProgress.data)
+    ) {
+      throw new Error("missing persisted source-slice progress");
+    }
+    expect(firstProgress.data.nextSourceId).toBe("huge");
+    expect(firstProgress.data.offset).toBeGreaterThan(0);
+
+    agents.runObserver.mockImplementation(async (input) => recordObservations(input));
+    const resumed = makePipelineFixture({ observeAfterTokens: 5_000, entries });
+    resumed.runtime.config.observerChunkMaxTokens = 40;
+    await resumed.launch();
+
+    expect(
+      agents.runObserver.mock.calls.every(([input]) => estimateStringTokens(input.chunk) <= 40),
+    ).toBe(true);
+    expect(agents.runObserver.mock.calls.at(-1)?.[0].allowedSourceEntryIds).toEqual(["summary"]);
+    expect(
+      entries.filter((entry) => entry.customType === "om.observer.catch-up.progress").at(-1)?.data,
+    ).toEqual({
+      version: 1,
+      compactionId: "compact",
+      complete: true,
+    });
+  });
+
+  test("completes a job offered to an observer that returns no observations", async () => {
+    const entries = catchUpEntries("summary");
+    const fixture = catchUpFixture(entries, "summary");
+    agents.runObserver.mockResolvedValue({
+      observations: [],
+      emptyReason: { kind: "no_new_content" },
+    });
+
+    await fixture.run();
+
+    expect(agents.runObserver).toHaveBeenCalledTimes(1);
+    expect(unfinishedObserverCatchUps(entries)).toEqual([]);
+  });
+
+  test("retains work after a model failure without a same-cycle fallback call", async () => {
+    const entries = catchUpEntries("summary");
+    const fixture = catchUpFixture(entries, "summary");
+    agents.runObserver.mockImplementation(async () => {
+      fixture.runtime.resolveModel = async () => ({ ok: false, reason: "provider unavailable" });
+      throw new Error("provider unavailable");
+    });
+
+    await fixture.run();
+
+    expect(agents.runObserver).toHaveBeenCalledTimes(1);
+    expect(
+      entries.filter((entry) => entry.customType === "om.observer.catch-up.progress"),
+    ).toHaveLength(0);
+  });
+
+  test("retains work after a progress append failure without a same-cycle retry", async () => {
+    const entries = catchUpEntries("summary");
+    appendCatchUpJob(entries, "compact", "summary", "summary");
+    const runtime = new Runtime();
+    runtime.config.memory = true;
+    runtime.config.observeAfterTokens = 5_000;
+    runtime.config.reflectAfterTokens = 1_000_000;
+    runtime.resolveModel = async () => ({
+      ok: true as const,
+      model: { provider: "test", id: "model", contextWindow: 1_000_000 },
+      apiKey: "test",
+    });
+    agents.runObserver.mockImplementation(async (input) => recordObservations(input));
+    const pi = createExtensionApiDouble({
+      appendEntry: (customType, data) => {
+        if (customType === "om.observer.catch-up.progress") {
+          throw new Error("progress write failed");
+        }
+        entries.push({
+          type: "custom",
+          id: `appended-${entries.length}`,
+          parentId: entries.at(-1)?.id ?? null,
+          timestamp: "2026-05-02T10:00:00.000Z",
+          customType,
+          data,
+        });
+      },
+    });
+
+    await runConsolidationPipeline(
+      pi,
+      runtime,
+      launchCtx(entries),
+      runtime.captureGeneration("cursor-session"),
+    );
+
+    expect(agents.runObserver).toHaveBeenCalledTimes(1);
+    expect(
+      entries.filter((entry) => entry.customType === "om.observer.catch-up.progress"),
+    ).toHaveLength(0);
+    expect(runtime.lastObserverError).toContain("progress write failed");
+  });
+
+  test("runs reflector once after all queued observer chunks have drained", async () => {
+    const entries = ["a", "b", "c"].map((id) => rawMessage(id, id + "x".repeat(200)));
+    const first = entries[0];
+    if (!first) throw new Error("missing first source");
+    const cap = estimateStringTokens(serializeSourceAddressedBranchEntries([first]).text);
+    const fixture = catchUpFixture(entries, "c", "a", cap);
+    fixture.runtime.config.reflectAfterTokens = 1;
+    const order: string[] = [];
+    agents.runObserver.mockImplementation(async (input) => {
+      order.push(`observe:${input.allowedSourceEntryIds.join(",")}`);
+      return recordObservations(input);
+    });
+    agents.runReflector.mockImplementation(async () => {
+      order.push("reflect");
+      return [];
+    });
+    await fixture.launch();
+    expect(order).toEqual(["observe:a", "observe:b", "observe:c", "reflect"]);
+  });
+
+  test("packs whole serialized sources before slicing", async () => {
+    const sources = ["a", "b", "c"].map((id) => rawMessage(id.repeat(44), "x"));
+    const [first, second, last] = sources;
+    if (!first || !second || !last) throw new Error("missing test source");
+    const expected = serializeSourceAddressedBranchEntries([first, second]);
+    const cap = estimateStringTokens(expected.text);
+    const fixture = catchUpFixture(sources, last.id, first.id, cap);
+    await fixture.launch();
+    expect(observerChunkArg()).toMatchObject({
+      chunk: expected.text,
+      allowedSourceEntryIds: expected.sourceEntryIds,
+      sourceEntryTimestamps: expected.sourceEntryTimestamps,
+    });
+    expect(
+      agents.runObserver.mock.calls.every(([input]) => estimateStringTokens(input.chunk) <= cap),
+    ).toBe(true);
+  });
+
+  test("non-renderable sources cannot strand subsequent queued sources", async () => {
+    const entries = [
+      rawMessage("hidden", "", {
+        message: {
+          role: "assistant",
+          content: [{ type: "thinking", thinking: "redacted", redacted: true }],
+        },
+      }),
+      smallSource("summary"),
+    ];
+    const fixture = catchUpFixture(entries, "summary", "hidden", 40);
+    await fixture.launch();
+    expect(observerChunkArg().allowedSourceEntryIds).toEqual(["summary"]);
+    expect(unfinishedObserverCatchUps(entries)).toEqual([]);
+  });
+
+  test("retains a job when no model can fit a source header", async () => {
+    const entries = catchUpEntries("summary");
+    const fixture = catchUpFixture(entries, "summary", "summary", 1);
+    await fixture.run();
+    expect(agents.runObserver).not.toHaveBeenCalled();
+    expect(unfinishedObserverCatchUps(entries)).toHaveLength(1);
+  });
+
+  test("uses the existing model fallback for a failed observer call", async () => {
+    const entries = catchUpEntries("summary");
+    const fixture = catchUpFixture(entries, "summary");
+    agents.runObserver.mockRejectedValueOnce(new Error("temporary provider error"));
+    await fixture.run();
+    expect(agents.runObserver).toHaveBeenCalledTimes(2);
+    expect(unfinishedObserverCatchUps(entries)).toEqual([]);
+  });
+
+  test("keeps a missing job unresolved and warns instead of reanchoring it", async () => {
+    const entries: TestEntry[] = [smallSource("visible")];
+    appendCatchUpJob(entries, "missing", "gone", "gone");
+    const fixture = makePipelineFixture({ observeAfterTokens: 5_000, entries });
+    const notify = vi.fn();
+
+    maybeLaunchConsolidation(
+      createExtensionApiDouble(),
+      fixture.runtime,
+      launchCtx(entries, notify),
+    );
+
+    await fixture.runtime.consolidationPromise;
+    expect(agents.runObserver).not.toHaveBeenCalled();
+    expect(notify).toHaveBeenCalledWith(expect.stringContaining("source is missing"), "warning");
+    expect(
+      entries.find((entry) => entry.customType === "om.observer.catch-up.job")?.data,
+    ).toMatchObject({
+      fromId: "gone",
+      throughId: "gone",
+    });
+  });
+
+  test("resolves only jobs on the current branch and preserves jobs before a fork point", async () => {
+    const shared: TestEntry[] = [smallSource("shared")];
+    appendCatchUpJob(shared, "before", "shared", "shared");
+    const afterJob = [...shared, smallSource("after")];
+    appendCatchUpJob(afterJob, "after", "after", "after");
+    const beforeFork = shared;
+
+    const { unfinishedObserverCatchUps } = await import("../src/om/ledger/index.js");
+    expect(unfinishedObserverCatchUps(afterJob).map(({ job }) => job.compactionId)).toEqual([
+      "before",
+      "after",
+    ]);
+    expect(unfinishedObserverCatchUps(beforeFork).map(({ job }) => job.compactionId)).toEqual([
+      "before",
+    ]);
+  });
+
+  test("completion on a child path does not complete its sibling job", async () => {
+    const base: TestEntry[] = [smallSource("shared")];
+    appendCatchUpJob(base, "before", "shared", "shared");
+    const completedChild = [
+      ...base,
+      {
+        type: "custom" as const,
+        id: "done-before",
+        parentId: "job-before",
+        timestamp: "2026-05-02T10:00:00.000Z",
+        customType: "om.observer.catch-up.progress",
+        data: { version: 1, compactionId: "before", complete: true },
+      },
+    ];
+    const { unfinishedObserverCatchUps } = await import("../src/om/ledger/index.js");
+    expect(unfinishedObserverCatchUps(completedChild)).toEqual([]);
+    expect(unfinishedObserverCatchUps(base).map(({ job }) => job.compactionId)).toEqual(["before"]);
+  });
+
+  test("real SessionManager forks retain only jobs on the copied path", () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), "pi-blackhole-catch-up-fork-"));
+    try {
+      const manager = SessionManager.create("/tmp", sessionDir);
+      const sourceId = manager.appendMessage({
+        role: "user",
+        content: "PRE-COMPACTION-SOURCE",
+        timestamp: Date.now(),
+      });
+      manager.appendMessage({
+        role: "assistant",
+        content: [{ type: "text", text: "assistant response" }],
+        timestamp: Date.now(),
+      });
+      const compactionId = manager.appendCompaction("folded", sourceId, 1);
+      const jobId = manager.appendCustomEntry("om.observer.catch-up.job", {
+        version: 1,
+        compactionId,
+        fromId: sourceId,
+        throughId: sourceId,
+      });
+      const original = manager.getSessionFile();
+      if (!original) throw new Error("expected persisted source session");
+      const beforeJob = SessionManager.open(original, sessionDir).createBranchedSession(
+        compactionId,
+      );
+      const afterJob = SessionManager.open(original, sessionDir).createBranchedSession(jobId);
+      if (!beforeJob || !afterJob) throw new Error("expected persisted fork paths");
+
+      const beforeBranch = SessionManager.open(beforeJob, sessionDir).getBranch();
+      const afterBranch = SessionManager.open(afterJob, sessionDir).getBranch();
+      expect(beforeBranch.some((entry) => entry.id === sourceId)).toBe(true);
+      expect(unfinishedObserverCatchUps(beforeBranch)).toEqual([]);
+      expect(unfinishedObserverCatchUps(afterBranch).map(({ job }) => job.compactionId)).toEqual([
+        compactionId,
+      ]);
+    } finally {
+      rmSync(sessionDir, { recursive: true, force: true });
+    }
+  });
+
+  test("tree-navigation invalidation prevents a deferred observer from appending to a new leaf", async () => {
+    const branchA = catchUpEntries("a");
+    appendCatchUpJob(branchA, "compact", "a", "a");
+    const branchB = catchUpEntries("b");
+    appendCatchUpJob(branchB, "compact-b", "b", "b");
+    let current = branchA;
+    const runtime = new Runtime();
+    runtime.config.memory = true;
+    runtime.config.observeAfterTokens = 1;
+    runtime.startSession("tree-session");
+    let release: (() => void) | undefined;
+    agents.runObserver.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = () =>
+            resolve(
+              recordObservations({
+                chunk: "",
+                allowedSourceEntryIds: ["a"],
+                priorObservations: [],
+                priorReflections: [],
+              }),
+            );
+        }),
+    );
+    const appended: string[] = [];
+    const ctx = launchCtx(current);
+    ctx.sessionManager.getBranch = () => current;
+    ctx.sessionManager.getSessionId = () => "tree-session";
+    const stage = runObserverStage(
+      createExtensionApiDouble({ appendEntry: (type) => appended.push(type) }),
+      runtime,
+      ctx,
+      runtime.captureGeneration("tree-session"),
+      async () => ({
+        ok: true,
+        model: { provider: "test", id: "model", contextWindow: 1_000_000 },
+        apiKey: "test",
+      }),
+      undefined,
+    );
+    await vi.waitFor(() => expect(agents.runObserver).toHaveBeenCalledTimes(1));
+    current = branchB;
+    runtime.invalidateSessionTree();
+    if (!release) throw new Error("observer did not start");
+    release();
+
+    await expect(stage).resolves.toBe("abort");
+    expect(appended).toEqual([]);
+  });
+
+  test("legacy sidecar migration is read-only and a history job suppresses replay on its path", async () => {
+    const dir = join(cursorTestDir, "pi-blackhole");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "cursor-session-pending.json"),
+      JSON.stringify({ observerCatchUpRanges: [{ throughId: "summary", fromId: "summary" }] }),
+    );
+    const entries = catchUpEntries("summary");
+    const fixture = makePipelineFixture({ observeAfterTokens: 5_000, entries });
+    agents.runObserver.mockImplementation(async (input) => recordObservations(input));
+
+    await fixture.launch();
+
+    expect(
+      entries.find((entry) => entry.customType === "om.observer.catch-up.job")?.data,
+    ).toMatchObject({
+      compactionId: "legacy:unscoped:summary",
+      fromId: "summary",
+    });
+    expect(readPendingStateRaw("cursor-session").observerCatchUpRanges).toEqual([
+      { throughId: "summary", fromId: "summary", branchId: undefined, offset: undefined },
+    ]);
+  });
+});
+
+describe("catch-up with persisted SessionManager history", () => {
+  let sessionDir: string;
+  beforeEach(() => {
+    sessionDir = mkdtempSync(join(tmpdir(), "blackhole-history-"));
+  });
+  afterEach(() => {
+    rmSync(sessionDir, { recursive: true, force: true });
+  });
+
+  function history(manager = SessionManager.create("/tmp", sessionDir)) {
+    if (!manager.getBranch().length)
+      manager.appendMessage({
+        role: "assistant",
+        content: [{ type: "text", text: "ready" }],
+        api: "openai-completions",
+        provider: "test",
+        model: "test",
+        stopReason: "stop",
+        timestamp: 0,
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+      });
+    const runtime = makePipelineFixture({ observeAfterTokens: 999_999 }).runtime;
+    runtime.config.usageLog = false;
+    runtime.startSession(manager.getSessionId());
+    const pi = createExtensionApiDouble({
+      appendEntry: (type, data) => manager.appendCustomEntry(type, data),
+    });
+    const notify = vi.fn();
+    const ctx: ConsolidationCtx = { ...launchCtx([], notify), sessionManager: manager };
+    const file = manager.getSessionFile();
+    if (!file) throw new Error("expected a persisted session");
+    return {
+      manager,
+      runtime,
+      pi,
+      ctx,
+      file,
+      notify,
+      source: (content: string) => manager.appendMessage({ role: "user", content, timestamp: 0 }),
+      queue(fromId: string, throughId = fromId) {
+        const compactionId = manager.appendCompaction("folded", undefined, 1);
+        const entryId = manager.appendCustomEntry("om.observer.catch-up.job", {
+          version: 1,
+          compactionId,
+          fromId,
+          throughId,
+        });
+        return { compactionId, entryId };
+      },
+      async run() {
+        maybeLaunchConsolidation(pi, runtime, ctx);
+        await runtime.consolidationPromise;
+      },
+      pending: () => unfinishedObserverCatchUps(manager.getBranch()),
+    };
+  }
+
+  test("keeps sources and job progress through repeated compactions with no new source", async () => {
+    const h = history();
+    const first = h.source("OLDER-CAPPED-SOURCE");
+    const last = h.source("RECENT-SOURCE");
+    h.runtime.advanceCursor("observer", last, "recorded");
+    h.queue(first, last);
+    h.manager.appendCompaction("later", undefined, 1);
+    expect(JSON.stringify(h.manager.buildSessionContext().messages)).not.toContain(
+      "OLDER-CAPPED-SOURCE",
+    );
+    await h.run();
+    expect(observerChunkArg().allowedSourceEntryIds).toEqual([first, last]);
+    expect(h.pending()).toEqual([]);
+  });
+
+  test.each(["auto", "manual"] as const)(
+    "restarts bounded CJK/emoji slices from disk in %s mode without gaps",
+    async (mode) => {
+      const h = history();
+      h.runtime.config.compaction = mode;
+      h.runtime.config.observerChunkMaxTokens = 40;
+      const source = h.source("START-" + "中😀".repeat(100) + "-END");
+      h.queue(source);
+      agents.runObserver.mockImplementationOnce(async () => {
+        h.runtime.resolveModel = async () => ({ ok: false, reason: "interrupt after checkpoint" });
+        return { observations: [], emptyReason: { kind: "no_new_content" } };
+      });
+      await h.run();
+      expect(h.pending()[0]?.progress?.offset).toBeGreaterThan(0);
+      const resumed = history(SessionManager.open(h.file, sessionDir));
+      resumed.runtime.config.compaction = mode;
+      resumed.runtime.config.observerChunkMaxTokens = 40;
+      await resumed.run();
+      const sourceEntry = resumed.manager.getEntry(source);
+      if (!sourceEntry) throw new Error("source was lost");
+      const serialized = serializeSourceAddressedBranchEntries([sourceEntry]).text;
+      const prefixLength = serialized.indexOf("\n") + 1;
+      const chunks = agents.runObserver.mock.calls.map(([input]) => input.chunk);
+      expect(chunks.map((chunk) => chunk.slice(prefixLength)).join("")).toBe(
+        serialized.slice(prefixLength),
+      );
+      expect(
+        chunks.every(
+          (chunk) => estimateStringTokens(chunk) <= 40 && !/[\uD800-\uDBFF]$/.test(chunk),
+        ),
+      ).toBe(true);
+      expect(resumed.pending()).toEqual([]);
+    },
+  );
+
+  test("forks copy pending work but not a sibling's later completion", async () => {
+    const h = history();
+    const source = h.source("FORKED-WORK");
+    const job = h.queue(source);
+    const forkManager = SessionManager.open(h.file, sessionDir);
+    forkManager.createBranchedSession(job.entryId);
+    const fork = history(forkManager);
+    expect(fork.manager.getSessionId()).not.toBe(h.manager.getSessionId());
+    await fork.run();
+    expect(fork.pending()).toEqual([]);
+    expect(h.pending()).toHaveLength(1);
+    await h.run();
+    expect(agents.runObserver.mock.calls.map(([input]) => input.allowedSourceEntryIds)).toEqual([
+      [source],
+      [source],
+    ]);
+  });
+
+  test("manual pending-write failure retains the catch-up job on disk", async () => {
+    const h = history();
+    h.runtime.config.compaction = "manual";
+    const source = h.source("MANUAL-PENDING-WRITE-FAILURE");
+    h.queue(source);
+    agents.runObserver.mockImplementation(async (input) => recordObservations(input));
+    const dir = join(cursorTestDir, "pi-blackhole");
+    const pendingFile = join(dir, `${h.manager.getSessionId()}-pending.json`);
+    const staleFile = join(dir, `${h.manager.getSessionId()}-pending.stale.json`);
+    // Both destinations must be blocked: otherwise the old writer moves the
+    // directory to .stale and successfully creates a new pending file.
+    mkdirSync(pendingFile, { recursive: true });
+    mkdirSync(staleFile);
+    writeFileSync(join(staleFile, "block-rename"), "occupied");
+    try {
+      await h.run();
+      expect(
+        unfinishedObserverCatchUps(SessionManager.open(h.file, sessionDir).getBranch()),
+      ).toHaveLength(1);
+      expect(agents.runObserver).toHaveBeenCalledTimes(1);
+      expect(h.notify).toHaveBeenCalledWith(
+        expect.stringContaining("Observational memory: observer failed:"),
+        "warning",
+      );
+    } finally {
+      rmSync(pendingFile, { recursive: true, force: true });
+      rmSync(staleFile, { recursive: true, force: true });
+    }
+    const resumed = history(SessionManager.open(h.file, sessionDir));
+    resumed.runtime.config.compaction = "manual";
+    await resumed.run();
+    expect(resumed.pending()).toEqual([]);
+    expect(readPendingStateRaw(resumed.manager.getSessionId()).observationBatches).toHaveLength(1);
+  });
+
+  test.each([
+    ["reflector", "save"],
+    ["dropper", "save"],
+    ["reflector", "model"],
+    ["dropper", "model"],
+  ] as const)("manual %s retries only model failures (%s error)", async (stage, failure) => {
+    const h = history();
+    h.runtime.config.compaction = "manual";
+    h.runtime.config.reflectAfterTokens = 1;
+    h.runtime.config.observationsPoolMaxTokens = 1;
+    const source = h.source("MANUAL-STAGE-WRITE-FAILURE");
+    const sessionId = h.manager.getSessionId();
+    const obs = observation("aaaaaaaaaaaa", { sourceEntryIds: [source] });
+    const ref = reflection("bbbbbbbbbbbb", [obs.id]);
+    const { savePendingObservation, savePendingReflection } = await import("../src/om/pending.js");
+    savePendingObservation(sessionId, { coversUpToId: source, data: { observations: [obs] } });
+    // Skip the reflector in the dropper case so its save is the first failure.
+    if (stage === "dropper")
+      savePendingReflection(sessionId, { coversUpToId: source, data: { reflections: [ref] } });
+    const before = readPendingStateRaw(sessionId);
+    const pendingFile = join(cursorTestDir, "pi-blackhole", `${sessionId}-pending.json`);
+    const savedFile = pendingFile + ".saved";
+    const agent = stage === "reflector" ? agents.runReflector : agents.runDropper;
+    const result = stage === "reflector" ? [ref] : [obs.id];
+    agent.mockResolvedValue(result);
+    if (failure === "model") agent.mockRejectedValueOnce(new Error("model unavailable"));
+    else
+      agent.mockImplementationOnce(async () => {
+        // Block persistence only after the stage has read its required inputs.
+        renameSync(pendingFile, savedFile);
+        mkdirSync(pendingFile);
+        return result;
+      });
+    const modelFailure = vi.spyOn(h.runtime, "recordRetryableError");
+    try {
+      await h.run();
+      expect(agent).toHaveBeenCalledTimes(failure === "save" ? 1 : 2);
+      if (failure === "save") {
+        expect(modelFailure).not.toHaveBeenCalled();
+        expect(h.notify).toHaveBeenCalledWith(
+          expect.stringContaining(`Observational memory: ${stage} failed:`),
+          "warning",
+        );
+        expect(h.runtime.cursors[stage]?.state).not.toBe("recorded");
+      } else {
+        expect(modelFailure).toHaveBeenCalledTimes(1);
+        expect(h.runtime.cursors[stage]?.state).toBe("recorded");
+      }
+    } finally {
+      modelFailure.mockRestore();
+      if (existsSync(savedFile)) {
+        rmSync(pendingFile, { recursive: true, force: true });
+        renameSync(savedFile, pendingFile);
+      }
+    }
+    if (failure === "save") expect(readPendingStateRaw(sessionId)).toEqual(before);
+  });
+
+  test.each(["empty", "observations"])(
+    "pauses after a real failed %s progress write and resumes from disk",
+    async (outcome) => {
+      const h = history();
+      const source = h.source("DISK-FAILURE-WORK");
+      h.queue(source);
+      if (outcome === "observations")
+        agents.runObserver.mockImplementation(async (input) => recordObservations(input));
+      const append = h.pi.appendEntry;
+      h.pi.appendEntry = (type, data) => {
+        if (type !== "om.observer.catch-up.progress") return append(type, data);
+        // Exercise Pi's actual append-before-persist behavior, not a pre-append throw.
+        renameSync(h.file, h.file + ".backup");
+        mkdirSync(h.file);
+        try {
+          append(type, data);
+        } finally {
+          rmSync(h.file, { recursive: true });
+          renameSync(h.file + ".backup", h.file);
+        }
+      };
+      await h.run();
+      expect(h.runtime.memoryWritesPaused).toBe(true);
+      expect(h.notify).toHaveBeenCalledWith(
+        expect.stringContaining("reopen the session from disk"),
+        "warning",
+      );
+      expect(h.pending()).toEqual([]); // Pi's phantom in-memory completion is NOT durable.
+      const resumed = history(SessionManager.open(h.file, sessionDir));
+      expect(resumed.pending()).toHaveLength(1);
+      h.runtime.lastConsolidationErrorAt = undefined;
+      await h.run();
+      expect(agents.runObserver).toHaveBeenCalledTimes(1);
+      await resumed.run();
+      expect(agents.runObserver).toHaveBeenCalledTimes(2);
+      expect(resumed.pending()).toEqual([]);
+    },
+  );
+
+  test.each(["start", "end", "progress"])(
+    "keeps a missing %s checkpoint unresolved on disk",
+    async (missing) => {
+      const h = history();
+      const source = h.source("REACHABLE");
+      const { compactionId } = h.queue(
+        missing === "start" ? "absent" : source,
+        missing === "end" ? "absent" : source,
+      );
+      if (missing === "progress")
+        h.manager.appendCustomEntry("om.observer.catch-up.progress", {
+          version: 1,
+          compactionId,
+          nextSourceId: "absent",
+        });
+      const before = h.manager.getBranch();
+      await h.run();
+      expect(agents.runObserver).not.toHaveBeenCalled();
+      expect(h.notify).toHaveBeenCalledWith(
+        expect.stringContaining("source is missing"),
+        "warning",
+      );
+      expect(SessionManager.open(h.file, sessionDir).getBranch()).toEqual(before);
+      expect(h.pending()).toHaveLength(1);
+    },
+  );
+
+  test.each(["start", "end", "progress"])(
+    "an unreachable %s does not block a later valid job",
+    async (missing) => {
+      const h = history();
+      const source = h.source("LATER-VALID-WORK");
+      const bad = h.queue(
+        missing === "start" ? "absent" : source,
+        missing === "end" ? "absent" : source,
+      );
+      if (missing === "progress")
+        h.manager.appendCustomEntry("om.observer.catch-up.progress", {
+          version: 1,
+          compactionId: bad.compactionId,
+          nextSourceId: "absent",
+        });
+      h.queue(source);
+      await h.run();
+      expect(observerChunkArg().allowedSourceEntryIds).toEqual([source]);
+      expect(h.pending().map(({ job }) => job.compactionId)).toEqual([bad.compactionId]);
+    },
+  );
+
+  test("warns once for unchanged unreachable work even after retry cooldown expires", async () => {
+    const h = history();
+    h.queue("absent");
+    await h.run();
+    h.runtime.lastConsolidationErrorAt = undefined;
+    await h.run();
+    expect(
+      h.notify.mock.calls.filter(([message]) => message.includes("source is missing")),
+    ).toHaveLength(1);
+  });
+
+  test("an in-flight task hands off to queued work once it settles", async () => {
+    const h = history();
+    let release: () => void = () => {
+      throw new Error("gate not armed");
+    };
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const prior = h.runtime.launchConsolidationTask(h.ctx, () => gate);
+    const source = h.source("QUEUED-DURING-RUN");
+    h.queue(source);
+    maybeLaunchConsolidation(h.pi, h.runtime, h.ctx);
+    maybeLaunchConsolidation(h.pi, h.runtime, h.ctx);
+    release();
+    await prior;
+    await vi.waitFor(() => expect(agents.runObserver).toHaveBeenCalledTimes(1));
+    await h.runtime.consolidationPromise;
+    expect(observerChunkArg().allowedSourceEntryIds).toEqual([source]);
+    expect(h.pending()).toEqual([]);
+  });
+
+  test("tree navigation discards an observer result belonging to the old leaf", async () => {
+    const h = history();
+    const source = h.source("OLD-LEAF");
+    const { compactionId } = h.queue(source);
+    let release: () => void = () => {
+      throw new Error("observer not armed");
+    };
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    agents.runObserver.mockImplementationOnce(async (input) => {
+      await gate;
+      return recordObservations(input);
+    });
+    const run = h.run();
+    await vi.waitFor(() => expect(agents.runObserver).toHaveBeenCalledTimes(1));
+    h.runtime.invalidateSessionTree();
+    h.manager.branch(compactionId);
+    const newLeaf = h.source("NEW-LEAF");
+    release();
+    await run;
+    expect(h.manager.getLeafId()).toBe(newLeaf);
+    expect(h.manager.getBranch().filter((entry) => entry.type === "custom")).toEqual([]);
+  });
+
+  test("migrates every visible legacy job once and leaves sibling paths recoverable", async () => {
+    const h = history();
+    const first = h.source("LEGACY-FIRST");
+    const through = h.source("LEGACY-SECOND");
+    const anchor = h.manager.appendCompaction("legacy anchor", undefined, 1);
+    const sidecar = join(cursorTestDir, "pi-blackhole", `${h.manager.getSessionId()}-pending.json`);
+    mkdirSync(join(cursorTestDir, "pi-blackhole"), { recursive: true });
+    writeFileSync(
+      sidecar,
+      JSON.stringify({
+        observerCatchUpRanges: [
+          { branchId: anchor, fromId: first, throughId: first },
+          { fromId: through, throughId: through },
+        ],
+      }),
+    );
+    await h.run();
+    expect(agents.runObserver.mock.calls.map(([input]) => input.allowedSourceEntryIds)).toEqual([
+      [first],
+      [through],
+    ]);
+    await h.run();
+    expect(agents.runObserver).toHaveBeenCalledTimes(2);
+    h.manager.branch(anchor); // no migration records on this sibling path
+    h.runtime.invalidateSessionTree();
+    await h.run();
+    expect(
+      agents.runObserver.mock.calls.slice(2).map(([input]) => input.allowedSourceEntryIds),
+    ).toEqual([[first], [through]]);
+    expect(readPendingStateRaw(h.manager.getSessionId()).observerCatchUpRanges).toHaveLength(2);
+  });
+});
+
+describe("ordinary observer cursor lifecycle", () => {
+  test.each(["summary", "older"])(
+    "manual pending coverage at %s skips only the matching chunk",
+    async (coversUpToId) => {
+      const fixture = makePipelineFixture({
+        observeAfterTokens: 1,
+        entries: [smallSource("older"), smallSource("summary")],
+      });
+      fixture.runtime.config.compaction = "manual";
+      const { savePendingObservation } = await import("../src/om/pending.js");
+      savePendingObservation("cursor-session", { coversUpToId, data: { observations: [] } });
+      await fixture.run();
+      expect(agents.runObserver).toHaveBeenCalledTimes(coversUpToId === "summary" ? 0 : 1);
+    },
+  );
+
   test("never observes below threshold, then covers every accumulated source entry", async () => {
     const fixture = makePipelineFixture({ observeAfterTokens: 5_000 });
-
     for (let cycle = 0; cycle < 5; cycle += 1) {
       fixture.entries.push(smallSource(`small-${cycle}`));
       await fixture.run();
       expect(agents.runObserver).not.toHaveBeenCalled();
-      // Nothing measured yet: no cursor may claim the small additions as done.
       expect(fixture.runtime.getCursor("observer")).toBeUndefined();
     }
-
     const lowTokens = fixture.entries.map((entry) => entry.id);
     fixture.entries.push(rawMessage("big-1", `BIG-1 ${"y".repeat(40_000)}`));
     await fixture.run();
-
     expect(agents.runObserver).toHaveBeenCalledTimes(1);
-    const input = observerChunkArg();
-    // The earliest small addition is still observed once the threshold is crossed.
-    expect(input.chunk).toContain("SMALL-small-0");
-    expect(input.chunk).toContain("BIG-1");
-    expect(input.allowedSourceEntryIds).toEqual([...lowTokens, "big-1"]);
-    // Empty outcome: coverage advances to the last measured source entry.
+    expect(observerChunkArg().allowedSourceEntryIds).toEqual([...lowTokens, "big-1"]);
     expect(fixture.runtime.getCursor("observer")).toEqual({ entryId: "big-1", state: "empty" });
   });
 
@@ -963,42 +1853,21 @@ describe("repeated consolidation pipeline cycles", () => {
     await fixture.run();
     expect(agents.runObserver).toHaveBeenCalledTimes(1);
     expect(fixture.runtime.getCursor("observer")).toEqual({ entryId: "big-1", state: "empty" });
-
-    // Below threshold again: the not-due branch anchors on measured coverage only.
     fixture.entries.push(smallSource("pending"));
     await fixture.run();
     expect(agents.runObserver).toHaveBeenCalledTimes(1);
     expect(fixture.runtime.getCursor("observer")).toEqual({ entryId: "big-1", state: "not_due" });
-
     fixture.entries.push(rawMessage("big-2", `BIG-2 ${"z".repeat(40_000)}`));
     await fixture.run();
-
     expect(agents.runObserver).toHaveBeenCalledTimes(2);
-    const input = observerChunkArg(1);
-    // The small addition skipped by the not-due cycle is observed, not dropped.
-    expect(input.chunk).toContain("SMALL-pending");
-    expect(input.chunk).toContain("BIG-2");
-    expect(input.allowedSourceEntryIds).toEqual(["pending", "big-2"]);
+    expect(observerChunkArg(1).allowedSourceEntryIds).toEqual(["pending", "big-2"]);
   });
 
   test("records coverage from a recorded outcome and does not re-observe it", async () => {
     const fixture = makePipelineFixture({ observeAfterTokens: 5_000 });
-    agents.runObserver.mockResolvedValue({
-      observations: [
-        {
-          id: "aaaaaaaaaaaa",
-          content: "Coverage for the first measured chunk",
-          timestamp: "2026-05-02T10:00:00.000Z",
-          relevance: "medium",
-          sourceEntryIds: ["big-1"],
-          supportingObservationIds: ["aaaaaaaaaaaa"],
-          tokenCount: 6,
-        },
-      ],
-    });
+    agents.runObserver.mockImplementation(async (input) => recordObservations(input));
     fixture.entries.push(rawMessage("big-1", `BIG-1 ${"y".repeat(40_000)}`));
     await fixture.run();
-
     expect(agents.runObserver).toHaveBeenCalledTimes(1);
     expect(fixture.runtime.getCursor("observer")).toEqual({ entryId: "big-1", state: "recorded" });
     const recorded = fixture.entries.filter(
@@ -1006,7 +1875,6 @@ describe("repeated consolidation pipeline cycles", () => {
     );
     expect(recorded).toHaveLength(1);
     expect(recorded[0]?.data).toMatchObject({ coversUpToId: "big-1" });
-
     await fixture.run();
     expect(agents.runObserver).toHaveBeenCalledTimes(1);
   });
@@ -1018,30 +1886,32 @@ describe("repeated consolidation pipeline cycles", () => {
     ];
     const first = makePipelineFixture({ observeAfterTokens: 5_000, entries });
     await first.run();
-
     expect(agents.runObserver).not.toHaveBeenCalled();
-    // The compaction anchor keeps the below-threshold addition pending.
     expect(first.runtime.getCursor("observer")).toEqual({ entryId: "c0", state: "not_due" });
     first.runtime.saveCursorsToPending("cursor-session");
-
-    // A fresh runtime restores the persisted cursor before the next cycle.
     const restored = makePipelineFixture({ observeAfterTokens: 5_000, entries });
     restored.runtime.loadCursorsFromPending("cursor-session");
     expect(restored.runtime.getCursor("observer")).toEqual({ entryId: "c0", state: "not_due" });
-
     entries.push(rawMessage("big-1", `BIG-1 ${"y".repeat(40_000)}`));
     await restored.run();
-
     expect(agents.runObserver).toHaveBeenCalledTimes(1);
-    const input = observerChunkArg();
-    expect(input.chunk).toContain("SMALL-m1");
-    expect(input.chunk).toContain("BIG-1");
-    expect(input.allowedSourceEntryIds).toEqual(["m1", "big-1"]);
+    expect(observerChunkArg().allowedSourceEntryIds).toEqual(["m1", "big-1"]);
     expect(restored.runtime.getCursor("observer")).toEqual({ entryId: "big-1", state: "empty" });
   });
 });
 
 describe("capSourceEntriesToTokens", () => {
+  test("catch-up cap retains oldest entries before the first over-budget entry", () => {
+    const entries = [smallSource("first"), smallSource("middle"), smallSource("last")];
+    expect(capCatchUp(entries, 70).map((entry) => entry.id)).toEqual(["first", "middle"]);
+  });
+
+  test("catch-up cap retains an oversized first entry", () => {
+    expect(
+      capCatchUp([smallSource("first"), smallSource("next")], 1).map((entry) => entry.id),
+    ).toEqual(["first"]);
+  });
+
   test("custom_message with string content contributes tokens (not 0)", () => {
     // Before the fix, custom_message counted as 0 tokens, so the cap
     // would keep all of these. After the fix, each custom_message is sized

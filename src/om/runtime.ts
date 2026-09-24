@@ -22,7 +22,8 @@ import {
 import { isDeterministicError } from "./retryable-error.js";
 import { readPendingCursors, writePendingCursors } from "./pending.js";
 import type { PendingOMState } from "./pending.js";
-import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
+import type { ConsolidationCtx } from "./consolidation.js";
+import type { ExtensionAPI, ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type { AuthResult } from "@earendil-works/pi-ai";
 import { debugLog } from "./debug-log.js";
 
@@ -143,7 +144,24 @@ export class Runtime {
   configLoaded = false;
   consolidationInFlight = false;
   consolidationPromise: Promise<void> | null = null;
+  consolidationRelaunchPending = false;
+  consolidationRelaunchCtx?: ConsolidationCtx;
   consolidationPhase: ConsolidationPhase | undefined;
+  /** Pi may retain a failed disk append in memory. Stop OM until the session is reopened. */
+  memoryWritesPaused = false;
+
+  appendMemoryEntry(pi: ExtensionAPI, customType: string, data: unknown): void {
+    if (this.memoryWritesPaused)
+      throw new Error("OM paused; restart Pi and reopen the session from disk");
+    try {
+      pi.appendEntry(customType, data);
+    } catch (error) {
+      this.memoryWritesPaused = true;
+      throw new Error(
+        `Session history write failed; OM paused. Restart Pi and reopen the session from disk: ${String(error)}`,
+      );
+    }
+  }
   /**
    * Models that failed in the current consolidation stage (in-memory only).
    * Used when cooldownHours is 0 — avoids disk writes while still letting
@@ -183,6 +201,8 @@ export class Runtime {
   staleCtxWarnedSessions: Set<string> = new Set();
   resolveFailureNotified = false;
   lastObserverError: string | undefined;
+  /** Suppress repeated warnings for the same set of unreachable history jobs. */
+  unreachableCatchUpWarning: string | undefined;
   lastReflectorError: string | undefined;
   lastDropperError: string | undefined;
   /** Provider -> epoch ms of the last stale availability re-check. */
@@ -265,6 +285,20 @@ export class Runtime {
       captured.generation === this.generation &&
       (this.sessionIdentity === undefined || captured.sessionIdentity === this.sessionIdentity)
     );
+  }
+
+  /**
+   * Invalidate deferred work before or after same-session tree navigation.
+   * Pi keeps the session id for `/tree`, so session_start alone cannot prevent
+   * an observer result from being appended to the newly selected leaf.
+   */
+  invalidateSessionTree(): void {
+    if (this.disposed) return;
+    this.lifecycleController.abort();
+    this.lifecycleController = new AbortController();
+    this.generation += 1;
+    this.cursors = {};
+    this.cursorsLoadedSessionId = undefined;
   }
 
   /**

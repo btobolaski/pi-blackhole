@@ -75,7 +75,7 @@ src/
     consolidation.ts          # Observer → Reflector → Dropper pipeline
     compaction-trigger.ts     # agent_end → auto-compaction
     config.ts                 # OM config re-exports
-    pending.ts                # Per-session pending state (manual mode)
+    pending.ts                # Per-session pending state (manual mode + legacy catch-up read)
     model-budget.ts           # Token budget / context window estimation
     cooldown.ts               # Model cooldown persistence
     provider-stream.ts        # Provider stream bridge for jiti agents
@@ -135,13 +135,16 @@ The extension intercepts two lifecycle events and provides three user-facing com
 
 ### Lifecycle hooks
 
-The extension registers five lifecycle hooks via `pi.on()`:
+The extension registers lifecycle hooks via `pi.on()`:
 
 - **`agent_start`** — Triggers [[observational-memory#Consolidation pipeline|consolidation]] check (are any workers due?) and aborts pending auto-compaction from the previous turn.
 - **`turn_end`** — Same consolidation check as `agent_start`.
 - **`agent_end`** — Evaluates [[observational-memory#Compaction trigger|auto-compaction threshold]]. If tokens exceed the effective threshold — `compactAfterTokens`, or a context-window-derived `compactAfterRatio` / `compactReserveTokens` value — schedules `ctx.compact()` after the agent becomes idle.
 - **`session_before_compact`** — The central hook. Runs VCC `compile()` and appends OM content. See [[vcc-compaction#before-compact hook]].
 - **`session_compact_failed`** — Failure visibility for aborted/failed compactions: structured trace, `compactInFlight` reset, overflow-retry notification, and attribution fix. Available from pi 0.84.3. See [[observational-memory#Compaction trigger#Compact-failure handling]].
+- **`session_before_tree` / `session_tree`** — Invalidates deferred OM work before navigation and re-evaluates the newly selected path, preventing a stale observer from appending to the wrong leaf.
+
+Separately, a successful `/blackhole` appends an inert branch-local observer job to raw session history and starts background OM catch-up; the command returns without waiting for the observer. Progress and completion records are also append-only custom entries, so Pi forks inherit only records on their copied path.
 
 ## Key types
 
@@ -206,7 +209,7 @@ interface Reflection {
 
 ### Runtime
 
-Central OM runtime managing model resolution, consolidation lifecycle, cooldown integration, and error tracking. Defined in [[src/om/runtime.ts]]. Holds in-memory state: config, cursors, error timestamps, in-flight flags, compaction stats.
+Central OM runtime managing model resolution, consolidation lifecycle, cooldown integration, and error tracking. Defined in [[src/om/runtime.ts]]. Holds in-memory state: config, cursors, error timestamps, in-flight flags, deferred relaunch context, memory-write pause, and compaction stats.
 
 ## Provider stream bridge
 

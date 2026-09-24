@@ -7,6 +7,10 @@
 export const OM_OBSERVATIONS_RECORDED = "om.observations.recorded";
 export const OM_REFLECTIONS_RECORDED = "om.reflections.recorded";
 export const OM_OBSERVATIONS_DROPPED = "om.observations.dropped";
+/** Inert, branch-local observer work created after /blackhole compaction. */
+export const OM_OBSERVER_CATCH_UP_JOB = "om.observer.catch-up.job";
+/** Append-only checkpoints for an observer catch-up job. */
+export const OM_OBSERVER_CATCH_UP_PROGRESS = "om.observer.catch-up.progress";
 export const OM_FOLDED = "om.folded";
 
 export const RELEVANCE_VALUES = ["low", "medium", "high", "critical"] as const;
@@ -57,6 +61,25 @@ export type ReflectionsRecordedEntryData = {
 export type ObservationsDroppedEntryData = {
   observationIds: string[];
   coversUpToId: string;
+};
+
+export type ObserverCatchUpJobData = {
+  version: 1;
+  /** The compaction that created this branch-local unit of work. */
+  compactionId: string;
+  fromId: string;
+  throughId: string;
+  /** Initial body offset when importing a partially delivered legacy job. */
+  offset?: number;
+};
+
+export type ObserverCatchUpProgressData = {
+  version: 1;
+  compactionId: string;
+  nextSourceId?: string;
+  /** UTF-16 offset into nextSourceId's serialized body. */
+  offset?: number;
+  complete?: true;
 };
 
 export type MemoryDetails = {
@@ -142,6 +165,32 @@ export function isReflectionsRecordedData(value: unknown): value is ReflectionsR
 export function isObservationsDroppedData(value: unknown): value is ObservationsDroppedEntryData {
   if (!isPlainRecord(value)) return false;
   return isNonEmptyStringArray(value.observationIds) && isNonEmptyString(value.coversUpToId);
+}
+
+export function isObserverCatchUpJobData(value: unknown): value is ObserverCatchUpJobData {
+  if (!isPlainRecord(value)) return false;
+  return (
+    value.version === 1 &&
+    isNonEmptyString(value.compactionId) &&
+    isNonEmptyString(value.fromId) &&
+    isNonEmptyString(value.throughId) &&
+    (value.offset === undefined ||
+      (typeof value.offset === "number" && Number.isSafeInteger(value.offset) && value.offset >= 0))
+  );
+}
+
+export function isObserverCatchUpProgressData(
+  value: unknown,
+): value is ObserverCatchUpProgressData {
+  if (!isPlainRecord(value)) return false;
+  if (value.version !== 1 || !isNonEmptyString(value.compactionId)) return false;
+  if (value.complete === true)
+    return value.nextSourceId === undefined && value.offset === undefined;
+  return (
+    isNonEmptyString(value.nextSourceId) &&
+    (value.offset === undefined ||
+      (typeof value.offset === "number" && Number.isSafeInteger(value.offset) && value.offset >= 0))
+  );
 }
 
 export function isMemoryDetails(value: unknown): value is MemoryDetails {

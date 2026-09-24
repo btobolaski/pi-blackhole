@@ -4,10 +4,16 @@ import { foldLedger } from "./fold.js";
 import {
   OM_OBSERVATIONS_DROPPED,
   OM_OBSERVATIONS_RECORDED,
+  OM_OBSERVER_CATCH_UP_JOB,
+  OM_OBSERVER_CATCH_UP_PROGRESS,
   OM_REFLECTIONS_RECORDED,
   isObservationsRecordedData,
+  isObserverCatchUpJobData,
+  isObserverCatchUpProgressData,
   isReflectionsRecordedData,
   type Entry,
+  type ObserverCatchUpJobData,
+  type ObserverCatchUpProgressData,
   type Observation,
   type Reflection,
   type V3MemoryCustomType,
@@ -191,6 +197,54 @@ export function findLastCompactionIndex(entries: Entry[]): number {
     if (entries[i].type === "compaction") return i;
   }
   return -1;
+}
+
+export type ObserverCatchUp = {
+  job: ObserverCatchUpJobData;
+  progress?: ObserverCatchUpProgressData;
+};
+
+/** Jobs and checkpoints inherit the active path's fork semantics, not a session-id sidecar. */
+export function unfinishedObserverCatchUps(entries: Entry[]): ObserverCatchUp[] {
+  const jobs = new Map<string, ObserverCatchUp>();
+  for (const entry of entries) {
+    if (entry.type !== "custom") continue;
+    if (entry.customType === OM_OBSERVER_CATCH_UP_JOB && isObserverCatchUpJobData(entry.data)) {
+      if (!jobs.has(entry.data.compactionId))
+        jobs.set(entry.data.compactionId, { job: entry.data });
+    } else if (
+      entry.customType === OM_OBSERVER_CATCH_UP_PROGRESS &&
+      isObserverCatchUpProgressData(entry.data)
+    ) {
+      const stored = jobs.get(entry.data.compactionId);
+      if (stored && !stored.progress?.complete) stored.progress = entry.data;
+    }
+  }
+  return [...jobs.values()].filter(({ progress }) => !progress?.complete);
+}
+
+export function isObserverCatchUpReachable(
+  entries: Entry[],
+  { job, progress }: ObserverCatchUp,
+): boolean {
+  const start = entryIndexForId(entries, job.fromId);
+  const next = entryIndexForId(entries, progress?.nextSourceId ?? job.fromId);
+  const through = entryIndexForId(entries, job.throughId);
+  return (
+    start >= 0 &&
+    next >= start &&
+    through >= next &&
+    isSourceEntry(entries[start]) &&
+    isSourceEntry(entries[next]) &&
+    isSourceEntry(entries[through])
+  );
+}
+
+/** Invalid jobs remain unresolved, but cannot starve later reachable work. */
+export function activeObserverCatchUp(entries: Entry[]): ObserverCatchUp | undefined {
+  return unfinishedObserverCatchUps(entries).find((job) =>
+    isObserverCatchUpReachable(entries, job),
+  );
 }
 
 /**

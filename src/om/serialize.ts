@@ -2,7 +2,7 @@
  * Serialize branch entries and render source-addressed chunks.
  *
  * Upstream: https://github.com/elpapi42/pi-observational-memory (src/serialize.ts)
- * Unmodified.
+ * Modified: exports the source-block separator for bounded observer packing.
  */
 import type { Message, TextContent, ToolResultMessage } from "@earendil-works/pi-ai";
 
@@ -188,6 +188,8 @@ function sourceEntryTimestamp(entry: RenderableEntry): string {
   return formatTimestamp(entry.timestamp);
 }
 
+export const SOURCE_ENTRY_SEPARATOR = "\n\n";
+
 export function serializeSourceAddressedBranchEntries(
   entries: RenderableEntry[],
 ): SourceAddressedSerialization {
@@ -202,7 +204,7 @@ export function serializeSourceAddressedBranchEntries(
     sourceEntryTimestamps[entry.id] = sourceEntryTimestamp(entry);
     blocks.push(`[Source entry id: ${entry.id}]\n${rendered}`);
   }
-  return { text: blocks.join("\n\n"), sourceEntryIds, sourceEntryTimestamps };
+  return { text: blocks.join(SOURCE_ENTRY_SEPARATOR), sourceEntryIds, sourceEntryTimestamps };
 }
 
 function renderRecallMessage(entry: RenderableEntry): string | null {

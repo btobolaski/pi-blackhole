@@ -13,11 +13,20 @@ import {
   notifyMigrationReminder,
   formatCompactionStats,
 } from "../hooks/before-compact";
-import { readPendingState, clearPendingState, hasPendingData } from "../om/pending.js";
 import {
+  clearPendingBatches,
+  migrateLegacyObserverCatchUp,
+  readPendingState,
+} from "../om/pending.js";
+import {
+  entryIndexForId,
+  findLastCompactionIndex,
+  isSourceEntry,
+  OM_OBSERVER_CATCH_UP_JOB,
   OM_OBSERVATIONS_DROPPED,
   OM_OBSERVATIONS_RECORDED,
   OM_REFLECTIONS_RECORDED,
+  type Entry,
 } from "../om/ledger/index.js";
 
 export const registerPiVccCommand = (pi: ExtensionAPI, runtime: Runtime) => {
@@ -140,47 +149,122 @@ export const registerPiVccCommand = (pi: ExtensionAPI, runtime: Runtime) => {
       // that isn't a known subcommand is treated as follow-up text.
       const followUpPrompt = trimmed ? trimmed : null;
 
+      runtime.ensureConfig(ctx.cwd, (message) => ctx.ui.notify(message, "warning"));
+      const memoryEnabled = runtime.config.memory !== false;
+      const pending =
+        memoryEnabled || runtime.config.compaction === "manual"
+          ? readPendingState(sessionId)
+          : undefined;
       // If compaction is manual (or legacy noAutoCompact): flush pending OM entries
       // into the branch before compacting so the summary includes accumulated memory.
-      if (runtime.config.compaction === "manual" && hasPendingData(sessionId)) {
-        const pending = readPendingState(sessionId);
-        // Write all accumulated observation batches (or latest single batch
-        // as fallback for legacy pending.json without batch arrays).
-        const obsBatches = pending.observationBatches?.length
-          ? pending.observationBatches
-          : pending.observation
-            ? [pending.observation]
-            : [];
-        for (const batch of obsBatches) {
-          pi.appendEntry(OM_OBSERVATIONS_RECORDED, batch.data);
+      if (runtime.config.compaction === "manual" && pending) {
+        try {
+          // Write all accumulated observation batches (or latest single batch
+          // as fallback for legacy pending.json without batch arrays).
+          const obsBatches = pending.observationBatches?.length
+            ? pending.observationBatches
+            : pending.observation
+              ? [pending.observation]
+              : [];
+          for (const batch of obsBatches) {
+            runtime.appendMemoryEntry(pi, OM_OBSERVATIONS_RECORDED, batch.data);
+          }
+          // Write all accumulated reflection batches (or latest single batch
+          // as fallback for legacy pending.json without batch arrays).
+          const reflBatches = pending.reflectionBatches?.length
+            ? pending.reflectionBatches
+            : pending.reflection
+              ? [pending.reflection]
+              : [];
+          for (const batch of reflBatches) {
+            runtime.appendMemoryEntry(pi, OM_REFLECTIONS_RECORDED, batch.data);
+          }
+          // Write all accumulated dropper batches (or latest single batch
+          // as fallback for legacy pending.json without batch arrays).
+          const dropBatches = pending.droppedBatches?.length
+            ? pending.droppedBatches
+            : pending.dropped
+              ? [pending.dropped]
+              : [];
+          for (const batch of dropBatches) {
+            runtime.appendMemoryEntry(pi, OM_OBSERVATIONS_DROPPED, batch.data);
+          }
+          if (obsBatches.length || reflBatches.length || dropBatches.length) {
+            if (clearPendingBatches(sessionId)) {
+              ctx.ui.notify("Observational memory: pending entries flushed", "info");
+            } else {
+              ctx.ui.notify(
+                "Observational memory: pending state or stale backup could not be cleared; check permissions",
+                "warning",
+              );
+            }
+          }
+        } catch (error) {
+          ctx.ui.notify(
+            `Observational memory: pending entries not flushed; ${String(error)}`,
+            "warning",
+          );
         }
-        // Write all accumulated reflection batches (or latest single batch
-        // as fallback for legacy pending.json without batch arrays).
-        const reflBatches = pending.reflectionBatches?.length
-          ? pending.reflectionBatches
-          : pending.reflection
-            ? [pending.reflection]
-            : [];
-        for (const batch of reflBatches) {
-          pi.appendEntry(OM_REFLECTIONS_RECORDED, batch.data);
-        }
-        // Write all accumulated dropper batches (or latest single batch
-        // as fallback for legacy pending.json without batch arrays).
-        const dropBatches = pending.droppedBatches?.length
-          ? pending.droppedBatches
-          : pending.dropped
-            ? [pending.dropped]
-            : [];
-        for (const batch of dropBatches) {
-          pi.appendEntry(OM_OBSERVATIONS_DROPPED, batch.data);
-        }
-        clearPendingState(sessionId);
-        ctx.ui.notify("Observational memory: pending entries flushed", "info");
       }
 
+      const branch = memoryEnabled
+        ? (ctx.sessionManager.getBranch?.() as Entry[] | undefined)
+        : undefined;
+      const lastCompactionIdx = branch ? findLastCompactionIndex(branch) : -1;
+      const keptIdx =
+        branch && lastCompactionIdx >= 0
+          ? entryIndexForId(branch, branch[lastCompactionIdx].firstKeptEntryId)
+          : -1;
+      const firstSourceIdx = keptIdx >= 0 ? keptIdx : lastCompactionIdx + 1;
+      // A cursor/marker cannot prove contiguous older coverage. Capture the
+      // complete retained tail; the history job survives model projection.
+      const currentRange = (() => {
+        if (!branch) return undefined;
+        const sources = branch.slice(firstSourceIdx).filter(isSourceEntry);
+        const first = sources[0];
+        const last = sources.at(-1);
+        return first && last ? { fromId: first.id, throughId: last.id } : undefined;
+      })();
       ctx.compact({
         customInstructions: PI_VCC_COMPACT_INSTRUCTION,
         onComplete: () => {
+          if (memoryEnabled) {
+            try {
+              const postBranch = ctx.sessionManager.getBranch?.() as Entry[] | undefined;
+              const compactionIndex = postBranch ? findLastCompactionIndex(postBranch) : -1;
+              if (!postBranch || compactionIndex < 0) {
+                ctx.ui.notify(
+                  "Observational memory: post-compaction branch anchor unavailable; catch-up not queued",
+                  "warning",
+                );
+              } else {
+                migrateLegacyObserverCatchUp(postBranch, readPendingState(sessionId), (job) =>
+                  runtime.appendMemoryEntry(pi, OM_OBSERVER_CATCH_UP_JOB, job),
+                );
+                if (currentRange) {
+                  runtime.appendMemoryEntry(pi, OM_OBSERVER_CATCH_UP_JOB, {
+                    version: 1,
+                    compactionId: postBranch[compactionIndex].id,
+                    ...currentRange,
+                  });
+                }
+                // Existing jobs keep their own progress; compaction does not
+                // remove them. Relaunch even when there is no new tail to queue.
+                void import("../om/consolidation.js")
+                  .then(({ maybeLaunchConsolidation }) =>
+                    maybeLaunchConsolidation(pi, runtime, ctx),
+                  )
+                  .catch((error: unknown) => {
+                    runtime.recordConsolidationStageError?.(ctx, "observer", error);
+                  });
+              }
+            } catch (error) {
+              ctx.ui.notify(
+                `Observational memory: catch-up not queued; ${String(error)}`,
+                "warning",
+              );
+            }
+          }
           const stats = runtime.compactionStats;
           if (stats) {
             ctx.ui.notify(formatCompactionStats(stats), "info");
@@ -193,7 +277,9 @@ export const registerPiVccCommand = (pi: ExtensionAPI, runtime: Runtime) => {
           if (followUpPrompt) {
             try {
               void Promise.resolve(pi.sendUserMessage(followUpPrompt)).catch(() => {});
-            } catch {}
+            } catch {
+              // The follow-up is optional; compaction already succeeded.
+            }
           }
         },
         onError: (err) => {

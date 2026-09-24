@@ -8,7 +8,7 @@ Three background workers run automatically when `memory: true` (default). Each u
 
 ### Observer
 
-Reads conversation since the last observation marker and extracts timestamped facts. Input capped to `observerChunkMaxTokens` newest-first. Runs most frequently.
+Reads conversation since the last observation marker and extracts timestamped facts. Input is normally capped to `observerChunkMaxTokens` newest-first; post-`/blackhole` catch-up instead offers the current pre-compaction tail oldest-first in bounded chunks. It may re-offer previously observed sources because normal newest-first coverage cannot prove that older sources were seen. Runs most frequently.
 
 The observer can call `record_observations` multiple times per run to work through a chunk incrementally. Observations include `sourceEntryIds` linking back to the conversation entries they were extracted from.
 
@@ -184,13 +184,13 @@ Coverage is recomputed every run from the live sets and follows a few load-beari
 
 ## Consolidation pipeline
 
-The consolidation pipeline runs Observer → Reflector → Dropper on `agent_start` and `turn_end` events. Defined in [[src/om/consolidation.ts]].
+The consolidation pipeline runs Observer → Reflector → Dropper on `agent_start` and `turn_end` events. A successful `/blackhole` queues a background observer catch-up without waiting for it; if consolidation is already running, a launch is attempted when that run ends; a retry cooldown or restart may defer it until the next trigger. Defined in [[src/om/consolidation.ts]].
 
 ### Trigger conditions
 
 `anyStageDue()` checks whether any worker should run:
 
-- **Observer due**: Tokens since last observation coverage ≥ `observeAfterTokens`
+- **Observer due**: Tokens since last observation coverage ≥ `observeAfterTokens`, or an unfinished post-`/blackhole` job is on the active branch (regardless of threshold)
 - **Reflector due**: Tokens since last reflection coverage ≥ `reflectAfterTokens` AND new observations exist
 - **Dropper due**: Pool ≥ `dropperPressureThreshold × reflectorInputMaxTokens` OR (new data exists AND pool ≥ 10% full)
 
@@ -204,7 +204,11 @@ In manual mode (`compaction: "manual"`), the branch has no OM markers — pendin
 2. **Reflector** — `runReflectorStage()`: collect new observations since last reflection, run reflector agent loop, append/save reflections
 3. **Dropper** — `runDropperStage()`: collect active observations, run dropper agent loop, append/save drops
 
-Each stage clears `failedInCycle` between stages. Cursor state is flushed to pending file after all stages complete.
+Observer catch-up drains its chunks before the Reflector and Dropper run once. Cursor state is still flushed to the pending file after all stages complete, but catch-up state is stored as inert custom entries on the raw session path: `/blackhole` appends one job identified by its compaction ID, and the observer appends progress (`nextSourceId` plus optional UTF-16 offset) or completion records. Pi compaction changes only the model projection; raw source entries and these records remain available through `getBranch()`.
+
+Jobs are resolved oldest-first from the active path. Each `/blackhole` queues only its current pre-compaction tail; existing jobs keep their own checkpoints across later compactions. Older, unqueued history is not backfilled. A Pi fork inherits only jobs and progress on its copied path; subsequent completion in one fork cannot complete its sibling's work. Jobs use CJK-aware bounded slices and restartable UTF-16 offsets without splitting surrogate pairs. No source-text snapshot or additional queue file is created.
+
+The guarantee is delivery to the observer, not extraction: a successful empty result advances progress too. Model failures use the existing fallback chain; exhausted candidates leave work unfinished. Missing/invalid source ranges warn once while unchanged and stay unresolved without blocking later valid jobs. A progress-write failure stops the pass instead of immediately retrying a healthy model. Because Pi may add a failed disk write to its in-memory history, a session-history append failure pauses OM: **restart Pi and reopen the session from disk before retrying**. Reloading only extensions is not sufficient to repair that in-memory tree. Persisted jobs resume on the next trigger after reopening. Observation and progress writes are not transactional, so replay can duplicate calls or observations. Compaction success reporting and its follow-up prompt are independent of catch-up failure. Durability follows Pi's own session persistence; ephemeral sessions do not survive restart.
 
 ### Cursor system
 
@@ -313,19 +317,20 @@ When `compaction: "manual"`, observations go to per-session disk buffers instead
 
 ### Pending state
 
-Each session gets its own `<sessionId>-pending.json` under `~/.pi/agent/pi-blackhole/`. Contains:
+Each session gets its own `<sessionId>-pending.json` under `~/.pi/agent/pi-blackhole/`. It contains manual-mode batches and pipeline cursors:
 
 - Latest observation/reflection/dropper results (replaced each run)
 - Accumulated batches (observationBatches, reflectionBatches, droppedBatches) for LLM context and flush
 - Pipeline cursors (persisted across restarts)
+- Legacy catch-up ranges, retained only for compatibility. Each visible legacy job is imported once per path, with its partial offset, before new work. Migration never clears the sidecar: another path may not contain the migration record yet. Completed history jobs prevent repeat import on that path.
 
 ### Flush on /blackhole
 
-When `/blackhole` runs in manual mode, pending entries are flushed to the branch via `pi.appendEntry()` and the file is cleared. This eliminates race conditions from concurrent sessions writing to a shared file.
+When `/blackhole` runs in manual mode, pending batches are flushed through the runtime's guarded session-history appender and removed from the file only after all appends succeed. A failed or paused append warns and retains the batches without blocking compaction; a history-write failure requires restarting Pi and reopening the session from disk. Cursors and legacy migration data survive the flush and a failed compaction. Branch-local catch-up jobs are already in session history, independent of the pending file. The file is removed only when no pending state remains.
 
 ### Stale backup
 
-Before each write, the current pending file is renamed to `<sessionId>-pending.stale.json` as backup. Best-effort — stale backup is optional.
+All nonempty pending-state writes replace the file atomically and report failures, so catch-up progress cannot advance past unsaved observations. Ordinary writes without legacy catch-up data copy the previous pending file to `<sessionId>-pending.stale.json` as an optional best-effort backup; a failed replacement leaves the original pending file intact. Manual `/blackhole` batch flush removes any older stale backup, so cleared observations are not left there.
 
 ## Render summary
 

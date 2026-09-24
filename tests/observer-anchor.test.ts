@@ -209,6 +209,19 @@ describe("runObserverStage anchor (issue #87)", () => {
     expect(input.allowedSourceEntryIds).toEqual(["post1"]);
   });
 
+  test("observes a retained tail before its appended compaction entry", async () => {
+    const entries = [
+      rawMessage("older", text("ALREADY-SUMMARIZED")),
+      rawMessage("kept", text("KEPT-SUMMARY")),
+      compactionEntry("c1", { firstKeptEntryId: "kept", summary: "folded" }),
+    ];
+    const runtime = makeRuntime(100);
+
+    await runStage(runtime, entries);
+
+    expect(observedInput().allowedSourceEntryIds).toEqual(["kept"]);
+  });
+
   test("observer still anchors to the last compaction entry when one exists", async () => {
     const entries = [
       rawMessage("pre1", text("PRE-COMPACTION")),

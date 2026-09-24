@@ -57,7 +57,7 @@ src/
 │   ├── consolidation.ts      # Worker orchestration (observer → reflector → dropper), fallback resolution, context window checks
 │   ├── runtime.ts             # Model resolution, cooldown integration, pipeline cursors, retry gate
 │   ├── cooldown.ts            # Cooldown persistence and expiry logic
-│   ├── pending.ts             # Per-session pending file management (manual compaction mode)
+│   ├── pending.ts             # Per-session manual batches, cursors, and read-only legacy catch-up migration
 │   ├── configure-overlay.ts   # The /blackhole configure TUI overlay — shows which keys are editable
 │   ├── model-budget.ts        # effectiveContextWindow() — context window override resolution order
 │   ├── debug-log.ts           # Debug logging (rotation, format)
@@ -155,7 +155,7 @@ If user picks Off, ask separately whether they also want to disable memory (`mem
 **Agent context:** Three workers, each with a different job and varying capability needs. The key insight is that workers don't need the session model's capability — they're doing structured extraction, synthesis, and pruning, not creative coding. Cheap/free models work great.
 
 Worker characteristics:
-- **Observer** — most frequent runner (every `observeAfterTokens` tokens). Reads conversation chunk (newest-first up to `observerChunkMaxTokens`) and extracts timestamped observations via an agent loop. Needs speed and structured extraction. A model with `thinking: "low"` helps it produce better structured output. Does NOT need deep reasoning.
+- **Observer** — most frequent runner (every `observeAfterTokens` tokens, or after `/blackhole` for unfinished session-history catch-up jobs). Reads conversation chunks (normally newest-first; post-compaction catch-up oldest-first, capped by `observerChunkMaxTokens`) and extracts timestamped observations via an agent loop. Needs speed and structured extraction. A model with `thinking: "low"` helps it produce better structured output. Does NOT need deep reasoning.
 - **Reflector** — runs less often. Takes new observations and existing reflection summaries (compacted to ~15% of `reflectorInputMaxTokens`) and synthesizes durable reflections. Benefits from stronger reasoning (`thinking: "low"` or `"medium"`).
 - **Dropper** — runs when the observation pool exceeds `observationsPoolMaxTokens` or at `dropperPressureThreshold` pressure. Prunes low-value observations while keeping reflections. Needs judgment — similar capability to reflector, but can use `thinking: "off"` since it's mainly prioritization.
 
@@ -524,7 +524,7 @@ These are preserved by `saveUnifiedConfig()` and ignored by the runtime. Good fo
 |------|---------|
 | `~/.pi/agent/pi-blackhole/pi-blackhole-config.json` | Main config |
 | `~/.pi/agent/pi-blackhole/pi-blackhole-cooldown.json` | Persisted model cooldowns (survives restarts) |
-| `~/.pi/agent/pi-blackhole/<sessionId>-pending.json` | Per-session pending state (manual compaction mode) |
+| `~/.pi/agent/pi-blackhole/<sessionId>-pending.json` | Per-session manual-mode batches, cursors, and legacy catch-up migration data; new catch-up jobs/progress live in Pi session history |
 | `~/.pi/agent/pi-blackhole/debug.ndjson` | Debug logging output (when `debugLog: true`). Rotates at 10 MB (renamed to `.1`, then overwritten). |
 | `{sessionDir}/memory-logs/{sessionId}_memory.jsonl` | OM worker usage log (when `usageLog: true`), in pi session-log format outside pi's session discovery. |
 | `/tmp/pi-blackhole-debug.json` | Debug snapshot (when `debug: true`) — overwritten each compaction |

@@ -2,7 +2,7 @@
 
 **Deterministic compaction + session-aware observational memory for [Pi](https://github.com/earendil-works/pi) — in one unified extension.**
 
-`/blackhole` replaces Pi's LLM-based `/compact` with an algorithmic structural summary — fast, zero-cost. Three background workers (Observer, Reflector, Dropper) capture durable facts and decisions that survive across compactions. Per-worker model fallback chains with persisted cooldowns. Manual flush mode. One JSON file to configure it all.
+`/blackhole` replaces Pi's LLM-based `/compact` with an algorithmic structural summary — fast, with no compaction-model call. Three background workers (Observer, Reflector, Dropper) capture durable facts and decisions that survive across compactions. Per-worker model fallback chains with persisted cooldowns. Manual flush mode. One JSON file to configure it all.
 
 ---
 
@@ -129,7 +129,7 @@ With the default `compactionEngine: "blackhole"`, blackhole's `session_before_co
 ### How does `/blackhole` compare to `/compact`?
 
 - `/compact` calls an LLM to write a free-form summary — costly, lossy, no memory layer.
-- `/blackhole` uses algorithmic section extraction (goals, files, commits, preferences…) **plus** injects observations and reflections from the session ledger. No LLM is involved in the compaction itself. Fast, deterministic, memory-preserving - the observational memory pipeline's arrived results apply instantly on compaction.
+- `/blackhole` uses algorithmic section extraction (goals, files, commits, preferences…) **plus** injects observations and reflections from the session ledger. No LLM is involved in the compaction itself. With memory enabled, it queues a separate background observer pass over the reachable pre-compaction tail; it may re-offer previously observed messages because a newest-first cursor cannot prove older coverage. This can incur model cost but does not delay the command.
 
 `/blackhole` is essentially a single `/compact` that just works — especially in manual mode.
 
@@ -180,7 +180,7 @@ https://github.com/user-attachments/assets/a7dd804d-6aca-4bdb-8b6e-0dd779363a43
 
 Three background workers (separate LLM calls) run automatically during the session when `memory: true` (the default):
 
-- **Observer** — reads conversation since the last observation marker and extracts timestamped facts: events, decisions, preferences. Input is capped to `observerChunkMaxTokens` newest-first to prevent context blowup on long sessions. Runs most frequently.
+- **Observer** — reads conversation since the last observation marker and extracts timestamped facts: events, decisions, preferences. Input is normally capped to `observerChunkMaxTokens` newest-first; post-`/blackhole` catch-up drains oldest-first in capped chunks. Runs most frequently.
 - **Reflector** — distills new observations into durable reflections: stable facts, patterns, and constraints that survive future compactions. Runs less often.
 - **Dropper** — prunes low-value observations from active memory when the pool exceeds `observationsPoolMaxTokens`, while keeping reflections and other long-term elements safely in the session ledger.
 

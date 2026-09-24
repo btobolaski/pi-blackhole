@@ -6,7 +6,9 @@ vi.mock("../src/hooks/before-compact.js", () => ({
   formatCompactionStats: vi.fn(),
 }));
 vi.mock("../src/om/pending.js", () => ({
-  readPendingState: vi.fn(),
+  readPendingState: vi.fn(() => ({})),
+  clearPendingBatches: vi.fn(() => true),
+  migrateLegacyObserverCatchUp: vi.fn(),
   clearPendingState: vi.fn(),
   hasPendingData: () => false,
 }));
@@ -77,7 +79,7 @@ async function fixture() {
         command = def;
       },
     } as any,
-    { config: {} } as any,
+    { config: {}, ensureConfig: vi.fn() } as any,
   );
   return { command, ctx };
 }
