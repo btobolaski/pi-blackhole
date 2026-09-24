@@ -141,7 +141,7 @@ With the default `compactionEngine: "blackhole"`, blackhole's `session_before_co
 ### How does `/blackhole` compare to `/compact`?
 
 - `/compact` calls an LLM to write a free-form summary — costly, lossy, no memory layer.
-- `/blackhole` uses algorithmic section extraction (goals, files, commits, preferences…) **plus** injects observations and reflections from the session ledger. No LLM is involved in the compaction itself. Fast, deterministic, memory-preserving - the observational memory pipeline's arrived results apply instantly on compaction.
+- `/blackhole` uses algorithmic section extraction (goals, files, commits, preferences…) **plus** injects observations and reflections from the session ledger. No LLM is involved in the compaction itself. With memory enabled, it queues a separate background observer pass over the reachable pre-compaction tail; it may re-offer previously observed messages because a newest-first cursor cannot prove older coverage. This can incur model cost but does not delay the command.
 
 `/blackhole` is essentially a single `/compact` that just works — especially in manual mode.
 

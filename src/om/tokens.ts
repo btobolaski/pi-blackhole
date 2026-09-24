@@ -15,9 +15,13 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { cjkScriptStats } from "../core/segment.js";
 
-export function estimateStringTokens(text: string): number {
+export function stringTokenQuarters(text: string): number {
   const { count, units } = cjkScriptStats(text);
-  return Math.ceil(count + (text.length - units) / 4);
+  return count * 4 + text.length - units;
+}
+
+export function estimateStringTokens(text: string): number {
+  return Math.ceil(stringTokenQuarters(text) / 4);
 }
 
 export function hasUsageData(msg: unknown): boolean {

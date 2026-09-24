@@ -2,10 +2,12 @@
 
 ### Added
 
+- **Branch-local observer catch-up after `/blackhole`.** Successful manual compaction appends an inert job to Pi session history for the current pre-compaction tail, then starts nonblocking oldest-first observation. Existing jobs retain their checkpoints. Append-only progress and completion records survive restarts and real forks on their copied path; jobs created after a fork point are not inherited. Compaction remains model-free, while observer extraction remains a separate model call.
 - **`usageLog` config option.** New boolean config key (default `true`) that controls whether OM agent usage data is written to `{sessionDir}/memory-logs/{sessionId}_memory.jsonl`. When enabled, the observer, reflector, and dropper capture real `Usage` from each `AssistantMessage` produced by their `agentLoop()` runs and write it in pi session log format under the session directory. Messages are sanitized to match the parser schema (`cacheWrite1h`, `redacted`, `thoughtSignature` stripped). The session header is written once per file across consolidation runs, with `parentId` chaining resumed from the last written entry. Set `"usageLog": false` to disable.
 
 ### Fixed
 
+- **Observer catch-up no longer uses sidecar ranges, covered-branch masks, or prune/reanchor recovery.** Missing/corrupt sources warn and remain unresolved without blocking valid jobs; successful empty observer results count as delivered. A session-history write failure pauses OM until Pi restarts and reopens the persisted session. CJK-safe bounded slices and normal model fallback remain; when no slice fits, the exhausted-candidates warning replaces per-model info notices and the job stays pending. Successful compaction reporting and follow-up are never suppressed.
 - **OM usage logs no longer compete with real sessions during resume.** New logs live in `{sessionDir}/memory-logs/`, which pi's session discovery does not scan. They remain under the sessions tree with the same filename, UUID, and JSONL format for recursive usage reporting. Existing flat `*_memory.jsonl` files are not migrated and can still cause resume collisions until manually relocated into the corresponding `memory-logs/` subdirectory. Do not overwrite an existing destination log. See the `usageLog` notes in `docs/CONFIG.md`.
 
 ### Changed

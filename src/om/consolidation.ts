@@ -39,17 +39,18 @@ import {
   workerOutputAllowance,
   workerStaticPromptTokens,
 } from "./prompt-budget.js";
-import { estimateEntryTokens, estimateStringTokens } from "./tokens.js";
-import { serializeSourceAddressedBranchEntries } from "./serialize.js";
+import { estimateEntryTokens, estimateStringTokens, stringTokenQuarters } from "./tokens.js";
+import { SOURCE_ENTRY_SEPARATOR, serializeSourceAddressedBranchEntries } from "./serialize.js";
 import { OBSERVER_SYSTEM } from "./agents/observer/prompts.js";
 
 import {
+  isObservationChunkPending,
+  migrateLegacyObserverCatchUp,
   readPendingState,
+  savePendingDropped,
   savePendingObservation,
   savePendingReflection,
-  savePendingDropped,
-  isObservationChunkPending,
-  PendingOMState,
+  type PendingOMState,
 } from "./pending.js";
 import { isManualMode } from "../core/unified-config.js";
 import {
@@ -70,6 +71,9 @@ import {
   latestCoverageIndex,
   latestCoverageMarkerId,
   livePoolObservations,
+  activeObserverCatchUp as activeCatchUp,
+  isObserverCatchUpReachable,
+  unfinishedObserverCatchUps,
   observationsCreatedAfterIndex,
   observationPoolTokens,
   observationToSummaryLine,
@@ -79,6 +83,8 @@ import {
   rawTokensSinceReflectionCoverage,
   reflectionToSummaryLine,
   reflectionsCreatedAfterIndex,
+  OM_OBSERVER_CATCH_UP_JOB,
+  OM_OBSERVER_CATCH_UP_PROGRESS,
   selectPriorObservations,
   selectPriorReflections,
   type Entry,
@@ -164,6 +170,19 @@ function sourceEntriesAfter(entries: Entry[], index: number): Entry[] {
   return entries.slice(index + 1).filter(isSourceEntry);
 }
 
+/** Catch-up must retain the oldest unobserved entries rather than skip over them. */
+export function capCatchUp(entries: Entry[], maxTokens: number): Entry[] {
+  const kept: Entry[] = [];
+  let tokens = 0;
+  for (const entry of entries) {
+    const size = estimateEntryTokens(entry);
+    if (kept.length > 0 && tokens + size > maxTokens) break;
+    kept.push(entry);
+    tokens += size;
+  }
+  return kept;
+}
+
 /**
  * Cap source entries to maxTokens by keeping the OLDEST contiguous prefix,
  * walking forward until the token budget is exceeded.
@@ -229,7 +248,7 @@ function appendEntry(
   data: unknown,
 ): boolean {
   if (!runtime.isGenerationActive(generation)) return false;
-  pi.appendEntry(customType, data);
+  runtime.appendMemoryEntry(pi, customType, data);
   return true;
 }
 
@@ -320,18 +339,34 @@ function matchesEmptyPressurePool(runtime: Runtime, poolSignature: string): bool
   return cursor?.state === "empty" && cursor.activePoolSignature === poolSignature;
 }
 
-/** Cursor-aware stage-due check.  Uses cursors when available; falls back to
- *  legacy coverage markers when cursors are absent (cold start, fork recovery).
- *
- *  In compaction: "manual" mode, the branch has no OM markers — observations
- *  live in the per‑session pending file.  `pending` provides the pool fullness
- *  and new‑data visibility that the reflector/dropper checks need. */
+function appendCatchUpProgress(
+  pi: ExtensionAPI,
+  runtime: Runtime,
+  generation: RuntimeGeneration,
+  compactionId: string,
+  progress: { nextSourceId?: string; offset?: number; complete?: true },
+): void {
+  if (
+    !appendEntry(pi, runtime, generation, OM_OBSERVER_CATCH_UP_PROGRESS, {
+      version: 1,
+      compactionId,
+      ...progress,
+    })
+  ) {
+    throw new Error("observer catch-up ownership changed before progress append");
+  }
+}
+
+/** Cursor/coverage-based gating, with pending pools in manual mode and a
+ * threshold bypass for unfinished branch-local catch-up jobs. */
 export function anyStageDue(entries: Entry[], runtime: Runtime, pending?: PendingOMState): boolean {
   const config = runtime.config;
   const cursors = runtime.cursors ?? {};
 
   // ── Observer ──────────────────────────────────────────────────────────
   const observerDue = (() => {
+    const queued = activeCatchUp(entries);
+    if (queued) return true;
     const cursor = cursors.observer;
     if (!cursor) {
       return rawTokensSinceObservationCoverage(entries) >= config.observeAfterTokens;
@@ -553,6 +588,15 @@ export function registerConsolidationTrigger(pi: ExtensionAPI, runtime: Runtime)
   pi.on("session_shutdown", () => {
     runtime.dispose();
   });
+  // Tree navigation retains the same SessionManager id. Abort before the leaf
+  // changes and re-evaluate only from the new branch afterwards.
+  pi.on("session_before_tree", () => {
+    runtime.invalidateSessionTree();
+  });
+  pi.on("session_tree", (_event, ctx) => {
+    runtime.invalidateSessionTree();
+    maybeLaunchConsolidation(pi, runtime, ctx as ConsolidationCtx);
+  });
   const launch = (_event: unknown, ctx: ConsolidationCtx) => {
     maybeLaunchConsolidation(pi, runtime, ctx);
   };
@@ -597,9 +641,13 @@ function validateCursors(entries: Entry[], runtime: Runtime): void {
   }
 }
 
-function maybeLaunchConsolidation(pi: ExtensionAPI, runtime: Runtime, ctx: ConsolidationCtx): void {
+export function maybeLaunchConsolidation(
+  pi: ExtensionAPI,
+  runtime: Runtime,
+  ctx: ConsolidationCtx,
+): void {
   runtime.ensureConfig(ctx.cwd, (msg) => ctx.ui?.notify?.(msg, "warning"));
-  if (runtime.config.memory === false) return;
+  if (runtime.config.memory === false || runtime.memoryWritesPaused) return;
 
   // Provider-aware skip: another engine owns this provider (e.g. Codex native
   // compaction); blackhole also steps aside from observational-memory
@@ -611,7 +659,27 @@ function maybeLaunchConsolidation(pi: ExtensionAPI, runtime: Runtime, ctx: Conso
   if (runtime.config.compaction === undefined && runtime.config.compactionEngine === undefined) {
     if (runtime.config.passive === true) return;
   }
-  if (runtime.consolidationInFlight) return;
+  if (runtime.consolidationInFlight) {
+    // Keep the latest session context if a fork or /blackhole queues work while
+    // another pipeline owns the launch slot.
+    runtime.consolidationRelaunchCtx = ctx;
+    if (!runtime.consolidationRelaunchPending && runtime.consolidationPromise) {
+      runtime.consolidationRelaunchPending = true;
+      const retry = () => {
+        runtime.consolidationRelaunchPending = false;
+        const latestCtx = runtime.consolidationRelaunchCtx;
+        runtime.consolidationRelaunchCtx = undefined;
+        if (!latestCtx) return;
+        try {
+          maybeLaunchConsolidation(pi, runtime, latestCtx);
+        } catch (error) {
+          runtime.recordConsolidationStageError(latestCtx, "observer", error);
+        }
+      };
+      void runtime.consolidationPromise.then(retry, retry);
+    }
+    return;
+  }
   if (runtime.isConsolidationRetryGated()) return;
 
   // Load and validate cursors from pending file (once per session; re-load on fork)
@@ -650,9 +718,34 @@ function maybeLaunchConsolidation(pi: ExtensionAPI, runtime: Runtime, ctx: Conso
     if (isStaleExtensionContextError(error)) return;
     throw error;
   }
-  // In manual mode, the branch has no OM markers — pending state provides
-  // pool fullness and new‑data visibility for reflector/dropper checks.
-  const pending = isManualMode(runtime.config) ? readPendingState(sessionId) : undefined;
+  // Manual batches remain disk-backed. Catch-up jobs are reconstructed only
+  // from the raw active path; a legacy sidecar is migrated lazily and left
+  // intact so another path is never stranded by this path's migration.
+  const stored = readPendingState(sessionId);
+  try {
+    migrateLegacyObserverCatchUp(entries, stored, (job) =>
+      runtime.appendMemoryEntry(pi, OM_OBSERVER_CATCH_UP_JOB, job),
+    );
+    entries = ctx.sessionManager.getBranch() as Entry[];
+  } catch (error) {
+    runtime.recordConsolidationStageError(ctx, "observer", error);
+    return;
+  }
+  const unreachable = unfinishedObserverCatchUps(entries).filter(
+    (job) => !isObserverCatchUpReachable(entries, job),
+  );
+  const warningKey = unreachable.length
+    ? JSON.stringify([sessionId, ...unreachable.map(({ job }) => job.compactionId)])
+    : undefined;
+  if (warningKey !== runtime.unreachableCatchUpWarning) {
+    runtime.unreachableCatchUpWarning = warningKey;
+    if (warningKey)
+      ctx.ui?.notify?.(
+        "Observational memory: queued catch-up source is missing or its range is invalid; job retained while other work continues",
+        "warning",
+      );
+  }
+  const pending = isManualMode(runtime.config) ? stored : undefined;
   if (!anyStageDue(entries, runtime, pending)) return;
 
   // Capture the generation at launch time so we can detect session changes
@@ -710,15 +803,29 @@ export async function runConsolidationPipeline(
   runtime.sizeSkippedInCycle.clear();
   runtime.resolveFailureNotified = false;
   try {
-    const observerOutcome = await runObserverStage(
-      pi,
-      runtime,
-      ctx,
-      generation,
-      resolveModel,
-      usageLogger,
-    );
-    if (!runtime.isGenerationActive(generation) || observerOutcome === "abort") return;
+    // Drain observer-only passes before projecting memory for reflector/dropper.
+    // A failed or no-progress pass leaves the durable job for a later turn.
+    let before = activeCatchUp(ctx.sessionManager.getBranch() as Entry[]);
+    while (true) {
+      const observerOutcome = await runObserverStage(
+        pi,
+        runtime,
+        ctx,
+        generation,
+        resolveModel,
+        usageLogger,
+      );
+      if (!runtime.isGenerationActive(generation) || observerOutcome === "abort") return;
+      const after = activeCatchUp(ctx.sessionManager.getBranch() as Entry[]);
+      if (
+        !after ||
+        (before?.job.compactionId === after.job.compactionId &&
+          before?.progress?.nextSourceId === after.progress?.nextSourceId &&
+          before?.progress?.offset === after.progress?.offset)
+      )
+        break;
+      before = after;
+    }
   } catch (error) {
     if (!runtime.isGenerationActive(generation)) return;
     debugLog("observer.error", {
@@ -914,13 +1021,28 @@ export async function runObserverStage(
   // branch (fork, navigation, compaction during the session) falls back to the
   // same marker/compaction rule as an absent cursor, so a pruned pre-compaction
   // anchor never forces a full-history re-observation.
+  const catchUp = activeCatchUp(entries);
+  const catchUpThroughId = catchUp?.job.throughId;
+  const catchUpFromId = catchUp?.progress?.nextSourceId ?? catchUp?.job.fromId;
+  const catchUpOffset = catchUp?.progress ? catchUp.progress.offset : catchUp?.job.offset;
+  const throughIdx = entryIndexForId(entries, catchUpThroughId);
+  const fromIdx = entryIndexForId(entries, catchUpFromId);
+  const catchingUp = catchUp !== undefined;
   const observerCursor = runtime.getCursor("observer");
   const observerFallbackStart = (): number => {
     const lastCoverageIdx = latestCoverageIndex(entries, OM_OBSERVATIONS_RECORDED);
-    return lastCoverageIdx >= 0 ? lastCoverageIdx : findLastCompactionIndex(entries);
+    if (lastCoverageIdx >= 0) return lastCoverageIdx;
+    const compactionIdx = findLastCompactionIndex(
+      catchingUp ? entries.slice(0, throughIdx + 1) : entries,
+    );
+    if (compactionIdx < 0) return -1;
+    const keptIdx = entryIndexForId(entries, entries[compactionIdx].firstKeptEntryId);
+    return keptIdx >= 0 && keptIdx < compactionIdx ? keptIdx - 1 : compactionIdx;
   };
   let effectiveStart: number;
-  if (observerCursor) {
+  if (catchingUp) {
+    effectiveStart = Math.max(-1, fromIdx - 1);
+  } else if (observerCursor) {
     const cursorIdx = entryIndexForId(entries, observerCursor.entryId);
     effectiveStart = cursorIdx >= 0 ? cursorIdx : observerFallbackStart();
   } else {
@@ -929,12 +1051,14 @@ export async function runObserverStage(
 
   // Anchor -1 (no cursor, no marker, no compaction) measures the full history:
   // rawTokensAfterIndex clamps -1 to index 0 (issue #87).
-  const tokens = rawTokensAfterIndex(entries, effectiveStart);
-  // A drain batch bypasses the trigger: it is the continuation of a run that
-  // already fired, and the remainder of its backlog is often below the
-  // threshold. Holding it back until more content arrives would re-cap the
-  // same backlog instead of finishing what the first batch started.
-  if (tokens < runtime.config.observeAfterTokens && !drain) {
+  const source = catchingUp
+    ? sourceEntriesAfter(entries.slice(0, throughIdx + 1), effectiveStart)
+    : sourceEntriesAfter(entries, effectiveStart);
+  const tokens = rawTokensAfterIndex(
+    catchingUp ? entries.slice(0, throughIdx + 1) : entries,
+    effectiveStart,
+  );
+  if (!catchingUp && !drain && tokens < runtime.config.observeAfterTokens) {
     // Not due. Keep the anchor at the measured coverage point rather than the
     // newest entry: below-threshold content is still unobserved, so moving the
     // cursor past it would drop it permanently instead of letting it accumulate.
@@ -946,27 +1070,53 @@ export async function runObserverStage(
   // Full post-cursor source list, kept for the shrink-to-fit pass: the capped
   // chunk below may prove too big for every model, in which case the stage
   // re-caps this list against the largest resolved window instead of aborting.
-  const allChunkEntries = sourceEntriesAfter(entries, effectiveStart);
+  const allChunkEntries = source;
   let chunkEntries = allChunkEntries;
 
   // Cap observer input to observerChunkMaxTokens (oldest prefix first)
   const maxChunkTokens = runtime.config.observerChunkMaxTokens;
-  if (tokens > maxChunkTokens) {
-    chunkEntries = capSourceEntriesToTokens(chunkEntries, maxChunkTokens);
-  }
+  chunkEntries =
+    tokens > maxChunkTokens
+      ? catchingUp
+        ? capCatchUp(source, maxChunkTokens)
+        : capSourceEntriesToTokens(source, maxChunkTokens)
+      : source;
+  const advanceObserver = (id: string, state: "recorded" | "empty", offset?: number) => {
+    runtime.advanceCursor("observer", id, state);
+    if (!catchingUp || !catchUpThroughId) return;
+    const idx = offset === undefined ? entryIndexForId(entries, id) : -1;
+    if (offset === undefined && idx >= throughIdx) {
+      appendCatchUpProgress(pi, runtime, generation, catchUp.job.compactionId, { complete: true });
+    } else {
+      const nextSourceId =
+        offset !== undefined
+          ? id
+          : sourceEntriesAfter(entries.slice(0, throughIdx + 1), idx)[0]?.id;
+      if (nextSourceId) {
+        appendCatchUpProgress(pi, runtime, generation, catchUp.job.compactionId, {
+          nextSourceId,
+          ...(offset === undefined ? {} : { offset }),
+        });
+      }
+    }
+  };
 
-  let {
-    text: chunk,
-    sourceEntryIds,
-    sourceEntryTimestamps,
-  } = serializeSourceAddressedBranchEntries(chunkEntries);
+  const fullCoversUpToId = chunkEntries.at(-1)?.id;
+  if (!fullCoversUpToId) return "continue";
+  const fullChunk = serializeSourceAddressedBranchEntries(chunkEntries);
+  if (catchingUp && !fullChunk.sourceEntryIds.includes(chunkEntries[0].id)) {
+    advanceObserver(chunkEntries[0].id, "empty");
+    return "continue";
+  }
+  let { text: chunk, sourceEntryIds, sourceEntryTimestamps } = fullChunk;
   // Coverage claims only what was actually delivered: the id the serializer
   // emitted last, not the last entry of the capped slice (the serializer
   // skips entries it cannot render). With the oldest-first cap that is the
   // end of the prefix — everything from the cursor to here was sent, and
   // entries beyond it stay in the backlog.
-  let coversUpToId = sourceEntryIds.at(-1);
-  if (!coversUpToId || !chunk.trim()) return "continue";
+  const initialCoverageId = sourceEntryIds.at(-1);
+  if (!initialCoverageId || !chunk.trim()) return "continue";
+  let coversUpToId = initialCoverageId;
 
   // The branch's last source entry as of this run's snapshot: the drain keeps
   // going until coverage reaches it. Entries arriving after the snapshot belong
@@ -978,6 +1128,7 @@ export async function runObserverStage(
   // over entries never sent.
   const lastSourceEntryId = entries.filter(isSourceEntry).at(-1)?.id;
   const continueSources = (): StageOutcome | Promise<StageOutcome> => {
+    if (catchingUp) return "continue";
     if (drainRemaining <= 0) return "continue";
     if (!coversUpToId || coversUpToId === lastSourceEntryId) return "continue";
     return runObserverStage(
@@ -1052,7 +1203,11 @@ export async function runObserverStage(
   const observerStaticTokens = workerStaticPromptTokens("observer");
 
   // If manual mode: skip if this exact chunk was already processed
-  if (isManualMode(runtime.config) && isObservationChunkPending(sessionId, coversUpToId)) {
+  if (
+    !catchingUp &&
+    isManualMode(runtime.config) &&
+    isObservationChunkPending(sessionId, coversUpToId)
+  ) {
     debugLog("observer.pending_skip", { coversUpToId, sessionId });
     return "continue";
   }
@@ -1176,6 +1331,13 @@ export async function runObserverStage(
   // Runs (model calls) are bounded by MAX_STAGE_ATTEMPTS; size-skips are
   // cheap resolution-only iterations with their own continuation budget, so
   // a long chain of too-small models cannot starve the shrink pass.
+  let firstSliceSource:
+    | {
+        serialized: ReturnType<typeof serializeSourceAddressedBranchEntries>;
+        prefix: string;
+        body: string;
+      }
+    | undefined;
   let attempt = 0;
   let sizeSkips = 0;
   while (attempt < MAX_STAGE_ATTEMPTS) {
@@ -1195,6 +1357,16 @@ export async function runObserverStage(
       }
       return "abort";
     }
+    if (catchingUp) {
+      ({
+        text: chunk,
+        sourceEntryIds,
+        sourceEntryTimestamps,
+      } = serializeSourceAddressedBranchEntries(chunkEntries));
+      coversUpToId = sourceEntryIds.at(-1) ?? fullCoversUpToId;
+      chunkTokens = estimateStringTokens(chunk);
+    }
+    let partialOffset: number | undefined;
 
     // Adjust accumulated for pending coverage in manual mode
     let effectiveTokens = tokens;
@@ -1236,9 +1408,95 @@ export async function runObserverStage(
     // prompts the provider then rejects on generation overflow.
     const effectiveObsCtx = effectiveContextWindow(resolved.model as any, stageModelForThinking);
     if (!bestFit || effectiveObsCtx > bestFit.ctx) bestFit = { resolved, ctx: effectiveObsCtx };
+    const budgetTokens = Math.min(
+      maxChunkTokens,
+      workerInputBudget(effectiveObsCtx, resolved.model as any) -
+        preambleTokens -
+        observerStaticTokens -
+        WORKER_TURN_HEADROOM_TOKENS,
+    );
+    if (
+      catchingUp &&
+      (catchUpOffset !== undefined ||
+        estimateEntryTokens(chunkEntries[0]) > maxChunkTokens ||
+        chunkTokens > budgetTokens)
+    ) {
+      // Serialized headers can exceed the entry-level cap. Keep whole sources
+      // together when possible; only slice when the first source cannot fit.
+      let packed: ReturnType<typeof serializeSourceAddressedBranchEntries> | undefined;
+      let packedCount = 0;
+      if (catchUpOffset === undefined) {
+        let quarterTokens = 0;
+        for (const entry of chunkEntries) {
+          const single = serializeSourceAddressedBranchEntries([entry]);
+          const addition = single.text
+            ? `${quarterTokens ? SOURCE_ENTRY_SEPARATOR : ""}${single.text}`
+            : "";
+          const next = quarterTokens + stringTokenQuarters(addition);
+          if (Math.ceil(next / 4) > budgetTokens) break;
+          quarterTokens = next;
+          packedCount++;
+        }
+        if (packedCount)
+          packed = serializeSourceAddressedBranchEntries(chunkEntries.slice(0, packedCount));
+      }
+      if (packed) {
+        chunk = packed.text;
+        sourceEntryIds = packed.sourceEntryIds;
+        sourceEntryTimestamps = packed.sourceEntryTimestamps;
+        coversUpToId = chunkEntries[packedCount - 1].id;
+        chunkTokens = estimateStringTokens(chunk);
+      } else {
+        if (!firstSliceSource) {
+          const serialized = serializeSourceAddressedBranchEntries([chunkEntries[0]]);
+          const prefix = serialized.text.slice(0, serialized.text.indexOf("\n") + 1);
+          firstSliceSource = { serialized, prefix, body: serialized.text.slice(prefix.length) };
+        }
+        // Repeat the source-id header on every slice so the observer can cite it.
+        const { serialized: first, prefix, body } = firstSliceSource;
+        const offset = catchUpOffset ?? 0;
+        // Bound the UTF-16 slice using the same CJK-aware estimate as the
+        // context-window check. The prefix is repeated for source attribution.
+        let low = offset;
+        let high = Math.min(body.length, offset + Math.max(0, budgetTokens * 4));
+        while (low < high) {
+          const mid = Math.ceil((low + high) / 2);
+          if (estimateStringTokens(prefix + body.slice(offset, mid)) <= budgetTokens) low = mid;
+          else high = mid - 1;
+        }
+        let end = low;
+        // A persisted offset must never divide a surrogate pair across attempts.
+        if (end < body.length && /[\uD800-\uDBFF]/.test(body[end - 1])) end -= 1;
+        if (offset >= body.length || end <= offset) {
+          // No useful slice fits this model; retain the range and try a fallback.
+          // If none fits even the header (or the next character), a later model
+          // configuration is required — never send the oversized full entry.
+          debugLog("observer.slice_unavailable", {
+            budgetTokens,
+            offset,
+            model: (resolved.model as any).id,
+          });
+          if (++sizeSkips > MAX_SIZE_SKIP_CONTINUATIONS) return "abort";
+          runtime.recordRetryableError(
+            stageModelForThinking,
+            new Error("observer slice cannot fit the source header and next character"),
+            "observer",
+          );
+          continue;
+        }
+        chunk = prefix + body.slice(offset, end);
+        sourceEntryIds = first.sourceEntryIds;
+        sourceEntryTimestamps = first.sourceEntryTimestamps;
+        coversUpToId = chunkEntries[0].id;
+        chunkTokens = estimateStringTokens(chunk);
+        if (end < body.length) partialOffset = end;
+      }
+    }
     const observerEstimatedInput =
       chunkTokens + preambleTokens + observerStaticTokens + WORKER_TURN_HEADROOM_TOKENS;
     const observerInputBudget = workerInputBudget(effectiveObsCtx, resolved.model as any);
+    const advanceChunk = (state: "recorded" | "empty") =>
+      advanceObserver(coversUpToId, state, partialOffset);
     if (observerEstimatedInput > observerInputBudget) {
       debugLog("observer.context_window_exceeded", {
         estimatedInput: observerEstimatedInput,
@@ -1274,6 +1532,7 @@ export async function runObserverStage(
       continue;
     }
 
+    let modelCompleted = false;
     try {
       attempt += 1;
       const { runObserver } = await import("./agents/observer/agent.js");
@@ -1308,6 +1567,7 @@ export async function runObserverStage(
           }),
       );
       if (!runtime.isGenerationActive(generation)) return "abort";
+      modelCompleted = true;
 
       // The run closed the chunk and then a later turn failed (a host that
       // ignores `terminate`). Shared with the reflector stage: same framing,
@@ -1329,7 +1589,7 @@ export async function runObserverStage(
       if (result.observations && result.observations.length > 0) {
         const data = buildObservationsRecordedData(result.observations, coversUpToId);
         if (!data) {
-          runtime.advanceCursor("observer", coversUpToId, "empty");
+          advanceChunk("empty");
           return "continue";
         }
         debugLog("observer.records", {
@@ -1351,7 +1611,7 @@ export async function runObserverStage(
             coversUpToId,
           });
         }
-        runtime.advanceCursor("observer", coversUpToId, "recorded");
+        advanceChunk("recorded");
         runtime.tryEmitWorkerInfo(
           ctx.hasUI,
           ctx.ui,
@@ -1381,7 +1641,7 @@ export async function runObserverStage(
           : "warning"
         : "warning";
       debugLog("observer.empty", { coversUpToId, reason: reason?.kind });
-      runtime.advanceCursor("observer", coversUpToId, "empty");
+      advanceChunk("empty");
       if (reasonLevel === "warning") {
         if (ctx.hasUI)
           ctx.ui?.notify(`Observational memory: no observations — ${reasonLabel}`, "warning");
@@ -1397,6 +1657,10 @@ export async function runObserverStage(
       return continueSources();
     } catch (error) {
       if (!runtime.isGenerationActive(generation)) return "abort";
+      // A completed model call or ledger append followed by a progress-write
+      // failure must not retry a healthy fallback in this cycle. The job stays
+      // unfinished in history for a later launch.
+      if (modelCompleted) throw error;
       if (isStaleExtensionContextError(error)) {
         debugLog("observer.stale_ctx", { error: String(error) });
         return "abort";
@@ -2011,6 +2275,7 @@ export async function runReflectorStage(
       continue;
     }
 
+    let modelCompleted = false;
     try {
       attempt += 1;
       const { runReflector } = await import("./agents/reflector/agent.js");
@@ -2046,10 +2311,13 @@ export async function runReflectorStage(
       if (!runtime.isGenerationActive(generation))
         return { outcome: "abort", sameRunReflections: [] };
 
+      modelCompleted = true;
       return commitReflectorResult(result.reflections, result.errorAfterClose, resolved);
     } catch (error) {
       if (!runtime.isGenerationActive(generation))
         return { outcome: "abort", sameRunReflections: [] };
+      // Persistence failures after a model response must not rerun the model.
+      if (modelCompleted) throw error;
       if (isStaleExtensionContextError(error)) {
         debugLog("reflector.stale_ctx", { error: String(error) });
         return { outcome: "abort", sameRunReflections: [] };
@@ -2629,6 +2897,7 @@ export async function runDropperStage(
     // cannot change which model config owns this attempt.
     const stageModelForThinking =
       resolved.source === "candidate" ? resolved.candidateConfig : undefined;
+    let modelCompleted = false;
 
     // Check if the full estimated prompt fits in the model's context window:
     // candidates + reflections + actual (capped) summary + measured static
@@ -2709,9 +2978,12 @@ export async function runDropperStage(
           }),
       );
       if (!runtime.isGenerationActive(generation)) return "abort";
+      modelCompleted = true;
       return commitDropperResult(droppedIds);
     } catch (error) {
       if (!runtime.isGenerationActive(generation)) return "abort";
+      // Persistence failures after a model response must not rerun the model.
+      if (modelCompleted) throw error;
       if (isStaleExtensionContextError(error)) {
         debugLog("dropper.stale_ctx", { error: String(error) });
         return "abort";
