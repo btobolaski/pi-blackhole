@@ -1,5 +1,5 @@
 /**
- * Tests for the footer status bar (src/om/status-bar.ts).
+ * Tests for the below-editor status widget (src/om/status-bar.ts).
  *
  * Covers: gauge rendering (fill, warning state), the memory === false gate
  * that hides the O/P gauges, worker lifecycle derived
@@ -8,6 +8,7 @@
  * cleanup. Timers run under vi.useFakeTimers.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ExtensionWidgetOptions } from "@earendil-works/pi-coding-agent";
 
 vi.mock("../src/om/debug-log.js", () => ({
   debugLog: vi.fn(),
@@ -77,6 +78,7 @@ interface Harness {
     consolidationPhase: string | undefined;
   };
   setStatus: ReturnType<typeof vi.fn>;
+  setWidget: ReturnType<typeof vi.fn>;
   ctx: Record<string, unknown>;
   entries: () => unknown[];
   setEntries: (entries: unknown[]) => void;
@@ -107,20 +109,22 @@ function setup(configOverrides: Record<string, unknown> = {}): Harness {
   registerStatusBar(pi as never, runtime as never);
 
   const setStatus = vi.fn();
+  const setWidget =
+    vi.fn<(key: string, content: string[] | undefined, options?: ExtensionWidgetOptions) => void>();
   // Theme records the style name so tests can assert warning vs dim.
   const theme = { fg: (style: string, text: string) => `${style}:${text}` };
   let branch: unknown[] = [];
   const ctx = {
-    ui: { setStatus, theme },
+    ui: { setStatus, setWidget, theme },
     sessionManager: { getBranch: () => branch },
     model: { contextWindow: 200_000 },
   };
   const start = handlers["session_start"];
   if (!start) throw new Error("session_start handler was not registered");
   const lastStatus = () => {
-    const calls = setStatus.mock.calls;
-    const last = calls[calls.length - 1] as [string, string | undefined] | undefined;
-    return last?.[1];
+    const calls = setWidget.mock.calls;
+    const last = calls[calls.length - 1];
+    return last?.[1]?.[0];
   };
   return {
     fire: async (event: string, ...args: unknown[]) => {
@@ -130,6 +134,7 @@ function setup(configOverrides: Record<string, unknown> = {}): Harness {
     },
     runtime,
     setStatus,
+    setWidget,
     ctx,
     entries: () => branch,
     setEntries: (e: unknown[]) => {
@@ -148,6 +153,41 @@ describe("status bar", () => {
   });
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  describe("widget placement", () => {
+    it("renders a single Blackhole line below the editor", async () => {
+      const h = setup();
+      await h.fire("session_start", {}, h.ctx);
+      expect(h.setWidget).toHaveBeenLastCalledWith(
+        "blackhole",
+        [expect.stringContaining("success:bh")],
+        {
+          placement: "belowEditor",
+        },
+      );
+    });
+
+    it("skips rendering without falling back to footer status when setWidget is unavailable", async () => {
+      const h = setup();
+      const ctx = { ...h.ctx, ui: { setStatus: h.setStatus } };
+      await h.fire("session_start", {}, ctx);
+      await h.fire("agent_end", {}, ctx);
+      expect(h.setStatus).not.toHaveBeenCalled();
+    });
+
+    it("leaves footer statuses untouched across updates and shutdown", async () => {
+      const h = setup();
+      await h.fire("session_start", {}, h.ctx);
+      h.runtime.consolidationInFlight = true;
+      h.runtime.consolidationPhase = "observer";
+      await h.fire("agent_start", {}, h.ctx);
+      await vi.advanceTimersByTimeAsync(120);
+      h.runtime.config.statusBar = false;
+      await h.fire("agent_end", {}, h.ctx);
+      await h.fire("session_shutdown");
+      expect(h.setStatus).not.toHaveBeenCalled();
+    });
   });
 
   describe("gauges", () => {
@@ -330,13 +370,13 @@ describe("status bar", () => {
       expect(vi.getTimerCount()).toBe(0);
     });
 
-    it("does not re-write the status when idle polls see no change", async () => {
+    it("does not re-write the widget when idle polls see no change", async () => {
       const h = setup();
       h.setEntries([msg("e1", 1_000)]);
       await h.fire("session_start", {}, h.ctx);
-      const before = h.setStatus.mock.calls.length;
+      const before = h.setWidget.mock.calls.length;
       await vi.advanceTimersByTimeAsync(5_000);
-      expect(h.setStatus.mock.calls.length).toBe(before);
+      expect(h.setWidget.mock.calls.length).toBe(before);
     });
 
     it("re-writes the status on a new session even when the string matches", async () => {
@@ -364,9 +404,9 @@ describe("status bar", () => {
       h.runtime.consolidationInFlight = true;
       h.runtime.consolidationPhase = "observer";
       await h.fire("agent_end", {}, h.ctx);
-      const before = h.setStatus.mock.calls.length;
+      const before = h.setWidget.mock.calls.length;
       await vi.advanceTimersByTimeAsync(80);
-      expect(h.setStatus.mock.calls.length).toBeGreaterThan(before);
+      expect(h.setWidget.mock.calls.length).toBeGreaterThan(before);
     });
 
     it("picks up a pipeline launched between events, with no event after it", async () => {
@@ -544,7 +584,7 @@ describe("status bar", () => {
       h.setEntries([msg("e1", 1_000)]);
       await h.fire("session_start", {}, h.ctx);
       await h.fire("agent_end", {}, h.ctx);
-      for (const call of h.setStatus.mock.calls) expect(call[1]).toBeUndefined();
+      expect(h.setWidget).not.toHaveBeenCalled();
     });
 
     it("writes nothing while statusBar is false, even with memory false", async () => {
@@ -552,32 +592,32 @@ describe("status bar", () => {
       h.setEntries([msg("e1", 20_000)]);
       await h.fire("session_start", {}, h.ctx);
       await h.fire("agent_end", {}, h.ctx);
-      for (const call of h.setStatus.mock.calls) expect(call[1]).toBeUndefined();
+      for (const call of h.setWidget.mock.calls) expect(call[1]).toBeUndefined();
     });
 
     it("writes nothing when hasUI is false, even with memory false", async () => {
       const h = setup({ memory: false });
       h.setEntries([msg("e1", 20_000)]);
       await h.fire("session_start", {}, { ...h.ctx, hasUI: false });
-      expect(h.setStatus).not.toHaveBeenCalled();
+      expect(h.setWidget).not.toHaveBeenCalled();
     });
 
-    it("clears the footer when statusBar is turned off mid-session", async () => {
+    it("clears the widget when statusBar is turned off mid-session", async () => {
       const h = setup();
       h.setEntries([msg("e1", 1_000)]);
       await h.fire("session_start", {}, h.ctx);
       expect(h.lastStatus()).toContain("success:bh");
       h.runtime.config.statusBar = false;
       await h.fire("agent_end", {}, h.ctx);
-      expect(h.lastStatus()).toBeUndefined();
+      expect(h.setWidget).toHaveBeenLastCalledWith("blackhole", undefined);
     });
 
-    it("clears the footer on session_shutdown", async () => {
+    it("clears the widget on session_shutdown", async () => {
       const h = setup();
       h.setEntries([msg("e1", 1_000)]);
       await h.fire("session_start", {}, h.ctx);
       await h.fire("session_shutdown", {});
-      expect(h.lastStatus()).toBeUndefined();
+      expect(h.setWidget).toHaveBeenLastCalledWith("blackhole", undefined);
     });
 
     it("does not render or start polling when ctx.hasUI is false", async () => {

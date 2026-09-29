@@ -52,7 +52,7 @@ The config file must contain **valid JSON**. A trailing comma, partial write, or
   "reflectionSupersedes": false, // Replacement notes; replaced reflections leave compaction output
   "observeOnShutdown": false,    // One bounded observer attempt before session exit
   "fullFoldAlways": true,         // Treat first compaction as full-fold boundary
-  "statusBar": true,              // Footer token gauges (O/P/X) + worker events
+  "statusBar": true,              // Below-editor token gauges (O/P/X) + worker events
   "showWorkerNotifications": true, // Routine observer/reflector/dropper progress toasts
   "observeAfterTokens": 15000,    // Token threshold for observer runs
   "reflectAfterTokens": 25000,    // Token threshold for reflector + dropper
@@ -650,7 +650,7 @@ A thinking-only entry (`{ "thinking": "low" }`, no `provider`/`id`) is never tri
 
 ### `statusBar`
 
-Show the footer status bar: three token gauges — O (transcript since last observer run), P (observation pool fill), X (context since last compaction) — plus worker spinners and `✓ +N` completion events. O and P render only while [`memory`](#memory) is `true`: with observational memory disabled the pipeline hard-returns before any observer runs, so a filling gauge would imply a note-taking pass that is never due. The gauges return on the next render after `/blackhole om-on` re-enables memory.
+Show the status widget below the editor and above the footer: three token gauges — O (transcript since last observer run), P (observation pool fill), X (context since last compaction) — plus worker spinners and `✓ +N` completion events. O and P render only while [`memory`](#memory) is `true`: with observational memory disabled the pipeline hard-returns before any observer runs, so a filling gauge would imply a note-taking pass that is never due. Pi's footer and other extensions' footer statuses are left untouched. The gauges return on the next render after `/blackhole om-on` re-enables memory.
 
 | Type | Default |
 |------|---------|

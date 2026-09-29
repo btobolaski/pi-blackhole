@@ -290,7 +290,7 @@ Based on interview answers, build the config object. Write it to:
   "reflectionSupersedes": false, // Replacement notes; replaced reflections leave compaction output
   "observeOnShutdown": false,    // One bounded observer attempt before session exit
   "fullFoldAlways": true,         // false = early reflections/drops don't survive first compaction until pool fills
-  "statusBar": true,              // false = hide footer token gauges (O/P/X) + worker events
+  "statusBar": true,              // false = hide below-editor token gauges (O/P/X) + worker events
   "showWorkerNotifications": true, // false = quiet: hide routine observer/reflector/dropper progress toasts (warnings, errors and compaction notices always show)
 
   // ── Base model (shared fallback for all workers) ──

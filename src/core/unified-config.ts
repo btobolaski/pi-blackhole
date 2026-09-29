@@ -284,7 +284,7 @@ export interface UnifiedConfig {
   memory: boolean;
   /** Writes debug JSONL to agent directory. */
   debugLog: boolean;
-  /** Show the blackhole footer status bar (token gauges + worker events). */
+  /** Show the blackhole below-editor status widget (token gauges + worker events). */
   statusBar: boolean;
   /** Show routine observer/reflector/dropper progress toasts. Warnings,
    *  errors, model fallback/unavailability and compaction notices are
