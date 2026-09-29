@@ -389,8 +389,8 @@ export const config = new ConfigManager<UnifiedConfig>({
     {
       key: "statusBar",
       type: "boolean",
-      label: "Footer status bar",
-      description: "Show token gauges (O/P/X) and worker events in the footer",
+      label: "Status widget",
+      description: "Show token gauges (O/P/X) and worker events below the editor",
       value: cfg.statusBar,
     },
     {

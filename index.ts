@@ -77,7 +77,7 @@ export default async (pi: ExtensionAPI) => {
   // Observational memory: background consolidation pipeline
   registerConsolidationTrigger(pi, omRuntime); // agent_start + turn_end → observer/reflector/dropper
   registerCompactionTrigger(pi, omRuntime); // turn_end + agent_end → auto-compaction
-  registerStatusBar(pi, omRuntime); // footer gauges (O/P/X) + worker events (config.statusBar)
+  registerStatusBar(pi, omRuntime); // below-editor gauges (O/P/X) + worker events (config.statusBar)
 
   // Pi-vcc: compaction + om injection
   registerBeforeCompactHook(pi, omRuntime); // session_before_compact → pi-vcc + om content

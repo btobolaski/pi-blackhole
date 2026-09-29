@@ -12,6 +12,7 @@
 
 ### Changed
 
+- **Blackhole status moves below the editor.** Token gauges and worker events now use a dedicated widget above the footer instead of `setStatus`, leaving Pi's footer and other footer extensions (such as cc-status) untouched. The `statusBar` setting and `PI_BLACKHOLE_STATUSBAR` override are unchanged.
 - **Recall is lineage-only; the `scope` option is removed.** The `recall` tool no longer accepts a `scope` parameter, and `/blackhole-recall` no longer parses `scope:all` (legacy `scope:all` text is treated as ordinary query text). Every recall path — search, recent entries, `mode:file`/`mode:touched`, `#N` expand, `#N:path`/`#N:text` drill-down, and OM source-`#N` annotations — reads only the active lineage (the current branch, including its compacted ancestors), so abandoned rewind branches are never retrievable; lineage lookups fail closed when unavailable. This removes recall _access_ to rewound history; already-copied content (compaction summaries, OM observations) and session files are untouched.
 
 ---

@@ -272,7 +272,7 @@ export interface UnifiedConfig {
   memory: boolean;
   /** Writes debug JSONL to agent directory. */
   debugLog: boolean;
-  /** Show the blackhole footer status bar (token gauges + worker events). */
+  /** Show the blackhole below-editor status widget (token gauges + worker events). */
   statusBar: boolean;
   /** Write OM usage to `{sessionDir}/memory-logs/{sessionId}_memory.jsonl`. Default true. */
   usageLog: boolean;
