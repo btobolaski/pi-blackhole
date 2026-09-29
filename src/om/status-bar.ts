@@ -1,6 +1,6 @@
 /**
- * Footer status bar — token gauges plus live worker events, drawn with
- * ctx.ui.setStatus("blackhole", ...).
+ * Below-editor status widget — token gauges plus live worker events, drawn
+ * with ctx.ui.setWidget("blackhole", ..., { placement: "belowEditor" }).
  *
  * Gauges: O = transcript tokens since the last observer run (fills at
  * observeAfterTokens), P = observation pool fill (fills at
@@ -16,11 +16,11 @@
  * runtime.consolidationPhase and runtime.consolidationInFlight on every
  * tick, so the consolidation pipeline needs no instrumentation.
  *
- * Ported from the standalone blackhole-status.ts footer extension. Its
+ * Ported from the standalone blackhole-status.ts extension. Its
  * config-file read, preset-curve copy, token-estimation mirror, and
  * threshold-inference blocks are all replaced by in-repo sources of truth.
  */
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import type { Runtime, ConsolidationPhase } from "./runtime.js";
 import {
   foldLedger,
@@ -65,11 +65,11 @@ interface Gauges {
 }
 
 interface StatusBarUi {
-  setStatus?: (key: string, text: string | undefined) => void;
+  setWidget?: ExtensionUIContext["setWidget"];
   theme?: ThemeShim;
 }
 
-/** Register the footer status bar. Gated by config.statusBar at render time. */
+/** Register the below-editor status widget. Gated by config.statusBar at render time. */
 export function registerStatusBar(pi: ExtensionAPI, runtime: Runtime): void {
   let ui: StatusBarUi | undefined;
   let model: Parameters<typeof autoCompactThreshold>[1];
@@ -109,7 +109,7 @@ export function registerStatusBar(pi: ExtensionAPI, runtime: Runtime): void {
   }
 
   function clearStatus(): void {
-    if (ui?.setStatus && statusWritten) ui.setStatus(STATUS_KEY, undefined);
+    if (ui?.setWidget && statusWritten) ui.setWidget(STATUS_KEY, undefined);
     statusWritten = false;
     lastRendered = undefined;
   }
@@ -120,7 +120,7 @@ export function registerStatusBar(pi: ExtensionAPI, runtime: Runtime): void {
       clearStatus();
       return;
     }
-    if (!ui.setStatus) return;
+    if (!ui.setWidget) return;
     const t = theme();
     const cfg = runtime.config;
     const threshold = autoCompactThreshold(cfg, model);
@@ -142,7 +142,7 @@ export function registerStatusBar(pi: ExtensionAPI, runtime: Runtime): void {
     if (parts.length > 0) s += `  ${parts.join(" ")}`;
     if (s === lastRendered) return;
     lastRendered = s;
-    ui.setStatus(STATUS_KEY, s);
+    ui.setWidget(STATUS_KEY, [s], { placement: "belowEditor" });
     statusWritten = true;
   }
 

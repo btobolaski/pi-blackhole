@@ -1,8 +1,8 @@
 /**
  * Observation-pool consistency harness for issue #120.
  *
- * The dropper trigger, the `/blackhole-memory` pool lines, and the footer P
- * gauge must all measure the same live active pool — plus, in manual mode,
+ * The dropper trigger, the `/blackhole-memory` pool lines, and the status
+ * widget's P gauge must all measure the same live active pool — plus, in manual mode,
  * the pending observation batches the trigger includes. These tests pin that
  * agreement so no surface can silently drift onto a different scope or token
  * basis, and they pin the manual-mode pending breakdown shown to users.

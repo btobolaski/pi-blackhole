@@ -256,7 +256,7 @@ export interface UnifiedConfig {
   memory: boolean;
   /** Writes debug JSONL to agent directory. */
   debugLog: boolean;
-  /** Show the blackhole footer status bar (token gauges + worker events). */
+  /** Show the blackhole below-editor status widget (token gauges + worker events). */
   statusBar: boolean;
   /** Writes per-assistant-message Usage from OM agents to
    *  `{sessionDir}/memory-logs/{sessionId}_memory.jsonl` in pi session log format.

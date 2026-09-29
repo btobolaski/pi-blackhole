@@ -355,8 +355,8 @@ export const config = new ConfigManager<UnifiedConfig>({
     {
       key: "statusBar",
       type: "boolean",
-      label: "Footer status bar",
-      description: "Show token gauges (O/P/X) and worker events in the footer",
+      label: "Status widget",
+      description: "Show token gauges (O/P/X) and worker events below the editor",
       value: cfg.statusBar,
     },
 
@@ -471,6 +471,8 @@ export const config = new ConfigManager<UnifiedConfig>({
     // (Runs before the merge so an emptied preset name falls back to the
     // DEFAULTS "default", and dropped knobs stay absent. Env overrides
     // re-apply afterwards, so env-set values stay explicit.)
+    // SAFETY: parsed is a plain config copy; the Record view lets the shared
+    // normalizer validate and remove dynamic threshold keys in place.
     normalizeThresholdKnobs(parsed as unknown as Record<string, unknown>);
 
     // ── Merge with defaults ──
