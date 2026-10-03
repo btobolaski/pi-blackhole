@@ -12,6 +12,7 @@
 
 ### Changed
 
+- **Worker model failures no longer persist cooldowns.** Observer, reflector, and dropper failures skip that model only within the current stage, then retry it on the next eligible run. Configured models and the session fallback share these rules, so transient upstream failures on routers such as OpenRouter no longer disable workers for hours. Bounded fallback attempts and the 30-second retry gate remain. Legacy `cooldownHours` values and cooldown files no longer affect worker availability.
 - **Blackhole status moves below the editor.** Token gauges and worker events now use a dedicated widget above the footer instead of `setStatus`, leaving Pi's footer and other footer extensions (such as cc-status) untouched. The `statusBar` setting and `PI_BLACKHOLE_STATUSBAR` override are unchanged.
 - **Recall is lineage-only; the `scope` option is removed.** The `recall` tool no longer accepts a `scope` parameter, and `/blackhole-recall` no longer parses `scope:all` (legacy `scope:all` text is treated as ordinary query text). Every recall path — search, recent entries, `mode:file`/`mode:touched`, `#N` expand, `#N:path`/`#N:text` drill-down, and OM source-`#N` annotations — reads only the active lineage (the current branch, including its compacted ancestors), so abandoned rewind branches are never retrievable; lineage lookups fail closed when unavailable. This removes recall _access_ to rewound history; already-copied content (compaction summaries, OM observations) and session files are untouched.
 

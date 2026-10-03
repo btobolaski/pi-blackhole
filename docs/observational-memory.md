@@ -184,7 +184,7 @@ Coverage is recomputed every run from the live sets and follows a few load-beari
 
 ## Consolidation pipeline
 
-The consolidation pipeline runs Observer → Reflector → Dropper on `agent_start` and `turn_end` events. A successful `/blackhole` queues a background observer catch-up without waiting for it; if consolidation is already running, a launch is attempted when that run ends; a retry cooldown or restart may defer it until the next trigger. Defined in [[src/om/consolidation.ts]].
+The consolidation pipeline runs Observer → Reflector → Dropper on `agent_start` and `turn_end` events. A successful `/blackhole` queues a background observer catch-up without waiting for it; if consolidation is already running, a launch is attempted when that run ends; the 30-second retry gate or a restart may defer it until the next trigger. Defined in [[src/om/consolidation.ts]].
 
 ### Trigger conditions
 
@@ -233,32 +233,21 @@ For each stage, the runtime builds a candidate list:
 1. **Primary stage model** (`observerModel`, `reflectorModel`, `dropperModel`)
 2. **Stage fallback models** (`observerFallbackModels`, etc.) — tried in order
 3. **Base model** (`model` — shared across all workers)
-4. **Session model** (the main conversation model — last resort, never cooled down)
+4. **Session model** (the main conversation model — last resort)
 
-Models with active cooldowns are transparently skipped. Up to 10 model resolutions per stage before giving up (`MAX_STAGE_ATTEMPTS = 10`).
+Models that already failed in the current stage are skipped, including the session model if it shares a failed candidate's identity. Up to 10 model attempts per stage before giving up (`MAX_STAGE_ATTEMPTS = 10`). All models are eligible again at the next stage boundary or pipeline run.
 
 ### Session fallback
 
 `sessionFallback: true` (default) falls back to the session model when all OM candidates are exhausted. Set `false` to skip the stage entirely instead. This is useful when you don't want OM workers consuming your main model's rate limits.
 
-## Cooldown system
+## Worker retries
 
-Models that fail with retryable errors are cooled down and skipped in subsequent attempts. Defined in [[src/om/cooldown.ts]].
+Every model failure advances the fallback chain for the current stage. `Runtime.failedInCycle` tracks failed `provider/id` identities in memory and is cleared at each stage boundary. Failures never create a persistent model ban, so a transient upstream failure on a router such as OpenRouter cannot disable workers for hours.
 
-### Persistence
+When failed models exhaust the chain, a 30-second retry gate delays the next pipeline launch. The session model follows the same stage-local rules as configured models.
 
-Cooldowns persist to `~/.pi/agent/pi-blackhole/pi-blackhole-cooldown.json` with ISO 8601 timestamps. Each entry records:
-
-- `modelKey` — `provider/id` identifier
-- `until` — expiry timestamp
-- `reason` — error message
-- `stage` — which stage failed
-
-Cooldowns survive Pi restarts. `expireCooldowns()` runs lazily on config load. `isCooldownActive()` reads from disk each call.
-
-### Cooldown hours
-
-`cooldownHours` per model config (default: 1 hour). Set `0` to disable cooldown — the model is tracked in-memory for the current stage only (no disk writes), using `failedInCycle` set.
+Obsolete `cooldownHours` entries are ignored when parsing model configs. The old `~/.pi/agent/pi-blackhole/pi-blackhole-cooldown.json` file is neither read nor written and can be deleted.
 
 ### Retryable error detection
 
@@ -357,5 +346,5 @@ When no observations or reflections exist, only a short recall-guidance footer i
 If any stage fails (model error, rate limit, timeout), remaining stages are skipped and the full pipeline retries on the next trigger event.
 
 - **30-second retry gate**: After any stage fails completely, `markConsolidationError()` sets a timestamp. `isConsolidationRetryGated()` returns true for 30 seconds.
-- **Per-model cooldown**: Failed models are cooled down and skipped in subsequent attempts.
+- **Stage-local failures**: Failed models are skipped only within the current stage and retried on the next eligible run; no model cooldown is persisted.
 - **Stale context handling**: `agent_end` handlers catch "extension ctx is stale" errors gracefully.

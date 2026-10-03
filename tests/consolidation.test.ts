@@ -76,6 +76,27 @@ function mockCtx(notifyCalls: Array<{ message: string; level?: string }>): Conso
 }
 
 describe("makeModelResolver — per-stage failure notifications", () => {
+  test("does not engage the retry gate when no models are configured", async () => {
+    const runtime = new Runtime();
+    const ctx = mockCtx([]);
+    const resolver = makeModelResolver(runtime, ctx, runtime.captureGeneration("test-session"));
+
+    await resolver("observer");
+
+    expect(runtime.isConsolidationRetryGated()).toBe(false);
+  });
+
+  test("retains the short retry gate after failed models are exhausted", async () => {
+    const runtime = new Runtime();
+    runtime.failedInCycle.add("openrouter/failed-worker");
+    const ctx = mockCtx([]);
+    const resolver = makeModelResolver(runtime, ctx, runtime.captureGeneration("test-session"));
+
+    await resolver("observer");
+
+    expect(runtime.isConsolidationRetryGated()).toBe(true);
+  });
+
   test("each stage shows its own failure notification when no models are available", async () => {
     const runtime = new Runtime("/tmp");
     runtime.config.memory = true;
@@ -1476,6 +1497,55 @@ describe("catch-up with persisted SessionManager history", () => {
     };
   }
 
+  test.each(["observer", "reflector", "dropper"] as const)(
+    "retries %s on the next cycle after a timeout",
+    async (stage) => {
+      const h = history();
+      h.runtime.config.compaction = "manual";
+      h.runtime.config.reflectAfterTokens = 1;
+      h.runtime.config.observationsPoolMaxTokens = 1;
+      h.runtime.config.model = { provider: "openrouter", id: "worker" };
+      h.runtime.resolveModel = Runtime.prototype.resolveModel;
+      h.ctx.model = { provider: "openrouter", id: "worker", contextWindow: 1_000_000 };
+      h.ctx.modelRegistry = {
+        find: () => h.ctx.model,
+        hasConfiguredAuth: () => true,
+        getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test" }),
+      };
+      const source = h.source("RETRY-AFTER-TRANSIENT-FAILURE");
+      if (stage === "observer") h.queue(source);
+      else {
+        const { savePendingObservation, savePendingReflection } =
+          await import("../src/om/pending.js");
+        const obs = observation("aaaaaaaaaaaa", { sourceEntryIds: [source] });
+        savePendingObservation(h.manager.getSessionId(), {
+          coversUpToId: source,
+          data: { observations: [obs] },
+        });
+        if (stage === "dropper")
+          savePendingReflection(h.manager.getSessionId(), {
+            coversUpToId: source,
+            data: { reflections: [reflection("bbbbbbbbbbbb", [obs.id])] },
+          });
+      }
+      const agent =
+        stage === "observer"
+          ? agents.runObserver
+          : stage === "reflector"
+            ? agents.runReflector
+            : agents.runDropper;
+      agent.mockResolvedValue(stage === "observer" ? { observations: [] } : []);
+      agent.mockRejectedValueOnce(new Error("Request timed out."));
+      await h.run();
+      agent.mockClear();
+      // Arm the next eligible trigger without waiting for the short retry gate.
+      h.runtime.lastConsolidationErrorAt = Date.now() - 30_001;
+      await h.run();
+
+      expect(agent).toHaveBeenCalledTimes(1);
+    },
+  );
+
   test("keeps sources and job progress through repeated compactions with no new source", async () => {
     const h = history();
     const first = h.source("OLDER-CAPPED-SOURCE");
@@ -1612,7 +1682,7 @@ describe("catch-up with persisted SessionManager history", () => {
         mkdirSync(pendingFile);
         return result;
       });
-    const modelFailure = vi.spyOn(h.runtime, "recordRetryableError");
+    const modelFailure = vi.spyOn(h.runtime, "recordStageFailure");
     try {
       await h.run();
       expect(agent).toHaveBeenCalledTimes(failure === "save" ? 1 : 2);

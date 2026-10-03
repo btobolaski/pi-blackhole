@@ -541,8 +541,9 @@ Each model config supports the following fields:
 | `provider` | string | Provider name (required). |
 | `id` | string | Model ID (required). |
 | `thinking` | enum | Thinking level: `"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"`. Defaults to `"low"` when unset. |
-| `cooldownHours` | number | Cooldown duration in hours after a cooldown-worthy error — transient (429/5xx/timeout) or deterministic 4xx (missing provider-required headers, bad credentials, unknown model). Defaults to `1` when omitted. Set to `0` to disable persistent cooldown. |
 | `contextWindow` | number | Override for the model's context window. Inherits from Pi's model registry when unset. |
+
+Obsolete `cooldownHours` entries are ignored when parsing model configs; worker failures are tracked only within each stage, never persisted.
 
 **Example:**
 
@@ -552,7 +553,6 @@ Each model config supports the following fields:
     "provider": "anthropic",
     "id": "claude-sonnet-4-20250514",
     "thinking": "low",
-    "cooldownHours": 2,
     "contextWindow": 200000
   },
   "observerFallbackModels": [
@@ -737,8 +737,7 @@ Preset-name field (non-empty string):
   },
   "dropperModel": {
     "provider": "anthropic",
-    "id": "claude-haiku-4-20250514",
-    "cooldownHours": 0
+    "id": "claude-haiku-4-20250514"
   }
 }
 ```

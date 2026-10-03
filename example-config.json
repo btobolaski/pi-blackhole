@@ -17,31 +17,27 @@
     "_comment": "Base model (last fallback before session model).",
     "provider": "openrouter",
     "id": "google/gemma-4-31b-it:free",
-    "thinking": "low",
-    "cooldownHours": 6
+    "thinking": "low"
   },
 
   "observerModel": {
     "_comment": "Observer primary: Qwen3 Next 80B via OpenRouter free (strong extraction with reasoning).",
     "provider": "openrouter",
     "id": "qwen/qwen3-next-80b-a3b-instruct:free",
-    "thinking": "low",
-    "cooldownHours": 12
+    "thinking": "low"
   },
   "observerFallbackModels": [
     {
       "_comment": "Observer fallback 1: Gemma 4 31B via Ollama Cloud.",
       "provider": "ollama",
       "id": "gemma4:31b-cloud",
-      "thinking": "off",
-      "cooldownHours": 6
+      "thinking": "off"
     },
     {
       "_comment": "Observer fallback 2: Gemma 4 31B via OpenRouter free tier.",
       "provider": "openrouter",
       "id": "google/gemma-4-31b-it:free",
-      "thinking": "off",
-      "cooldownHours": 6
+      "thinking": "off"
     }
   ],
 
@@ -49,23 +45,20 @@
     "_comment": "Reflector primary: GPT OSS 120B via Cerebras (strong reasoning for synthesis).",
     "provider": "cerebras",
     "id": "gpt-oss-120b",
-    "thinking": "low",
-    "cooldownHours": 12
+    "thinking": "low"
   },
   "reflectorFallbackModels": [
     {
       "_comment": "Reflector fallback 1: GLM-4.7 via z.ai with thinking enabled.",
       "provider": "zai",
       "id": "glm-4.7",
-      "thinking": "low",
-      "cooldownHours": 6
+      "thinking": "low"
     },
     {
       "_comment": "Reflector fallback 2: GPT OSS 120B via OpenRouter free tier.",
       "provider": "openrouter",
       "id": "openai/gpt-oss-120b:free",
-      "thinking": "low",
-      "cooldownHours": 6
+      "thinking": "low"
     }
   ],
 
@@ -73,23 +66,20 @@
     "_comment": "Dropper primary: GPT OSS 120B via Cerebras (judgment/prioritization).",
     "provider": "cerebras",
     "id": "gpt-oss-120b",
-    "thinking": "off",
-    "cooldownHours": 12
+    "thinking": "off"
   },
   "dropperFallbackModels": [
     {
       "_comment": "Dropper fallback 1: GLM-4.7 via z.ai.",
       "provider": "zai",
       "id": "glm-4.7",
-      "thinking": "low",
-      "cooldownHours": 6
+      "thinking": "low"
     },
     {
       "_comment": "Dropper fallback 2: GPT OSS 120B via OpenRouter free tier.",
       "provider": "openrouter",
       "id": "openai/gpt-oss-120b:free",
-      "thinking": "low",
-      "cooldownHours": 6
+      "thinking": "low"
     }
   ],
 

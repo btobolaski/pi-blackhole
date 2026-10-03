@@ -1,11 +1,7 @@
 /**
  * Shared retryable-error regex and detection function.
  *
- * Extracted from compaction-trigger.ts and cooldown.ts which had diverging
- * copies of the same logic. This is the single source of truth.
- *
- * Now also re-exports Pi's context-overflow detection from @earendil-works/pi-ai,
- * avoiding the need to duplicate 20+ provider-specific overflow patterns.
+ * Shared by compaction retries and consolidation diagnostics.
  */
 
 /** Regex matching retryable API error messages. */
@@ -22,8 +18,8 @@ export function isRetryableError(error: unknown): boolean {
  * Deterministic client errors: retrying the same model cannot succeed without
  * a config/header fix (missing provider-required headers, bad credentials,
  * unknown model, rejected payload). Unlike transient `isRetryableError`
- * failures (same model, later), these must engage the fallback chain and
- * cool the broken model down instead of burning every consolidation cycle.
+ * failures (same model, later), these generally need a config/header fix.
+ * Both kinds advance the worker fallback chain within the current stage.
  *
  * Anchored on explicit signals to avoid false positives from token counts
  * (e.g. "~401-token chunk") — framed codes match with an error framing
@@ -49,19 +45,8 @@ export function isDeterministicError(error: unknown): boolean {
   return BARE_DETERMINISTIC_CODE_RE.test(message) && DETERMINISTIC_SIGNAL_RE.test(message);
 }
 
-/**
- * Cooldown-worthy errors: transient (retry the same model later) or
- * deterministic (try a fallback now, cool the broken model). The consolidation
- * pipeline observes both axes (`cooldownWorthy` in stage error debug logs);
- * candidate cooldowns are recorded regardless, while deterministic failures
- * additionally cool the resolved session model via `recordDeterministicError`.
- */
-export function isCooldownWorthyError(error: unknown): boolean {
-  return isRetryableError(error) || isDeterministicError(error);
-}
-
 /** Detect Pi's "extension ctx is stale" error from session replacement/reload.
- *  These are not model errors and must not be recorded as cooldowns. */
+ *  These are lifecycle errors, not worker-model failures. */
 export function isStaleExtensionContextError(error: unknown): boolean {
   let message: string;
   if (error instanceof Error) {

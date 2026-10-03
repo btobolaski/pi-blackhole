@@ -4,7 +4,7 @@
  * Upstream: https://github.com/elpapi42/pi-observational-memory (src/hooks/consolidation-trigger.ts)
  * Modified by pi-vcc-om:
  * - Each stage retries through fallback models when any error occurs.
- * - All errors record cooldown (so the failed model is skipped next iteration).
+ * - Failed models are skipped for the current stage only, never across runs.
  * - 30s retry gate prevents repeated failed runs (isConsolidationRetryGated).
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -16,7 +16,6 @@ import { createUsageLogger, type UsageLogger } from "./usage-log.js";
 import { type ResolveResult, type Runtime, type RuntimeGeneration } from "./runtime.js";
 import { withProviderAttributionHeaders } from "./provider-stream.js";
 import {
-  isCooldownWorthyError,
   isDeterministicError,
   isRetryableError,
   isStaleExtensionContextError,
@@ -102,8 +101,8 @@ type ReflectorStageResult = {
 };
 
 // Max attempts per stage (primary + all fallbacks the runtime will try internally).
-// Each call to resolveModel tries all non-cooldown candidates.  If the agent throws
-// a retryable error, we record cooldown and call resolveModel again (up to this many times).
+// Each call to resolveModel tries candidates that have not failed in this stage.
+// On failure, skip that model and try the next (up to this many attempts).
 const MAX_STAGE_ATTEMPTS = 10;
 
 function sourceEntriesAfter(entries: Entry[], index: number): Entry[] {
@@ -406,6 +405,7 @@ export function makeModelResolver(
       return resolved;
     }
     debugLog(`${stage}.model_unavailable`, { reason: resolved.reason });
+    if (runtime.failedInCycle.size > 0) runtime.markConsolidationError();
     if (!runtime.resolveFailureNotified && ctx.hasUI && ctx.ui) {
       if (runtime.failedInCycle.size > 0 && resolved.reason.includes("all candidates exhausted")) {
         const fallbackMsg =
@@ -413,7 +413,7 @@ export function makeModelResolver(
         runtime.tryEmitInfo(
           true,
           ctx.ui,
-          `Observational memory: ${stage} skipped — model unavailable (cooldown set to 0, ${fallbackMsg}, will retry next run)`,
+          `Observational memory: ${stage} skipped — model unavailable (${fallbackMsg}, will retry next run)`,
         );
       } else {
         ctx.ui.notify(`Observational memory: ${stage} skipped — ${resolved.reason}`, "warning");
@@ -1056,11 +1056,7 @@ export async function runObserverStage(
             offset,
             model: (resolved.model as any).id,
           });
-          runtime.recordRetryableError(
-            stageModelForThinking,
-            new Error("observer slice cannot fit the source header and next character"),
-            "observer",
-          );
+          runtime.recordStageFailure(resolved.model);
           continue;
         }
         chunk = prefix + body.slice(offset, end);
@@ -1084,13 +1080,7 @@ export async function runObserverStage(
         effectiveCtx: effectiveObsCtx,
         model: `${(resolved.model as any).provider}/${(resolved.model as any).id}`,
       });
-      runtime.recordRetryableError(
-        stageModelForThinking,
-        new Error(
-          `context window ${effectiveObsCtx} too small for estimated input ${observerEstimatedInput}`,
-        ),
-        "observer",
-      );
+      runtime.recordStageFailure(resolved.model);
       runtime.tryEmitInfo(
         ctx.hasUI,
         ctx.ui,
@@ -1197,28 +1187,13 @@ export async function runObserverStage(
         debugLog("observer.stale_ctx", { error: String(error) });
         return "abort";
       }
-      // Always try next fallback — don't abort pipeline for a single model failure.
-      // Record cooldown so resolveModel skips this model in the next iteration.
-      // Deterministic 4xx (e.g. MissingSessionID) additionally cools the
-      // resolved model itself: the session model has no candidate config, so
-      // without this it would retry identically on every cycle.
-      const candidateConfig = runtime.findCandidateConfig(resolved.model, {
-        model: ctx.model,
-        modelRegistry: ctx.modelRegistry,
-        hasUI: ctx.hasUI,
-        ui: ctx.ui,
-        stageModel: stageModelConfig(runtime, "observer"),
-        stageFallbacks: stageFallbackModels(runtime, "observer"),
-      });
-      runtime.recordRetryableError(candidateConfig, error, "observer");
-      if (!candidateConfig) runtime.recordDeterministicError(resolved.model, error, "observer");
+      // Try the next fallback; the failed model is eligible again next run.
+      runtime.recordStageFailure(resolved.model);
       debugLog("observer.error", {
         error: String(error),
         retryable: isRetryableError(error),
         deterministic: isDeterministicError(error),
-        cooldownWorthy: isCooldownWorthyError(error),
       });
-      // Continue loop — resolveModel will skip the cooled-down model
       continue;
     }
   }
@@ -1363,13 +1338,7 @@ async function runReflectorStage(
         effectiveCtx: effectiveRefCtx,
         model: `${(resolved.model as any).provider}/${(resolved.model as any).id}`,
       });
-      runtime.recordRetryableError(
-        stageModelForThinking,
-        new Error(
-          `context window ${effectiveRefCtx} too small for estimated input ${reflectorEstimatedInput}`,
-        ),
-        "reflector",
-      );
+      runtime.recordStageFailure(resolved.model);
       runtime.tryEmitInfo(
         ctx.hasUI,
         ctx.ui,
@@ -1471,21 +1440,11 @@ async function runReflectorStage(
         debugLog("reflector.stale_ctx", { error: String(error) });
         return { outcome: "abort", sameRunReflections: [] };
       }
-      const candidateConfig = runtime.findCandidateConfig(resolved.model, {
-        model: ctx.model,
-        modelRegistry: ctx.modelRegistry,
-        hasUI: ctx.hasUI,
-        ui: ctx.ui,
-        stageModel: stageModelConfig(runtime, "reflector"),
-        stageFallbacks: stageFallbackModels(runtime, "reflector"),
-      });
-      runtime.recordRetryableError(candidateConfig, error, "reflector");
-      if (!candidateConfig) runtime.recordDeterministicError(resolved.model, error, "reflector");
+      runtime.recordStageFailure(resolved.model);
       debugLog("reflector.error", {
         error: String(error),
         retryable: isRetryableError(error),
         deterministic: isDeterministicError(error),
-        cooldownWorthy: isCooldownWorthyError(error),
       });
       continue;
     }
@@ -1652,13 +1611,7 @@ async function runDropperStage(
           effectiveCtx: effectiveDropCtx,
           model: `${(resolved.model as any).provider}/${(resolved.model as any).id}`,
         });
-        runtime.recordRetryableError(
-          stageModelForThinking,
-          new Error(
-            `context window ${effectiveDropCtx} too small for estimated input ${dropperEstimatedInput}`,
-          ),
-          "dropper",
-        );
+        runtime.recordStageFailure(resolved.model);
         runtime.tryEmitInfo(
           ctx.hasUI,
           ctx.ui,
@@ -1725,21 +1678,11 @@ async function runDropperStage(
         debugLog("dropper.stale_ctx", { error: String(error) });
         return "abort";
       }
-      const candidateConfig = runtime.findCandidateConfig(resolved.model, {
-        model: ctx.model,
-        modelRegistry: ctx.modelRegistry,
-        hasUI: ctx.hasUI,
-        ui: ctx.ui,
-        stageModel: stageModelConfig(runtime, "dropper"),
-        stageFallbacks: stageFallbackModels(runtime, "dropper"),
-      });
-      runtime.recordRetryableError(candidateConfig, error, "dropper");
-      if (!candidateConfig) runtime.recordDeterministicError(resolved.model, error, "dropper");
+      runtime.recordStageFailure(resolved.model);
       debugLog("dropper.error", {
         error: String(error),
         retryable: isRetryableError(error),
         deterministic: isDeterministicError(error),
-        cooldownWorthy: isCooldownWorthyError(error),
       });
       continue;
     }
