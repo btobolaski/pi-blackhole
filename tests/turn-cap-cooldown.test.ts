@@ -113,7 +113,7 @@ describe("worker turn-cap cooldown isolation", () => {
         new WorkerStreamError(`${stage} turn cap exhausted`, 0, true),
       );
       const skip = vi.spyOn(f.runtime, "skipFailedForCycle");
-      const cool = vi.spyOn(f.runtime, "recordRetryableError");
+      const cool = vi.spyOn(f.runtime, "recordStageFailure");
       await f.run();
       // Reflector/dropper retain the existing one-item shrink retry after the normal catch.
       expect(workers[stage]).toHaveBeenCalledTimes(stage === "observer" ? 1 : 2);
@@ -128,13 +128,14 @@ describe("worker turn-cap cooldown isolation", () => {
     },
   );
   test.each(["reflector", "dropper"] as const)(
-    "%s still cools provider failures",
+    "%s keeps provider failures stage-local too",
     async (stage) => {
       const f = fixture(stage);
       workers[stage].mockRejectedValue(new Error("HTTP 503 Service Unavailable"));
       await f.run();
       expect(workers[stage]).toHaveBeenCalledOnce();
-      expect(cooldowns()[key]?.reason).toBe("HTTP 503 Service Unavailable");
+      expect(cooldowns()).toEqual({});
+      expect(f.runtime.failedInCycle.has(key)).toBe(true);
     },
   );
 });

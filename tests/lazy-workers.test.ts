@@ -41,7 +41,7 @@ function fixture() {
     model: { provider: "test", id: "model", contextWindow: 1_000_000 },
     apiKey: "test",
   }));
-  runtime.recordRetryableError = vi.fn();
+  runtime.recordStageFailure = vi.fn();
   const entries: any[] = [
     { type: "compaction", id: "c0", summary: "prior work", firstKeptEntryId: "m1" },
     {
@@ -110,7 +110,7 @@ describe("lazy worker imports", () => {
     await runConsolidationPipeline(f.pi, f.runtime, f.ctx, generation);
     expect(imports).toEqual(["observer"]);
     expect(runObserver).toHaveBeenCalledTimes(2);
-    expect(f.runtime.recordRetryableError).toHaveBeenCalledOnce();
+    expect(f.runtime.recordStageFailure).toHaveBeenCalledOnce();
     expect(runReflector).not.toHaveBeenCalled();
     expect(runDropper).not.toHaveBeenCalled();
   });

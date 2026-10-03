@@ -33,7 +33,7 @@ Use these terms consistently. The user will encounter them in the config and in 
 | **Workers** | Background tasks that extract facts and keep memory tidy. They use separate (cheap/free) models so your main model isn't disturbed. |
 | **Usage log** | Optional accounting for observer, reflector, and dropper model usage. Enabled by `usageLog` and written to a `memory-logs/` subdirectory under the session directory, outside pi's session discovery. |
 | **Fallback chain** | If the worker's primary model fails (rate limit, timeout), a backup model is tried automatically. Then another. Last resort is your main conversation model. |
-| **Cooldown** | If a model keeps failing, it's temporarily skipped — prevents hammering a broken API. Cooldowns survive Pi restarts. |
+| **Failure handling** | A failed model is skipped for the current worker stage and eligible again next run. No model ban is persisted; a 30-second pipeline retry gate prevents repeated failed runs. |
 
 ---
 
@@ -55,8 +55,7 @@ src/
 │   └── unified-config.ts     # Config loading, scaffolding, defaults, env var overrides, legacy fallback merge
 ├── om/
 │   ├── consolidation.ts      # Worker orchestration (observer → reflector → dropper), fallback resolution, context window checks
-│   ├── runtime.ts             # Model resolution, cooldown integration, pipeline cursors, retry gate
-│   ├── cooldown.ts            # Cooldown persistence and expiry logic
+│   ├── runtime.ts             # Model resolution, stage-local failures, pipeline cursors, retry gate
 │   ├── pending.ts             # Per-session pending file management (manual compaction mode)
 │   ├── model-budget.ts        # effectiveContextWindow() — context window override resolution order
 │   ├── debug-log.ts           # Debug logging (rotation, format)
@@ -104,11 +103,11 @@ When a worker runs, the runtime builds a candidate model list in this order:
 1. Primary stage model (e.g. `observerModel`)
 2. Stage fallback models (e.g. `observerFallbackModels`) — tried in array order
 3. Base model (`model`) — shared across all workers
-4. Session model (the user's main conversation model) — always the last resort, never cooled down
+4. Session model (the user's main conversation model) — always the last resort
 
 Each candidate is resolved via `modelRegistry.find(provider, id)`. If Pi doesn't know the provider/model combination, it's skipped. The runtime tries up to 10 candidates per stage before giving up (enforced by `MAX_STAGE_ATTEMPTS = 10` in `consolidation.ts`).
 
-**Cooldown-aware skipping:** Before calling a candidate, the runtime checks `isCooldownActive()` (`cooldown.ts`). If the model is in cooldown, it's transparently skipped. Cooldowns are persisted to `pi-blackhole-cooldown.json` and survive Pi restarts.
+**Stage-local failure tracking:** Failed models are skipped for the rest of the current stage via `Runtime.failedInCycle`, including the session fallback if it shares a failed candidate's identity. The set clears at each stage boundary and pipeline run. No model bans are persisted; all models can retry on the next eligible run, subject to the 30-second pipeline retry gate.
 
 **Context window pre-check:** Before launching the agent loop for a worker, the runtime checks `effectiveContextWindow()` (`model-budget.ts`). If the estimated input (chunk tokens + 8k reserve) exceeds the model's context window, that model is skipped and a retryable error is recorded. Resolution order: (1) `OmModelConfig.contextWindow` override, (2) `model.contextWindow` from Pi's registry, (3) fallback of 128k.
 
@@ -165,7 +164,6 @@ interface OmModelConfig {
   provider?: string;       // required with id — omit both for a thinking-only modifier
   id?: string;             // required with provider — omit both for a thinking-only modifier
   thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
-  cooldownHours?: number;  // default 1h, 0 = in-memory only (no disk persistence); requires provider+id
   contextWindow?: number;  // override Pi's registry value; requires provider+id
 }
 ```
@@ -191,7 +189,7 @@ So when the user says "I want to use Qwen 3 Next via OpenRouter", you should che
 > 2. The **memory synthesizer** — runs less often. Distills facts into durable reflections (patterns, constraints, decisions that survive future compressions). Needs stronger reasoning. Benefits from thinking/reasoning support.
 > 3. The **memory pruner** — runs when observations pile up. Removes old or low-value information. Similar capability to the synthesizer.
 >
-> Each worker has a **primary** model and a **fallback chain** — if one fails (rate limit, timeout), the next is tried automatically. Cooldowns prevent hammering broken APIs. Your conversation model is always the very last resort.
+> Each worker has a **primary** model and a **fallback chain** — if one fails (rate limit, timeout), the next is tried automatically. Failed models are skipped only within the current stage and eligible again next run, with a 30-second pipeline retry gate. Your conversation model is always the very last resort.
 >
 > Options:
 > - **Set specific models** for each worker. I'll pick the best available models from your configured providers.
@@ -297,9 +295,9 @@ Based on interview answers, build the config object. Write it to:
   "model": { "provider": "...", "id": "..." },
 
   // ── Per-worker primary models ──
-  "observerModel":  { "provider": "...", "id": "...", "thinking": "low", "cooldownHours": 1 },
-  "reflectorModel": { "provider": "...", "id": "...", "thinking": "low", "cooldownHours": 1 },
-  "dropperModel":   { "provider": "...", "id": "...", "thinking": "off", "cooldownHours": 1 },
+  "observerModel":  { "provider": "...", "id": "...", "thinking": "low" },
+  "reflectorModel": { "provider": "...", "id": "...", "thinking": "low" },
+  "dropperModel":   { "provider": "...", "id": "...", "thinking": "off" },
 
   // ── Per-worker fallback chains (different providers to avoid correlated failures) ──
   "observerFallbackModels":  [ ... ],
@@ -315,7 +313,7 @@ Based on interview answers, build the config object. Write it to:
   "observationsPoolTargetTokens": 10000, // optional — dropper target after pruning; defaults to half of pool max
   "reflectionsPoolMaxTokens": 8000,   // max rendered reflection tokens in compaction output, newest first (0 = uncapped)
   "providerIdleTimeoutMs": 0,          // body-idle timeout between provider response chunks (0/unset = disabled/inherit)
-  "workerAttemptTimeoutMs": 0,         // hard deadline per model attempt (0/unset = disabled, max 2147483647); configured candidates: cooldown + fallback; session fallback: once per stage, no cooldown
+  "workerAttemptTimeoutMs": 0,         // hard deadline per model attempt (0/unset = disabled, max 2147483647); stage-local skip + fallback; session fallback: once per stage; failures never persisted
   "reflectorInputMaxTokens": 80000,    // reflector prompt token cap
   "dropperInputMaxTokens": 80000,      // dropper prompt token cap
   "dropperPressureThreshold": 0.70,    // pool reaches 70% of observationsPoolMaxTokens → dropper fires without new data (1 disables)
@@ -333,15 +331,11 @@ Each model entry supports these fields:
   "provider": "openrouter",   // required — must be known to Pi (explicit in models.json or built-in)
   "id": "qwen/qwen3-next-80b-a3b-instruct:free",  // required — model ID as the provider knows it
   "thinking": "low",          // optional — "off" | "minimal" | "low" | "medium" | "high" | "xhigh"
-  "cooldownHours": 6,         // optional — hours to skip after retryable error (default 1, 0 = in-memory only, no disk writes)
   "contextWindow": 128000     // optional — override Pi's model registry value; used by context window pre-check
 }
 ```
 
-**`cooldownHours: 0` behavior:** When set to 0, the model is never written to the cooldown file on disk. Instead, failures are tracked in-memory for the current consolidation stage only (`Runtime.failedInCycle` Set in `runtime.ts`). This means:
-- The model is skipped for the rest of the current pipeline stage
-- It's available again on the next pipeline run (no persisted cooldown)
-- Useful for testing or when you don't want cooldown state to persist across restarts
+**Worker retry behavior:** All model failures are tracked in-memory for the current consolidation stage only (`Runtime.failedInCycle` in `runtime.ts`). The model is skipped within that stage, then eligible again at the next stage boundary or pipeline run. Exhausting failed models engages the 30-second pipeline retry gate. Obsolete `cooldownHours` entries are ignored when parsing model configs.
 
 ### Context size presets (for fixed numeric thresholds only)
 
@@ -483,9 +477,9 @@ After writing the new config, old locations are unused. Recommend keeping them a
 
 This is handled by `loadUnifiedConfig()` in `src/core/unified-config.ts:90-118`.
 
-### Cooldowns persist across restarts
+### Legacy cooldown files are ignored
 
-`~/.pi/agent/pi-blackhole/pi-blackhole-cooldown.json` — if the user switches models, stale cooldowns for old models are harmless but can be cleaned up. Cooldown entries have `until` (ISO timestamp), `reason`, and `stage` fields. Expired entries are lazily cleaned on read.
+Worker model failures are never persisted. `~/.pi/agent/pi-blackhole/pi-blackhole-cooldown.json` is neither read nor written and can be deleted; restarting Pi is not required to clear a model ban because no such bans remain.
 
 ### Models must be known to Pi
 
@@ -535,7 +529,7 @@ These are preserved by `saveUnifiedConfig()` and ignored by the runtime. Good fo
 | File | Purpose |
 |------|---------|
 | `~/.pi/agent/pi-blackhole/pi-blackhole-config.json` | Main config |
-| `~/.pi/agent/pi-blackhole/pi-blackhole-cooldown.json` | Persisted model cooldowns (survives restarts) |
+| `~/.pi/agent/pi-blackhole/pi-blackhole-cooldown.json` | Legacy file, ignored; safe to delete |
 | `~/.pi/agent/pi-blackhole/<sessionId>-pending.json` | Per-session pending state (manual compaction mode) |
 | `~/.pi/agent/pi-blackhole/debug.ndjson` | Debug logging output (when `debugLog: true`). Rotates at 10 MB (renamed to `.1`, then overwritten). |
 | `{sessionDir}/memory-logs/{sessionId}_memory.jsonl` | OM worker usage log (when `usageLog: true`), in pi session-log format outside pi's session discovery. |

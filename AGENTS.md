@@ -31,7 +31,7 @@ pnpm check         # typecheck + lint
 - `index.ts` is the real factory; `pi.extensions` points at the built `dist/index.js` (gitignored). Git installs that skip devDependencies (`npm install --omit=dev` with no `npmCommand` set) cannot build dist, so `scripts/prepare.mjs` warns and the extension will not load until `npmCommand` is set. The factory installs the host inline-compaction adapter, captures provider streams, registers consolidation + compaction triggers, `session_before_compact` + `session_compact_failed` + `context` hooks, commands, and the unified `recall` tool.
 - `src/core/` — unified config (`unified-config.ts` = defaults + resolution; env overrides declared in `config-env.ts` as `PI_BLACKHOLE_*`). configManager is the true source and entry point - users edit in UI.
 - `src/extract/` — vcc compaction section extraction (goals, files, commits, preferences, brief).
-- `src/om/` — observational memory: `agents/` (observer → reflector → dropper agent loops), `ledger/`, `runtime.ts`, `consolidation.ts`, `compaction-trigger.ts`, `cooldown.ts` (persisted fallback cooldowns), `pending.ts` (manual-mode disk buffers), `inline-compaction.ts`.
+- `src/om/` — observational memory: `agents/` (observer → reflector → dropper agent loops), `ledger/`, `runtime.ts`, `consolidation.ts`, `compaction-trigger.ts`, stage-local model failure tracking, `pending.ts` (manual-mode disk buffers), `inline-compaction.ts`.
 - `src/project-recall/` — project-scoped memory: `corpus.ts` (project session scan + pending orphan attribution), `dedup.ts`, `format-export.ts`, `session-dir.ts`.
 - `src/hooks/` — `before-compact.ts` (`session_before_compact`), `compact-failed.ts` (`session_compact_failed` pi >=0.84.3), `compaction-context.ts` (`context` append-mode projection).
 - `src/commands/` — `pi-vcc.ts` (`/blackhole`), `memory.ts` (`/blackhole-memory`), `vcc-recall.ts` (`/blackhole-recall`), `blackhole-export.ts` (`/blackhole-export`), `cleanup.ts`.
@@ -50,7 +50,7 @@ pnpm check         # typecheck + lint
 ## Debugging / runtime
 
 - `debug: true` → pre-compaction snapshot at `/tmp/pi-blackhole-debug.json`; `debugLog: true` → JSONL at `~/.pi/agent/pi-blackhole/debug.ndjson`.
-- Config lives at `~/.pi/agent/pi-blackhole/pi-blackhole-config.json`; cooldowns at `pi-blackhole-cooldown.json`.
+- Config lives at `~/.pi/agent/pi-blackhole/pi-blackhole-config.json`. Legacy `cooldownHours` values are ignored; worker failures are never persisted.
 
 ## Testing
 

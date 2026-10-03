@@ -13,7 +13,7 @@
  * against a registry double. getAgentDir is mocked to tmp so the (old)
  * persisted cooldown writes land in isolation.
  */
-import { mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -23,19 +23,6 @@ const testDir = join(tmpdir(), `pi-blackhole-reflector-shrink-${Date.now()}`);
 vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>;
   return { ...actual, getAgentDir: () => testDir };
-});
-
-const recordCooldownSpy = vi.hoisted(() => vi.fn());
-
-vi.mock("../src/om/cooldown.js", async (importOriginal) => {
-  const actual = (await importOriginal()) as Record<string, unknown>;
-  return {
-    ...actual,
-    recordCooldown: (...args: unknown[]) => {
-      recordCooldownSpy(...args);
-      return (actual.recordCooldown as (...a: unknown[]) => unknown)(...args);
-    },
-  };
 });
 
 import type { ConsolidationCtx } from "../src/om/consolidation.js";
@@ -140,7 +127,6 @@ beforeEach(() => {
       },
     ],
   }));
-  recordCooldownSpy.mockClear();
 });
 
 afterEach(() => {
@@ -197,7 +183,7 @@ describe("reflector shrink-to-fit batching", () => {
     expect(runReflectorSpy.mock.calls.length).toBeGreaterThan(1);
     expect(runReflectorSpy.mock.calls.at(-1)?.[0].observations).toHaveLength(1);
     expect(appendEntry).not.toHaveBeenCalled();
-    expect(recordCooldownSpy).not.toHaveBeenCalled();
+    expect(existsSync(join(testDir, "pi-blackhole", "pi-blackhole-cooldown.json"))).toBe(false);
     expect(runtime.sizeSkippedInCycle.has("test-shr/length-cut")).toBe(true);
   });
 
@@ -214,7 +200,7 @@ describe("reflector shrink-to-fit batching", () => {
     expect(runReflectorSpy.mock.calls.length).toBeGreaterThan(1);
     expect(runReflectorSpy.mock.calls.at(-1)?.[0].observations).toHaveLength(1);
     expect(appendEntry).not.toHaveBeenCalled();
-    expect(recordCooldownSpy).not.toHaveBeenCalled();
+    expect(existsSync(join(testDir, "pi-blackhole", "pi-blackhole-cooldown.json"))).toBe(false);
     expect(runtime.failedInCycle.has("test-shr/turn-cap")).toBe(true);
     expect(runtime.turnCapSkippedInCycle.has("test-shr/turn-cap")).toBe(true);
   });
@@ -273,7 +259,7 @@ describe("reflector shrink-to-fit batching", () => {
 
     expect(outcome.outcome).toBe("abort");
     expect(runReflectorSpy).not.toHaveBeenCalled();
-    expect(recordCooldownSpy).not.toHaveBeenCalled();
+    expect(existsSync(join(testDir, "pi-blackhole", "pi-blackhole-cooldown.json"))).toBe(false);
   });
 
   test("a fitting run dispatches the preflight output allowance", async () => {

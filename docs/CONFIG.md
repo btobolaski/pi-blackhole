@@ -573,7 +573,7 @@ Accepted via plain config or `PI_BLACKHOLE_PROVIDER_IDLE_TIMEOUT_MS`. Negative v
 
 ### `workerAttemptTimeoutMs`
 
-Hard elapsed deadline for one worker/model attempt. It covers the complete observer, reflector, or dropper agent loop for the selected model: response headers, streamed bodies and heartbeats, tool turns, and final confirmation. When the deadline expires, Blackhole aborts that attempt. If the model is a configured candidate, Blackhole records its cooldown and immediately resolves the next fallback, which gets a fresh deadline. The final session-model fallback behaves differently: it is attempted once per stage, and a timeout there records no cooldown and ends the stage's model search instead of retrying the same session model up to ten times.
+Hard elapsed deadline for one worker/model attempt. It covers the complete observer, reflector, or dropper agent loop for the selected model: response headers, streamed bodies and heartbeats, tool turns, and final confirmation. When the deadline expires, Blackhole aborts that attempt, skips the model for the current stage, and immediately resolves the next fallback, which gets a fresh deadline. The final session-model fallback is attempted once per stage; a timeout ends that stage's model search instead of retrying the same session model up to ten times. Failures are never persisted.
 
 - **unset** or **`0`** — disabled.
 - **`> 0`** — abort one model attempt after this many milliseconds.
@@ -614,10 +614,11 @@ Each model config supports the following fields:
 | `provider` | string | Provider name (required with `id`; omit both for a thinking-only modifier). |
 | `id` | string | Model ID (required with `provider`; omit both for a thinking-only modifier). |
 | `thinking` | enum | Thinking level: `"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"`. Defaults to `"low"` when unset. May be set alone, without `provider`/`id`, as a pure thinking-level modifier for the session-fallback model. |
-| `cooldownHours` | number | Cooldown duration in hours after a cooldown-worthy error — transient (429/5xx/timeout) or deterministic 4xx (missing provider-required headers, bad credentials, unknown model). Defaults to `1` when omitted. Set to `0` to disable persistent cooldown. Requires `provider`+`id`; inert on thinking-only modifiers. |
 | `contextWindow` | number | Override for the model's context window. Inherits from Pi's model registry when unset. Requires `provider`+`id`; inert on thinking-only modifiers. |
 
 A thinking-only entry (`{ "thinking": "low" }`, no `provider`/`id`) is never tried as a model candidate — it only supplies the stage thinking level while the worker tracks the session model via `sessionFallback` (default `true`). With `sessionFallback: false` the stage is skipped. Thinking-only entries in `*FallbackModels` arrays are likewise skipped as candidates. An entry with exactly one of `provider`/`id` is rejected entirely (so a forgotten `id` cannot silently become a modifier).
+
+Obsolete `cooldownHours` entries are ignored when parsing model configs; worker failures are tracked only within each stage, never persisted.
 
 **Example:**
 
@@ -627,7 +628,6 @@ A thinking-only entry (`{ "thinking": "low" }`, no `provider`/`id`) is never tri
     "provider": "anthropic",
     "id": "claude-sonnet-4-20250514",
     "thinking": "low",
-    "cooldownHours": 2,
     "contextWindow": 200000
   },
   "observerFallbackModels": [
@@ -843,8 +843,7 @@ Enum fields (invalid values keep the file value; matching is case-insensitive):
   },
   "dropperModel": {
     "provider": "anthropic",
-    "id": "claude-haiku-4-20250514",
-    "cooldownHours": 0
+    "id": "claude-haiku-4-20250514"
   }
 }
 ```

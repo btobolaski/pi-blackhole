@@ -8,7 +8,7 @@
  *
  * Written FIRST against untouched code (red), then the fixes land (green).
  */
-import { mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -18,19 +18,6 @@ const testDir = join(tmpdir(), `pi-blackhole-review-output-${Date.now()}`);
 vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>;
   return { ...actual, getAgentDir: () => testDir };
-});
-
-const recordCooldownSpy = vi.hoisted(() => vi.fn());
-
-vi.mock("../src/om/cooldown.js", async (importOriginal) => {
-  const actual = (await importOriginal()) as Record<string, unknown>;
-  return {
-    ...actual,
-    recordCooldown: (...args: unknown[]) => {
-      recordCooldownSpy(...args);
-      return (actual.recordCooldown as (...a: unknown[]) => unknown)(...args);
-    },
-  };
 });
 
 import type { ConsolidationCtx } from "../src/om/consolidation.js";
@@ -134,7 +121,6 @@ beforeEach(() => {
   runReflectorSpy.mockReset();
   runDropperSpy.mockReset();
   runObserverSpy.mockResolvedValue(emptyObserverResult());
-  recordCooldownSpy.mockClear();
 });
 
 afterEach(() => {
@@ -173,7 +159,7 @@ describe("length-cut candidate degrades via size-skip, not cooldown", () => {
     expect(outcome).toBe("continue");
     expect(runObserverSpy.mock.calls.length).toBeGreaterThan(1);
     expect(runtime.getCursor("observer")?.entryId).toBe("m1");
-    expect(recordCooldownSpy).not.toHaveBeenCalled();
+    expect(existsSync(join(testDir, "pi-blackhole", "pi-blackhole-cooldown.json"))).toBe(false);
   });
 
   test("reflector batches after a length cut instead of cooling the model", async () => {
@@ -214,7 +200,7 @@ describe("length-cut candidate degrades via size-skip, not cooldown", () => {
 
     expect(outcome.outcome).toBe("continue");
     expect(runReflectorSpy.mock.calls.length).toBeGreaterThan(1);
-    expect(recordCooldownSpy).not.toHaveBeenCalled();
+    expect(existsSync(join(testDir, "pi-blackhole", "pi-blackhole-cooldown.json"))).toBe(false);
   });
 
   test("dropper batches after a length cut instead of cooling the model", async () => {
@@ -249,6 +235,6 @@ describe("length-cut candidate degrades via size-skip, not cooldown", () => {
 
     expect(outcome).toBe("continue");
     expect(runDropperSpy.mock.calls.length).toBeGreaterThan(1);
-    expect(recordCooldownSpy).not.toHaveBeenCalled();
+    expect(existsSync(join(testDir, "pi-blackhole", "pi-blackhole-cooldown.json"))).toBe(false);
   });
 });

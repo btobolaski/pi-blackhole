@@ -123,9 +123,11 @@ describe("local failure cooldown isolation", () => {
     new TypeError("Cannot read properties of undefined (reading 'status')"),
     new ReferenceError("timeout is not defined"),
     new SyntaxError("Unexpected token in local parser"),
-  ])("runtime excludes local errors: %s", (error) => {
+  ])("local failures skip only this stage: %s", async (error) => {
     const f = fixture();
-    f.runtime.recordRetryableError(identity, error, "observer");
+    workers.observer.mockRejectedValue(error);
+    await f.run();
+    expect(workers.observer).toHaveBeenCalledOnce();
     expect(cooldowns()).toEqual({});
     expect(f.runtime.failedInCycle.has(key)).toBe(true);
   });
@@ -148,14 +150,17 @@ describe("local failure cooldown isolation", () => {
     new Error("Dropper API error: timeout is not defined"),
     new TypeError("terminated"),
     Object.assign(new TypeError("body read failed"), { cause: { code: "UND_ERR_BODY_TIMEOUT" } }),
-  ])("provider failures still cool: %s", (error) => {
+  ])("provider failures skip without persistence: %s", async (error) => {
     const f = fixture();
-    f.runtime.recordRetryableError(identity, error, "observer");
-    expect(cooldowns()[key]?.until).toBe("2026-10-16T01:00:00.000Z");
+    workers.observer.mockRejectedValue(error);
+    await f.run();
+    expect(workers.observer).toHaveBeenCalledOnce();
+    expect(cooldowns()).toEqual({});
+    expect(f.runtime.failedInCycle.has(key)).toBe(true);
   });
   test("stale generations never reach the cooldown writer", async () => {
     const f = fixture();
-    const write = vi.spyOn(f.runtime, "recordRetryableError");
+    const write = vi.spyOn(f.runtime, "recordStageFailure");
     workers.observer.mockImplementation(async () => {
       f.runtime.dispose();
       throw new DOMException("The operation was aborted", "AbortError");
@@ -165,13 +170,13 @@ describe("local failure cooldown isolation", () => {
     expect(write).not.toHaveBeenCalled();
     expect(cooldowns()).toEqual({});
   });
-  test("local error mentioning HTTP 401 does not cool the session model", () => {
+  test("local error mentioning HTTP 401 does not persist a model ban", async () => {
     const f = fixture();
-    f.runtime.recordDeterministicError(
-      identity,
+    workers.observer.mockRejectedValue(
       new TypeError("Cannot read properties of undefined: HTTP 401"),
-      "observer",
     );
+    await f.run();
+    expect(workers.observer).toHaveBeenCalledOnce();
     expect(cooldowns()).toEqual({});
     expect(f.runtime.failedInCycle.has(key)).toBe(true);
   });

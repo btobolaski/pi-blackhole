@@ -347,7 +347,7 @@ describe("observer never covers source entries it was never shown", () => {
     // [s0, s1, s2] and its delivered chunk end (s2) is NOT the partial point.
     const runtime = makeRuntime(700, 1000);
     const advance = vi.spyOn(runtime, "advanceCursor");
-    const recordRetryable = vi.spyOn(runtime, "recordRetryableError");
+    const recordRetryable = vi.spyOn(runtime, "recordStageFailure");
     runObserverSpy
       .mockResolvedValueOnce({
         observations: [observation("o1", { sourceEntryIds: ["s0"] })],
@@ -379,7 +379,7 @@ describe("observer never covers source entries it was never shown", () => {
     ];
     const runtime = makeRuntime(700, 1000);
     const advance = vi.spyOn(runtime, "advanceCursor");
-    const recordRetryable = vi.spyOn(runtime, "recordRetryableError");
+    const recordRetryable = vi.spyOn(runtime, "recordStageFailure");
     // A partial id the batch never delivered must never be committed: the
     // batch is discarded and the halved retry below also caps, so the run
     // aborts with the cursor unmoved — still with no cooldown.
@@ -411,7 +411,7 @@ describe("observer never covers source entries it was never shown", () => {
     // 4 × ~302 ≈ 1208 tokens fits one 2000-token chunk, so the first attempt
     // delivers [s0..s3].
     const runtime = makeRuntime(700, 2000);
-    const recordRetryable = vi.spyOn(runtime, "recordRetryableError");
+    const recordRetryable = vi.spyOn(runtime, "recordStageFailure");
     runObserverSpy
       .mockRejectedValueOnce(turnCapError())
       .mockResolvedValueOnce({
@@ -526,7 +526,7 @@ describe("observer never covers source entries it was never shown", () => {
     const runtime = makeRuntime(700, 2000);
     const pi = { appendEntry: vi.fn() };
     const advance = vi.spyOn(runtime, "advanceCursor");
-    const recordRetryable = vi.spyOn(runtime, "recordRetryableError");
+    const recordRetryable = vi.spyOn(runtime, "recordStageFailure");
     const tailFact = observation("dddddddddddd", { sourceEntryIds: ["s2", "s3"] });
     runObserverSpy
       .mockResolvedValueOnce({ unanchoredObservations: [tailFact] })

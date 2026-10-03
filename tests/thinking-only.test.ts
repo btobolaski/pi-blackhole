@@ -340,29 +340,12 @@ describe("thinking-only stageThinkingLevel precedence", () => {
   });
 });
 
-describe("thinking-only cooldown inertness", () => {
-  it("partial entries never activate or record cooldowns", async () => {
-    const { isCooldownActive, recordCooldown, getCooldownEntry } =
-      await import("../src/om/cooldown.js");
-    const partial = { thinking: "low" } as { provider?: string; id?: string; thinking: "low" };
-    expect(isCooldownActive(partial as never)).toBe(false);
-    expect(getCooldownEntry(partial as never)).toBeUndefined();
-    // Must not throw and must not create a cooldown file entry.
-    recordCooldown(partial as never, "429 Too Many Requests", "observer");
-    expect(isCooldownActive(partial as never)).toBe(false);
-  });
-
-  it("recordRetryableError ignores partial configs", async () => {
+describe("thinking-only stage-failure tracking", () => {
+  it("ignores modifiers without a provider and model identity", async () => {
     const { Runtime } = await import("../src/om/runtime.js");
     const runtime = new Runtime();
     try {
-      expect(() =>
-        runtime.recordRetryableError(
-          { thinking: "low" } as never,
-          new Error("429 Too Many Requests"),
-          "observer",
-        ),
-      ).not.toThrow();
+      runtime.recordStageFailure({ thinking: "low" });
       expect(runtime.failedInCycle.size).toBe(0);
     } finally {
       runtime.dispose();

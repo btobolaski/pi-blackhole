@@ -2,7 +2,7 @@
 
 export type WorkerStage = "observer" | "reflector" | "dropper";
 
-/** A retryable failure that tells consolidation to cool down the model and try its fallback. */
+/** A retryable failure that skips the model for this stage and tries its fallback. */
 export class WorkerAttemptTimeoutError extends Error {
   readonly stage: WorkerStage;
   readonly timeoutMs: number;
@@ -21,7 +21,7 @@ export class WorkerAttemptTimeoutError extends Error {
  * Unlike the provider body-idle timeout, this bounds the whole agent loop:
  * response headers, streamed heartbeats, tool turns, and final confirmation.
  * Timing out aborts the child signal and rejects immediately so consolidation
- * can record cooldown and resolve the next fallback model. The underlying
+ * can record a stage-local failure and resolve the next fallback model. The underlying
  * promise remains observed in case a provider ignores cancellation.
  */
 export function runWorkerAttempt<T>(

@@ -1,5 +1,7 @@
 # Configuration Guide
 
+> Legacy configuration reference. For current behavior see [CONFIG.md](CONFIG.md): `cooldownHours` is now ignored, and worker model failures are tracked only within each stage without persistent cooldowns.
+
 All settings live in a single JSON file: **`~/.pi/agent/pi-blackhole/pi-blackhole-config.json`**
 
 The file is auto-created with defaults on first startup. See [`example-config.json`](example-config.json) for an annotated example with inline explanations. This guide explains every setting in detail so you know exactly what to change and why.

@@ -463,14 +463,12 @@ ${conversation}`;
   // session-model break-glass keys on turnCapExhausted — letting the
   // completion check claim it first would misreport a config limit as a
   // retryable provider failure. A provider `error` is carved out: it keeps
-  // its own classification (deterministic cooldown depends on its message),
-  // and error turns never spend budget, so the cap did not cause it. A valid
-  // close
-  // that recorded something already settled the chunk, so a cap
-  // firing after it changes nothing; a cap firing before anything was recorded
-  // is still an empty success (the stage advances the cursor as "empty"). The
-  // message names no status code: this is a config limit,
-  // not a provider failure, so it must not cool a session model as deterministic.
+  // its own diagnostic classification, and error turns never spend budget,
+  // so the cap did not cause it. A valid close that recorded something
+  // already settled the chunk, so a later cap changes nothing; a cap firing
+  // before anything was recorded is still an empty success (the stage
+  // advances the cursor as "empty"). The message names no status code:
+  // this is a config limit, not a deterministic provider error.
   // Two carve-outs: a concurrent abort keeps the completion check's `aborted`
   // classification, and a `length` terminal carrying a deterministic (4xx)
   // message keeps its provider-error classification — the cap did not cause it.

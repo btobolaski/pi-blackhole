@@ -12,7 +12,7 @@
  * module-mocked worker. getAgentDir is mocked to tmp so the (old) persisted
  * cooldown writes land in isolation; every test uses a unique model id.
  */
-import { mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -24,8 +24,6 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
   return { ...actual, getAgentDir: () => testDir };
 });
 
-const recordCooldownSpy = vi.hoisted(() => vi.fn());
-
 const debugEvents = vi.hoisted(() => [] as Array<{ event: string; data: any }>);
 
 vi.mock("../src/om/debug-log.js", async (importOriginal) => {
@@ -34,17 +32,6 @@ vi.mock("../src/om/debug-log.js", async (importOriginal) => {
     ...actual,
     debugLog: (event: string, data: Record<string, unknown> = {}) => {
       debugEvents.push({ event, data });
-    },
-  };
-});
-
-vi.mock("../src/om/cooldown.js", async (importOriginal) => {
-  const actual = (await importOriginal()) as Record<string, unknown>;
-  return {
-    ...actual,
-    recordCooldown: (...args: unknown[]) => {
-      recordCooldownSpy(...args);
-      return (actual.recordCooldown as (...a: unknown[]) => unknown)(...args);
     },
   };
 });
@@ -124,7 +111,6 @@ beforeEach(() => {
   mkdirSync(testDir, { recursive: true });
   runObserverSpy.mockReset();
   runObserverSpy.mockResolvedValue(emptyResult());
-  recordCooldownSpy.mockClear();
   debugEvents.length = 0;
 });
 
@@ -242,7 +228,7 @@ describe("observer shrink-to-fit", () => {
 
     expect(outcome).toBe("abort");
     expect(runObserverSpy).not.toHaveBeenCalled();
-    expect(recordCooldownSpy).not.toHaveBeenCalled();
+    expect(existsSync(join(testDir, "pi-blackhole", "pi-blackhole-cooldown.json"))).toBe(false);
   });
 
   test("a many-small-entries backlog shrinks to a serialized-fitting chunk and drains", async () => {
@@ -352,7 +338,7 @@ describe("observer shrink-to-fit", () => {
 
     expect(outcome).toBe("abort");
     expect(runObserverSpy).not.toHaveBeenCalled();
-    expect(recordCooldownSpy).not.toHaveBeenCalled();
+    expect(existsSync(join(testDir, "pi-blackhole", "pi-blackhole-cooldown.json"))).toBe(false);
     // A single entry the largest window cannot hold aborts every cycle with
     // the cursor unmoved — surfaced as a diagnostic, not silent.
     expect(debugEvents.some((entry) => entry.event === "observer.shrink_single_oversized")).toBe(

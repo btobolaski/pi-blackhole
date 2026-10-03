@@ -153,12 +153,21 @@ describe("request-local cooldown isolation", () => {
       expect(await makeModelResolver(f.runtime, f.ctx, f.generation)("dropper")).toBeDefined();
     },
   );
-  test.each(requestErrors)("session request incompatibility skips in-cycle too: %s", (error) => {
-    const f = fixture();
-    f.runtime.recordDeterministicError(identity, error, "observer");
-    expect(cooldowns()).toEqual({});
-    expect(f.runtime.failedInCycle.has(key)).toBe(true);
-  });
+  test.each(requestErrors)(
+    "session request incompatibility skips in-cycle too: %s",
+    async (error) => {
+      const f = fixture();
+      f.runtime.config.model = undefined;
+      f.runtime.config.observerFallbackModels = [];
+      f.runtime.config.sessionFallback = true;
+      const ctx = { ...f.ctx, model: { ...identity, contextWindow: 1_000_000 } };
+      workers.observer.mockRejectedValue(error);
+      await runConsolidationPipeline(createExtensionApiDouble(), f.runtime, ctx, f.generation);
+      expect(workers.observer).toHaveBeenCalledOnce();
+      expect(cooldowns()).toEqual({});
+      expect(f.runtime.failedInCycle.has(key)).toBe(true);
+    },
+  );
   test.each([
     "HTTP 401 Unauthorized",
     "HTTP 404 model not found",
@@ -173,10 +182,13 @@ describe("request-local cooldown isolation", () => {
     "HTTP 401 Unauthorized: payload too large",
     "HTTP 503 invalid thinking level",
     "HTTP 400 Bad Request: context service unavailable",
-  ])("does not blindly suppress status codes or keywords: %s", (message) => {
+  ])("provider failures remain stage-local: %s", async (message) => {
     const f = fixture();
-    f.runtime.recordRetryableError(identity, new Error(message), "observer");
-    expect(cooldowns()[key]?.until).toBe("2026-10-16T01:00:00.000Z");
+    workers.observer.mockRejectedValue(new Error(message));
+    await f.run();
+    expect(workers.observer).toHaveBeenCalledOnce();
+    expect(cooldowns()).toEqual({});
+    expect(f.runtime.failedInCycle.has(key)).toBe(true);
   });
   test("a useful close is kept without a misleading cooldown notice", async () => {
     const f = fixture();

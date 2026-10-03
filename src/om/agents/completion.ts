@@ -42,9 +42,9 @@ function lastMessageWithStopReason<T extends { stopReason?: string }>(
 /**
  * The last `stopReason` the host reported on this run, if any. Agents read
  * this alongside `agentCompletionError` to rank overlapping failures: a
- * provider `error` keeps its own classification (deterministic cooldown
- * depends on its message) even when the turn cap had fired earlier — `error`
- * turns never spend budget, so the cap did not cause them.
+ * provider `error` keeps its own diagnostic classification even when the
+ * turn cap had fired earlier — `error` turns never spend budget, so the cap
+ * did not cause them.
  */
 export function agentFailureStopReason(
   messages: readonly { stopReason?: string }[],

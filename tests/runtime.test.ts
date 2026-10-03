@@ -1,5 +1,5 @@
 /**
- * Runtime model resolution tests — fallback chain + cooldown.
+ * Runtime model resolution tests — fallback chain + stage-local failures.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
@@ -210,19 +210,8 @@ describe("Runtime.resolveModel — fallback chain", () => {
       observerModel: {
         provider: "github-copilot",
         id: "cooled-model",
-        cooldownHours: 24,
       },
     });
-    const { recordCooldown } = await import("../src/om/cooldown.js");
-    recordCooldown(
-      {
-        provider: "github-copilot",
-        id: "cooled-model",
-        cooldownHours: 24,
-      },
-      "test cooldown",
-      "observer",
-    );
     const sessionModel = makeModel("session-model", "github-copilot", {
       baseUrl: "https://api.individual.githubcopilot.com",
     });
@@ -232,6 +221,10 @@ describe("Runtime.resolveModel — fallback chain", () => {
     const { Runtime } = await import("../src/om/runtime.js");
     const runtime = new Runtime();
     runtime.ensureConfig(testDir);
+    runtime.recordStageFailure({
+      provider: "github-copilot",
+      id: "cooled-model",
+    });
 
     const result = await runtime.resolveModel({
       model: sessionModel,
@@ -352,29 +345,22 @@ describe("Runtime.resolveModel — fallback chain", () => {
     }
   });
 
-  it("skips primary model when in cooldown, uses fallback", async () => {
+  it("skips a failed primary within the stage, uses fallback", async () => {
     writeConfig({
       observerModel: {
         provider: "openrouter",
         id: "primary-model:free",
-        cooldownHours: 24,
       },
-      observerFallbackModels: [
-        { provider: "openrouter", id: "fallback-model:free", cooldownHours: 2 },
-      ],
+      observerFallbackModels: [{ provider: "openrouter", id: "fallback-model:free" }],
     });
-
-    // Pre-populate cooldown for primary model
-    const { recordCooldown } = await import("../src/om/cooldown.js");
-    recordCooldown(
-      { provider: "openrouter", id: "primary-model:free", cooldownHours: 24 },
-      "429 test",
-      "observer",
-    );
 
     const { Runtime } = await import("../src/om/runtime.js");
     const runtime = new Runtime();
     runtime.ensureConfig(testDir);
+    runtime.recordStageFailure({
+      provider: "openrouter",
+      id: "primary-model:free",
+    });
 
     const registry = makeRegistry([
       makeModel("primary-model:free", "openrouter"),
@@ -395,24 +381,21 @@ describe("Runtime.resolveModel — fallback chain", () => {
     }
   });
 
-  it("falls through to config.model when all stage models cooled down", async () => {
+  it("falls through to config.model when stage models failed", async () => {
     writeConfig({
       observerModel: {
         provider: "openrouter",
         id: "primary:free",
-        cooldownHours: 24,
       },
-      observerFallbackModels: [{ provider: "openrouter", id: "fallback:free", cooldownHours: 24 }],
-      model: { provider: "openrouter", id: "base:free", cooldownHours: 1 },
+      observerFallbackModels: [{ provider: "openrouter", id: "fallback:free" }],
+      model: { provider: "openrouter", id: "base:free" },
     });
-
-    const { recordCooldown } = await import("../src/om/cooldown.js");
-    recordCooldown({ provider: "openrouter", id: "primary:free" }, "429", "observer");
-    recordCooldown({ provider: "openrouter", id: "fallback:free" }, "429", "observer");
 
     const { Runtime } = await import("../src/om/runtime.js");
     const runtime = new Runtime();
     runtime.ensureConfig(testDir);
+    runtime.recordStageFailure({ provider: "openrouter", id: "primary:free" });
+    runtime.recordStageFailure({ provider: "openrouter", id: "fallback:free" });
 
     const registry = makeRegistry([
       makeModel("primary:free", "openrouter"),
@@ -439,12 +422,10 @@ describe("Runtime.resolveModel — fallback chain", () => {
       observerModel: { provider: "openrouter", id: "primary:free" },
     });
 
-    const { recordCooldown } = await import("../src/om/cooldown.js");
-    recordCooldown({ provider: "openrouter", id: "primary:free" }, "429", "observer");
-
     const { Runtime } = await import("../src/om/runtime.js");
     const runtime = new Runtime();
     runtime.ensureConfig(testDir);
+    runtime.recordStageFailure({ provider: "openrouter", id: "primary:free" });
 
     const registry = makeRegistry([
       makeModel("primary:free", "openrouter"),
@@ -470,12 +451,10 @@ describe("Runtime.resolveModel — fallback chain", () => {
       sessionFallback: false,
     });
 
-    const { recordCooldown } = await import("../src/om/cooldown.js");
-    recordCooldown({ provider: "openrouter", id: "primary:free" }, "429", "observer");
-
     const { Runtime } = await import("../src/om/runtime.js");
     const runtime = new Runtime();
     runtime.ensureConfig(testDir);
+    runtime.recordStageFailure({ provider: "openrouter", id: "primary:free" });
 
     const registry = makeRegistry([makeModel("primary:free", "openrouter")]);
 
@@ -493,14 +472,13 @@ describe("Runtime.resolveModel — fallback chain", () => {
     }
   });
 
-  it("skips model in failedInCycle (cooldown 0, failed this cycle), uses fallback", async () => {
+  it("skips model in failedInCycle, uses fallback", async () => {
     writeConfig({
       observerModel: {
         provider: "openrouter",
         id: "primary:free",
-        cooldownHours: 0,
       },
-      observerFallbackModels: [{ provider: "openrouter", id: "fallback:free", cooldownHours: 6 }],
+      observerFallbackModels: [{ provider: "openrouter", id: "fallback:free" }],
     });
 
     const { Runtime } = await import("../src/om/runtime.js");
@@ -508,11 +486,7 @@ describe("Runtime.resolveModel — fallback chain", () => {
     runtime.ensureConfig(testDir);
 
     // Simulate: primary model failed this cycle → tracked in-memory
-    runtime.recordRetryableError(
-      { provider: "openrouter", id: "primary:free", cooldownHours: 0 },
-      new Error("connection error"),
-      "observer",
-    );
+    runtime.recordStageFailure({ provider: "openrouter", id: "primary:free" });
 
     const registry = makeRegistry([
       makeModel("primary:free", "openrouter"),
@@ -524,7 +498,7 @@ describe("Runtime.resolveModel — fallback chain", () => {
       modelRegistry: registry,
       hasUI: false,
       stageModel: { provider: "openrouter", id: "primary:free" },
-      stageFallbacks: [{ provider: "openrouter", id: "fallback:free", cooldownHours: 6 }],
+      stageFallbacks: [{ provider: "openrouter", id: "fallback:free" }],
     });
 
     expect(result.ok).toBe(true);
@@ -542,7 +516,6 @@ describe("Runtime.resolveModel — fallback chain", () => {
       observerModel: {
         provider: "openrouter",
         id: "primary:free",
-        cooldownHours: 0,
       },
     });
 
@@ -551,11 +524,7 @@ describe("Runtime.resolveModel — fallback chain", () => {
     runtime.ensureConfig(testDir);
 
     // Simulate failure in observer stage
-    runtime.recordRetryableError(
-      { provider: "openrouter", id: "primary:free", cooldownHours: 0 },
-      new Error("observer error"),
-      "observer",
-    );
+    runtime.recordStageFailure({ provider: "openrouter", id: "primary:free" });
     expect(runtime.failedInCycle.has("openrouter/primary:free")).toBe(true);
 
     // Clear as pipeline does between stages
@@ -712,88 +681,107 @@ describe("Consolidation trigger — guards with new config keys", () => {
   });
 });
 
-describe("Runtime — cooldown persistence", () => {
-  it("recordCooldown writes to disk", async () => {
-    const { recordCooldown } = await import("../src/om/cooldown.js");
-    recordCooldown(
-      { provider: "openrouter", id: "test-model:free", cooldownHours: 5 },
-      "429 Too Many Requests",
-      "observer",
-    );
-    const data = readCooldownFile();
-    const key = "openrouter/test-model:free";
-    expect(data[key]).toBeDefined();
-    expect((data[key] as any).reason).toBe("429 Too Many Requests");
-    expect((data[key] as any).stage).toBe("observer");
+describe("Runtime — failures never persist across stages", () => {
+  it("skips a resolved model when registry casing differs from its configured identity", async () => {
+    const { Runtime } = await import("../src/om/runtime.js");
+    const runtime = new Runtime();
+    runtime.config.sessionFallback = false;
+    const normalized = makeModel("WORKER", "OpenRouter");
+    const fallback = makeModel("fallback");
+    const registry = makeRegistry([normalized, fallback]);
+    registry.find.mockImplementation((_provider, id) => (id === "worker" ? normalized : fallback));
+    runtime.recordStageFailure(normalized);
+
+    const result = await runtime.resolveModel({
+      model: undefined,
+      modelRegistry: registry,
+      hasUI: false,
+      stageModel: { provider: "openrouter", id: "worker" },
+      stageFallbacks: [{ provider: fallback.provider, id: fallback.id }],
+    });
+
+    expect(result).toMatchObject({ ok: true, model: { id: "fallback" } });
   });
 
-  it("isCooldownActive returns true for active cooldown", async () => {
-    const { recordCooldown, isCooldownActive } = await import("../src/om/cooldown.js");
-    recordCooldown(
-      { provider: "openrouter", id: "cool-model:free", cooldownHours: 24 },
-      "429",
-      "observer",
-    );
-    expect(isCooldownActive({ provider: "openrouter", id: "cool-model:free" })).toBe(true);
+  it.each(["configured", "session"])(
+    "ignores legacy cooldown entries for %s models",
+    async (route) => {
+      const provider = "openrouter";
+      writeConfig({});
+      const model = makeModel("legacy-model", provider);
+      writeConfig(
+        {
+          [`${provider}/${model.id}`]: {
+            until: new Date(Date.now() + 3_600_000).toISOString(),
+            reason: "Observer API error: Request timed out.",
+            stage: "observer",
+          },
+        },
+        "pi-blackhole/pi-blackhole-cooldown.json",
+      );
+      const { Runtime } = await import("../src/om/runtime.js");
+      const runtime = new Runtime();
+      runtime.ensureConfig(testDir);
+
+      const result = await runtime.resolveModel({
+        model: route === "session" ? model : undefined,
+        modelRegistry: makeRegistry([model]),
+        hasUI: false,
+        stageModel: route === "configured" ? { provider, id: model.id } : undefined,
+      });
+
+      expect(result).toMatchObject({ ok: true, model: { provider, id: model.id } });
+    },
+  );
+
+  it("does not write a cooldown after a model failure", async () => {
+    writeConfig({});
+    const { Runtime } = await import("../src/om/runtime.js");
+    const runtime = new Runtime();
+    runtime.ensureConfig(testDir);
+    runtime.recordStageFailure({ provider: "openrouter", id: "worker" });
+
+    expect(existsSync(cooldownFile())).toBe(false);
   });
 
-  it("isCooldownActive returns false when no cooldown entry", async () => {
-    const { isCooldownActive } = await import("../src/om/cooldown.js");
-    expect(isCooldownActive({ provider: "openrouter", id: "never-cooled:free" })).toBe(false);
+  it("does not retry a failed candidate as the session model in the same stage", async () => {
+    writeConfig({});
+    const { Runtime } = await import("../src/om/runtime.js");
+    const runtime = new Runtime();
+    runtime.ensureConfig(testDir);
+    const model = makeModel("shared-model");
+    runtime.recordStageFailure(model);
+
+    const result = await runtime.resolveModel({
+      model,
+      modelRegistry: makeRegistry([model]),
+      hasUI: false,
+      stageModel: { provider: model.provider, id: model.id },
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("failed this cycle"),
+    });
   });
 
-  it("expireCooldowns removes expired entries", async () => {
-    const { recordCooldown, expireCooldowns, isCooldownActive } =
-      await import("../src/om/cooldown.js");
-    // Record cooldown with 0 hours → expires immediately
-    recordCooldown(
-      { provider: "openrouter", id: "expiring:free", cooldownHours: 0 },
-      "429",
-      "observer",
-    );
-    // Wait a tick
-    await new Promise((r) => setTimeout(r, 10));
-    expireCooldowns();
-    // Should be expired now
-    expect(isCooldownActive({ provider: "openrouter", id: "expiring:free" })).toBe(false);
-  });
+  it("resolves a previously failed model after failedInCycle is cleared", async () => {
+    writeConfig({});
+    const { Runtime } = await import("../src/om/runtime.js");
+    const runtime = new Runtime();
+    runtime.ensureConfig(testDir);
+    const model = makeModel("retry-next-stage");
+    runtime.recordStageFailure(model);
+    runtime.failedInCycle.clear();
 
-  it("recordCooldown with cooldownHours: 0 writes nothing to disk", async () => {
-    const { recordCooldown } = await import("../src/om/cooldown.js");
-    recordCooldown(
-      { provider: "openrouter", id: "noop-model:free", cooldownHours: 0 },
-      "any error",
-      "observer",
-    );
-    const data = readCooldownFile();
-    expect(data["openrouter/noop-model:free"]).toBeUndefined();
-    expect(Object.keys(data)).toHaveLength(0);
-  });
+    const result = await runtime.resolveModel({
+      model: undefined,
+      modelRegistry: makeRegistry([model]),
+      hasUI: false,
+      stageModel: { provider: model.provider, id: model.id },
+    });
 
-  it("isCooldownActive with cooldownHours: 0 returns false without disk read", async () => {
-    const { isCooldownActive } = await import("../src/om/cooldown.js");
-    // No cooldown file exists yet
-    expect(
-      isCooldownActive({
-        provider: "openrouter",
-        id: "disabled:free",
-        cooldownHours: 0,
-      }),
-    ).toBe(false);
-    // Even with a stale cooldown file, cooldownHours: 0 short-circuits
-    const { recordCooldown } = await import("../src/om/cooldown.js");
-    recordCooldown(
-      { provider: "openrouter", id: "other:free", cooldownHours: 5 },
-      "error",
-      "observer",
-    );
-    expect(
-      isCooldownActive({
-        provider: "openrouter",
-        id: "disabled:free",
-        cooldownHours: 0,
-      }),
-    ).toBe(false);
+    expect(result).toMatchObject({ ok: true, model: { id: model.id } });
   });
 });
 
@@ -891,146 +879,50 @@ describe("Runtime.resolveModel — resolution provenance", () => {
   });
 });
 
-describe("Runtime — recordRetryableError", () => {
-  it("persists cooldown for a candidate model", async () => {
+describe("Runtime — stage-local failure tracking", () => {
+  it.each([
+    undefined,
+    null,
+    {},
+    { provider: "openrouter" },
+    { provider: 1, id: "model" },
+    { provider: "openrouter", id: 1 },
+  ])("ignores malformed model identities: %j", async (model) => {
     const { Runtime } = await import("../src/om/runtime.js");
     const runtime = new Runtime();
-    runtime.ensureConfig(testDir);
 
-    runtime.recordRetryableError(
-      { provider: "openrouter", id: "to-cool:free", cooldownHours: 5 },
-      new Error("429 Too Many Requests"),
-      "observer",
-    );
-    const data = readCooldownFile();
-    expect(data["openrouter/to-cool:free"]).toBeDefined();
+    runtime.recordStageFailure(model);
+
+    expect(runtime.failedInCycle.size).toBe(0);
   });
 
-  it("skips cooldown record when modelConfig is undefined (session model)", async () => {
-    const { Runtime } = await import("../src/om/runtime.js");
-    const runtime = new Runtime();
-    runtime.ensureConfig(testDir);
-
-    // Should not throw or write
-    runtime.recordRetryableError(undefined, new Error("429"), "observer");
-    expect(readCooldownFile()).toEqual({});
-  });
-
-  it("cooldownHours: 0 tracks in failedInCycle, does not write to disk", async () => {
-    const { Runtime } = await import("../src/om/runtime.js");
-    const runtime = new Runtime();
-    runtime.ensureConfig(testDir);
-
-    runtime.recordRetryableError(
-      { provider: "openrouter", id: "no-persist:free", cooldownHours: 0 },
-      new Error("connection refused"),
-      "observer",
-    );
-
-    // No disk write
-    const data = readCooldownFile();
-    expect(data["openrouter/no-persist:free"]).toBeUndefined();
-
-    // But tracked in-memory
-    expect(runtime.failedInCycle.has("openrouter/no-persist:free")).toBe(true);
-  });
-
-  it("cooldownHours > 0 persists to disk and does NOT add to failedInCycle", async () => {
-    const { Runtime } = await import("../src/om/runtime.js");
-    const runtime = new Runtime();
-    runtime.ensureConfig(testDir);
-
-    runtime.recordRetryableError(
-      { provider: "openrouter", id: "persist:free", cooldownHours: 6 },
-      new Error("rate limited"),
-      "observer",
-    );
-
-    // Disk write happened
-    const data = readCooldownFile();
-    expect(data["openrouter/persist:free"]).toBeDefined();
-
-    // NOT in in-memory set
-    expect(runtime.failedInCycle.has("openrouter/persist:free")).toBe(false);
-  });
-});
-
-describe("Runtime — session-model deterministic cooldown", () => {
-  const missingSession = () =>
-    new Error(
-      'Reflector API error: 400: {"type":"MissingSessionID","message":"Request is missing x-opencode-session"}',
-    );
-
-  function sessionCtx(registry: ReturnType<typeof makeRegistry>, sessionModel: unknown) {
-    return { model: sessionModel, modelRegistry: registry, hasUI: false };
-  }
-
-  it("cools the session model on deterministic errors so resolveModel skips it", async () => {
+  it("skips a failed session-only model within the current stage", async () => {
     writeConfig({});
     const { Runtime } = await import("../src/om/runtime.js");
     const runtime = new Runtime();
     runtime.ensureConfig(testDir);
-    const registry = makeRegistry([]);
-    const sessionModel = makeModel("om-session", "opencode-go");
+    const model = makeModel("session-only");
+    runtime.recordStageFailure(model);
 
-    const first = await runtime.resolveModel(sessionCtx(registry, sessionModel));
-    expect(first.ok).toBe(true);
+    const result = await runtime.resolveModel({
+      model,
+      modelRegistry: makeRegistry([]),
+      hasUI: false,
+    });
 
-    runtime.recordDeterministicError(
-      first.ok ? first.model : sessionModel,
-      missingSession(),
-      "observer",
-    );
-    expect(readCooldownFile()["opencode-go/om-session"]).toBeDefined();
-
-    const second = await runtime.resolveModel(sessionCtx(registry, sessionModel));
-    expect(second.ok).toBe(false);
-    if (!second.ok) expect(second.reason).toContain("cooldown");
-  });
-
-  it("leaves the session model usable after transient errors", async () => {
-    writeConfig({});
-    const { Runtime } = await import("../src/om/runtime.js");
-    const runtime = new Runtime();
-    runtime.ensureConfig(testDir);
-    const registry = makeRegistry([]);
-    const sessionModel = makeModel("om-session", "opencode-go");
-
-    // A blip on the main model must not disable OM for an hour.
-    runtime.recordDeterministicError(
-      sessionModel,
-      new Error("503 Service Unavailable"),
-      "observer",
-    );
-    expect(readCooldownFile()).toEqual({});
-
-    const result = await runtime.resolveModel(sessionCtx(registry, sessionModel));
-    expect(result.ok).toBe(true);
-  });
-
-  it("ignores malformed resolved models without throwing", async () => {
-    writeConfig({});
-    const { Runtime } = await import("../src/om/runtime.js");
-    const runtime = new Runtime();
-    runtime.ensureConfig(testDir);
-
-    expect(() =>
-      runtime.recordDeterministicError({ provider: "opencode-go" }, missingSession(), "observer"),
-    ).not.toThrow();
-    expect(() =>
-      runtime.recordDeterministicError(null, missingSession(), "observer"),
-    ).not.toThrow();
-    expect(readCooldownFile()).toEqual({});
+    expect(result).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("failed this cycle"),
+    });
   });
 });
 
 describe("Runtime — sessionFallback notification", () => {
-  it("fires info notification when sessionFallback disabled and cooldown-disabled models exhausted chain", async () => {
+  it("fires info notification when sessionFallback disabled and failed models exhausted chain", async () => {
     writeConfig({
       observerModel: {
         provider: "openrouter",
         id: "primary:free",
-        cooldownHours: 0,
       },
       sessionFallback: false,
     });
@@ -1040,11 +932,7 @@ describe("Runtime — sessionFallback notification", () => {
     runtime.ensureConfig(testDir);
 
     // Simulate: primary model failed → added to failedInCycle
-    runtime.recordRetryableError(
-      { provider: "openrouter", id: "primary:free", cooldownHours: 0 },
-      new Error("connection error"),
-      "observer",
-    );
+    runtime.recordStageFailure({ provider: "openrouter", id: "primary:free" });
 
     const notify = vi.fn();
     const registry = makeRegistry([]);
@@ -1141,9 +1029,8 @@ describe("Runtime.resolveModel — OAuth/ADC auth", () => {
     const runtime = new Runtime();
     runtime.ensureConfig(testDir);
 
-    // Cool down the primary so we fall through to session model
-    const { recordCooldown } = await import("../src/om/cooldown.js");
-    recordCooldown({ provider: "openrouter", id: "primary:free" }, "429", "observer");
+    // Skip the failed primary within this stage.
+    runtime.recordStageFailure({ provider: "openrouter", id: "primary:free" });
 
     const registry = {
       models: [makeModel("primary:free", "openrouter")],
@@ -1220,9 +1107,8 @@ describe("Runtime.resolveModel — OAuth/ADC auth", () => {
     const runtime = new Runtime();
     runtime.ensureConfig(testDir);
 
-    // Cool down the primary so we fall through to session model
-    const { recordCooldown } = await import("../src/om/cooldown.js");
-    recordCooldown({ provider: "openrouter", id: "primary:free" }, "429", "observer");
+    // Skip the failed primary within this stage.
+    runtime.recordStageFailure({ provider: "openrouter", id: "primary:free" });
 
     const registry = {
       models: [makeModel("primary:free", "openrouter")],

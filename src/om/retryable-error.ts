@@ -1,14 +1,8 @@
 /**
  * Shared retryable-error regex and detection function.
  *
- * Extracted from compaction-trigger.ts and cooldown.ts which had diverging
- * copies of the same logic. This is the single source of truth.
- *
- * Now also re-exports Pi's context-overflow detection from @earendil-works/pi-ai,
- * avoiding the need to duplicate 20+ provider-specific overflow patterns.
+ * Shared by compaction retries and consolidation diagnostics.
  */
-
-import { isContextOverflow } from "@earendil-works/pi-ai";
 
 /** Regex matching retryable API error messages. */
 export const RETRYABLE_ERROR_RE =
@@ -24,8 +18,8 @@ export function isRetryableError(error: unknown): boolean {
  * Deterministic client errors: retrying the same model cannot succeed without
  * a config/header fix (missing provider-required headers, bad credentials,
  * unknown model, rejected payload). Unlike transient `isRetryableError`
- * failures (same model, later), these must engage the fallback chain and
- * cool the broken model down instead of burning every consolidation cycle.
+ * failures (same model, later), these generally need a config/header fix.
+ * Both kinds advance the worker fallback chain within the current stage.
  *
  * Anchored on explicit signals to avoid false positives from token counts
  * (e.g. "~401-token chunk") — framed codes match with an error framing
@@ -100,7 +94,7 @@ export class WorkerStreamError extends Error {
  */
 const DISCARDED_COUNT = Symbol.for("pi-blackhole.discardedCount");
 
-function isAttachable(value: unknown): value is object {
+function isAttachable(value: unknown): value is Record<PropertyKey, unknown> {
   return value !== null && (typeof value === "object" || typeof value === "function");
 }
 
@@ -109,7 +103,7 @@ function isAttachable(value: unknown): value is object {
  * rethrowing, then return that value unchanged. Deliberately not wrapped in
  * `WorkerStreamError`: the consolidation stage's catch switches on the identity
  * of stale-context and timeout errors, and replacing one with a stream error
- * would send it down the cooldown path instead of aborting or breaking.
+ * would send it down the model-failure path instead of aborting or breaking.
  */
 export function withDiscardedCount<T>(thrown: T, count: number): T {
   if (isAttachable(thrown)) {
@@ -131,7 +125,7 @@ export function withDiscardedCount<T>(thrown: T, count: number): T {
 export function getDiscardedCount(error: unknown): number | undefined {
   if (error instanceof WorkerStreamError) return error.discardedCount;
   if (isAttachable(error)) {
-    const attached: unknown = Reflect.get(error, DISCARDED_COUNT);
+    const attached: unknown = error[DISCARDED_COUNT];
     if (typeof attached === "number") return attached;
   }
   return undefined;
@@ -144,8 +138,8 @@ export function isDeterministicError(error: unknown): boolean {
   // The worker's `… API error: ` framing is not provider text. Leaving it in
   // would let the word "error" satisfy DETERMINISTIC_SIGNAL_RE on every message
   // these workers produce, so BARE_DETERMINISTIC_CODE_RE alone would decide and
-  // a status-shaped token anywhere in the body (`processed 401 rows`) would cool
-  // the model for an hour. DETERMINISTIC_ERROR_RE above still sees the framing,
+  // a status-shaped token anywhere in the body (`processed 401 rows`) would be
+  // misclassified. DETERMINISTIC_ERROR_RE above still sees the framing,
   // which is what makes a bare code that *opens* the provider text — a status
   // line — read as the status it is.
   const providerText = message.replace(WORKER_FRAMING_RE, "");
@@ -154,23 +148,8 @@ export function isDeterministicError(error: unknown): boolean {
   );
 }
 
-/**
- * Cooldown-worthy errors: transient (retry the same model later) or
- * deterministic (try a fallback now, cool the broken model). The consolidation
- * pipeline observes both axes (`cooldownWorthy` in stage error debug logs);
- * candidate cooldowns are recorded regardless, while deterministic failures
- * additionally cool the resolved session model via `recordDeterministicError`.
- */
-export function isCooldownWorthyError(error: unknown): boolean {
-  return (
-    !isLocalExecutionError(error) &&
-    !isRequestLocalError(error) &&
-    (isRetryableError(error) || isDeterministicError(error))
-  );
-}
-
 /** Detect Pi's "extension ctx is stale" error from session replacement/reload.
- *  These are not model errors and must not be recorded as cooldowns. */
+ *  These are lifecycle errors, not worker-model failures. */
 export function isStaleExtensionContextError(error: unknown): boolean {
   let message: string;
   if (error instanceof Error) {
@@ -181,132 +160,4 @@ export function isStaleExtensionContextError(error: unknown): boolean {
     message = String(error || "");
   }
   return message.includes("extension ctx is stale") || message.includes("ctx is stale");
-}
-
-/** Local execution failures do not establish provider/model unavailability. */
-export function isLocalExecutionError(error: unknown): boolean {
-  const fields = error !== null && typeof error === "object" ? error : undefined;
-  const name = fields && "name" in fields ? fields.name : undefined;
-  const code = fields && "code" in fields ? fields.code : undefined;
-  const message = fields && "message" in fields ? String(fields.message) : String(error || "");
-  const text = message.replace(WORKER_FRAMING_RE, "");
-  const cause = fields && "cause" in fields ? fields.cause : undefined;
-  const causeCode =
-    cause !== null && typeof cause === "object" && "code" in cause ? cause.code : undefined;
-  // Fetch/undici reject transport and mid-body failures with TypeError too.
-  if (
-    name === "TypeError" &&
-    (/^(?:fetch failed|Failed to fetch|terminated|NetworkError when attempting to fetch resource\.?)$/i.test(
-      text,
-    ) ||
-      (typeof causeCode === "string" && causeCode.startsWith("UND_ERR_")))
-  )
-    return false;
-  return (
-    name === "AbortError" ||
-    name === "TypeError" ||
-    name === "ReferenceError" ||
-    name === "SyntaxError" ||
-    name === "RangeError" ||
-    code === "ERR_MODULE_NOT_FOUND" ||
-    code === "MODULE_NOT_FOUND" ||
-    /^Cannot find (?:module|package) /i.test(text) ||
-    // Framed provider text can describe malformed responses, not local bugs.
-    (!WORKER_FRAMING_RE.test(message) &&
-      /^(?:Cannot read properties of |[\w$]+ is not defined\b|(?:TypeError|ReferenceError|SyntaxError):)/i.test(
-        text,
-      )) ||
-    /^(?:The operation was aborted|request aborted|aborted)$/i.test(text) ||
-    isStaleExtensionContextError(error)
-  );
-}
-
-/**
- * Request-size/options rejection does not establish model-wide unavailability.
- * SDKs expose status + code/param, while workers can flatten provider failures
- * to text. Text fallbacks require a status framing and a specific rejection,
- * never merely the word "context" or a blanket exclusion of every 400.
- */
-export function isRequestLocalError(error: unknown): boolean {
-  const fields = error !== null && typeof error === "object" ? error : undefined;
-  const message = fields && "message" in fields ? String(fields.message) : String(error || "");
-  const text = message.replace(WORKER_FRAMING_RE, "");
-  const rawStatus =
-    fields && "status" in fields
-      ? fields.status
-      : fields && "statusCode" in fields
-        ? fields.statusCode
-        : undefined;
-  // The outer status wins: do not read an upstream 400 inside a 503 body.
-  const statusText = text.match(
-    /^(?:HTTP(?:\/[\d.]+)?\s+|[\w -]+ API error\s*\(|status\s*:?\s*|error\s*[:(]\s*)?([45]\d{2})\b/i,
-  )?.[1];
-  // Gemini/Vertex flatten their ApiError to JSON with no HTTP prefix.
-  // Only accept that leading error envelope, never a quoted code in prose.
-  const jsonStatus = text.match(
-    /^(?:got status: INVALID_ARGUMENT\.\s*)?\{\s*"error"\s*:\s*\{\s*"code"\s*:\s*(4\d{2})\b/i,
-  )?.[1];
-  const status = typeof rawStatus === "number" ? rawStatus : Number(statusText ?? jsonStatus);
-  if (status === 413) return true;
-  if (status !== 400 && status !== 422) return false;
-  // pi-ai 0.85.1 classified any bodyless 400 as context overflow. Keep the
-  // current contract on that supported peer too: no evidence means no exemption.
-  if (/\(no body\)/i.test(text)) return false;
-  // A provider-required session header is configuration-wide, not payload-local.
-  if (/MissingSessionID|missing.?session|invalid.?api.?key|unauthorized/i.test(text)) return false;
-  const detail =
-    fields && "error" in fields && fields.error !== null && typeof fields.error === "object"
-      ? fields.error
-      : fields;
-  const code = detail && "code" in detail ? detail.code : undefined;
-  const param = detail && "param" in detail ? detail.param : undefined;
-  if (code === "context_length_exceeded" || code === "request_too_large") return true;
-  if (
-    (param === "reasoning_effort" ||
-      param === "reasoning.effort" ||
-      param === "thinking_level" ||
-      param === "thinking.level") &&
-    (code === "unsupported_value" || code === "invalid_value")
-  )
-    return true;
-  // Reuse pi-ai's maintained provider overflow patterns without treating a
-  // bare 400 as overflow. Only the error-message arm is used (no usage inference).
-  if (
-    isContextOverflow({
-      role: "assistant",
-      content: [],
-      api: "openai-completions",
-      provider: "unknown",
-      model: "unknown",
-      stopReason: "error",
-      errorMessage: text,
-      timestamp: 0,
-      usage: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0,
-        totalTokens: 0,
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-      },
-    })
-  )
-    return true;
-  // OpenAI provider text: openai/openai-python#2112. Responses uses the
-  // reasoning.effort param spelling (openai/codex#45955). Match the rejected
-  // parameter plus error code, not an arbitrary unsupported-value message.
-  const thinkingParam =
-    /"param"\s*:\s*"(?:reasoning[._]effort|thinking_level|thinking\.level)"/i.test(text);
-  const unsupportedValue = /"code"\s*:\s*"(?:unsupported_value|invalid_value)"/i.test(text);
-  // Literal "invalid thinking level" is a defensive fallback for custom
-  // providers; the parameter-specific patterns above have incident evidence.
-  return (
-    (thinkingParam && unsupportedValue) ||
-    /Unsupported value:\s*['"]reasoning_effort['"] does not support ['"][^'"]+['"] with this model\./i.test(
-      text,
-    ) ||
-    /\b(?:payload|request(?: body)?) (?:is )?too large\b|\b(?:invalid|unsupported) thinking level\b|\bthinking level .{1,40} (?:is )?(?:invalid|not supported)\b/i.test(
-      text,
-    )
-  );
 }

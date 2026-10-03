@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   getDiscardedCount,
-  isCooldownWorthyError,
   isDeterministicError,
   isRetryableError,
   withDiscardedCount,
@@ -46,8 +45,8 @@ describe("withDiscardedCount", () => {
 
 // Issue: OpenCode Go gateway rejects worker requests without x-opencode-session
 // (400 MissingSessionID). That 400 is deterministic — retrying the same model
-// cannot succeed — so it must cool the model down and engage fallbacks instead
-// of retrying identically every consolidation cycle.
+// cannot succeed without a header fix. Worker failures advance to fallbacks
+// within the stage without persisting a model ban.
 const MISSING_SESSION_BODY =
   'Reflector API error: 400: {"type":"MissingSessionID","message":"Error from provider (Console Go): Request is missing x-opencode-session. External coding-agent clients must send a stable x-opencode-session header."}';
 
@@ -57,7 +56,6 @@ describe("deterministic client errors", () => {
     expect(isDeterministicError(error)).toBe(true);
     // Transient retry would never heal this — documents the axis split.
     expect(isRetryableError(error)).toBe(false);
-    expect(isCooldownWorthyError(error)).toBe(true);
   });
 
   it("classifies framed 4xx statuses as deterministic", () => {
@@ -123,7 +121,7 @@ describe("deterministic client errors", () => {
 
   it("accepts string (non-Error) inputs", () => {
     expect(isDeterministicError("MissingSessionID")).toBe(true);
-    expect(isCooldownWorthyError("HTTP 403 Forbidden")).toBe(true);
+    expect(isDeterministicError("HTTP 403 Forbidden")).toBe(true);
   });
 });
 
@@ -146,13 +144,7 @@ describe("retryable error classification", () => {
   });
 });
 
-describe("cooldown-worthy errors (transient OR deterministic)", () => {
-  it("keeps transient failures cooldown-worthy", () => {
-    expect(isCooldownWorthyError(new Error("429 Too Many Requests"))).toBe(true);
-    expect(isCooldownWorthyError(new Error("503 Service Unavailable"))).toBe(true);
-    expect(isCooldownWorthyError(new Error("upstream connect timeout"))).toBe(true);
-  });
-
+describe("transient and deterministic diagnostic axes", () => {
   it("keeps transient/detail axes separate", () => {
     // 429 is transient (same model, later) — not deterministic.
     expect(isRetryableError(new Error("429 Too Many Requests"))).toBe(true);
@@ -163,6 +155,5 @@ describe("cooldown-worthy errors (transient OR deterministic)", () => {
     const error = new Error("all good");
     expect(isRetryableError(error)).toBe(false);
     expect(isDeterministicError(error)).toBe(false);
-    expect(isCooldownWorthyError(error)).toBe(false);
   });
 });

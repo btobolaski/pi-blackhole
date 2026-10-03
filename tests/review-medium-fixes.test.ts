@@ -4,7 +4,7 @@
  * Written FIRST against untouched code (red), then the fixes land (green).
  * Real Runtime + real stages, module-mocked workers, tmp-isolated cooldowns.
  */
-import { mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -14,19 +14,6 @@ const testDir = join(tmpdir(), `pi-blackhole-review-medium-${Date.now()}`);
 vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>;
   return { ...actual, getAgentDir: () => testDir };
-});
-
-const recordCooldownSpy = vi.hoisted(() => vi.fn());
-
-vi.mock("../src/om/cooldown.js", async (importOriginal) => {
-  const actual = (await importOriginal()) as Record<string, unknown>;
-  return {
-    ...actual,
-    recordCooldown: (...args: unknown[]) => {
-      recordCooldownSpy(...args);
-      return (actual.recordCooldown as (...a: unknown[]) => unknown)(...args);
-    },
-  };
 });
 
 import type { ConsolidationCtx } from "../src/om/consolidation.js";
@@ -144,7 +131,6 @@ beforeEach(() => {
   runReflectorSpy.mockReset();
   runDropperSpy.mockReset();
   runObserverSpy.mockResolvedValue(emptyObserverResult());
-  recordCooldownSpy.mockClear();
 });
 
 afterEach(() => {
@@ -675,7 +661,7 @@ describe("M6: a length-cut session model breaks instead of burning all attempts"
 
     expect(outcome).toBe("abort");
     expect(runObserverSpy).toHaveBeenCalledTimes(1);
-    expect(recordCooldownSpy).not.toHaveBeenCalled();
+    expect(existsSync(join(testDir, "pi-blackhole", "pi-blackhole-cooldown.json"))).toBe(false);
   });
 
   test("reflector stops after one length-cut session attempt", async () => {
@@ -702,7 +688,7 @@ describe("M6: a length-cut session model breaks instead of burning all attempts"
 
     expect(outcome.outcome).toBe("abort");
     expect(runReflectorSpy).toHaveBeenCalledTimes(1);
-    expect(recordCooldownSpy).not.toHaveBeenCalled();
+    expect(existsSync(join(testDir, "pi-blackhole", "pi-blackhole-cooldown.json"))).toBe(false);
   });
 
   test("dropper stops after one length-cut session attempt", async () => {
@@ -736,7 +722,7 @@ describe("M6: a length-cut session model breaks instead of burning all attempts"
 
     expect(outcome).toBe("abort");
     expect(runDropperSpy).toHaveBeenCalledTimes(1);
-    expect(recordCooldownSpy).not.toHaveBeenCalled();
+    expect(existsSync(join(testDir, "pi-blackhole", "pi-blackhole-cooldown.json"))).toBe(false);
   });
 });
 

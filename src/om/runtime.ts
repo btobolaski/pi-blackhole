@@ -1,35 +1,24 @@
 /**
  * Observational memory runtime — model resolution, consolidation lifecycle,
- * cooldown integration, error tracking.
+ * per-stage model failure tracking, error handling.
  *
  * Upstream: https://github.com/elpapi42/pi-observational-memory (src/runtime.ts)
  * Modified by pi-vcc-om:
  * - resolveModel iterates fallback chain (stage → fallbacks → base → session).
- * - Skips cooled-down models (cooldown.ts).
- * - recordRetryableError persists cooldown on API errors.
+ * - Skips failed models only for the current stage; never persists model bans.
  * - markConsolidationError sets 30s retry gate for failed runs.
  */
 import { type Config, type ConfiguredModel, DEFAULTS, loadConfig } from "./config.js";
 import type { CompactionStats } from "../hooks/before-compact.js";
-import {
-  isCooldownActive,
-  recordCooldown,
-  expireCooldowns,
-  modelKey,
-  sanitizeCooldownReason,
-  getCooldownEntry,
-} from "./cooldown.js";
-import {
-  isDeterministicError,
-  isRetryableError,
-  isLocalExecutionError,
-  isRequestLocalError,
-} from "./retryable-error.js";
 import { readPendingCursors, writePendingCursors } from "./pending.js";
 import type { PendingOMState } from "./pending.js";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type { AuthResult } from "@earendil-works/pi-ai";
 import { debugLog } from "./debug-log.js";
+
+function modelKey(model: { provider: string; id: string }): string {
+  return `${model.provider.trim().toLowerCase()}/${model.id.trim().toLowerCase()}`;
+}
 
 /** A model entry with a resolvable identity (provider+id). Thinking-only
  *  modifiers (`{ thinking }`) lack this and are skipped as candidates. */
@@ -51,7 +40,6 @@ interface ResolvedModelBase {
   apiKey: string;
   headers?: Record<string, string>;
   env?: Record<string, string>;
-  cooldownApplied?: boolean;
 }
 
 export type ResolveResult =
@@ -175,8 +163,7 @@ export class Runtime {
   consolidationPhase: ConsolidationPhase | undefined;
   /**
    * Models that failed in the current consolidation stage (in-memory only).
-   * Used when cooldownHours is 0 — avoids disk writes while still letting
-   * the retry loop advance past the failed model within this stage.
+   * Lets the retry loop advance to a fallback without banning models across runs.
    * Cleared between stages at the pipeline level.
    */
   failedInCycle: Set<string> = new Set();
@@ -191,8 +178,7 @@ export class Runtime {
   /**
    * Models skipped in the current consolidation stage because the sized input
    * does not fit their context window (in-memory only). A too-small window is
-   * not a broken model, so — unlike recordRetryableError — this never writes
-   * a persisted cooldown: the model stays available for smaller inputs and
+   * not a broken model: the model stays available for smaller inputs and
    * for the shrink-to-fit pass. Cleared between stages alongside failedInCycle.
    */
   sizeSkippedInCycle: Set<string> = new Set();
@@ -259,7 +245,7 @@ export class Runtime {
    * Per-run notice dedupe/collection: keys whose first occurrence was already
    * emitted this run, and the collapsed summary flushed at agent_end.
    *
-   * Resolve-time problems (removed model, missing auth, active cooldown) repeat
+   * Resolve-time problems (removed model, missing auth, stage-local skips) repeat
    * on every candidate walk of every cycle. Emitting each one floods the
    * terminal and scrolls the first hit out of view; suppressing all of them
    * hides the problem. The compromise: the first occurrence of each distinct
@@ -455,7 +441,7 @@ export class Runtime {
     // their own per-run dedupe plus the end-of-run summary, while the gate's
     // single slot belongs to progress toasts. Spending it here would silence
     // the progress that follows (e.g. the observer turn-cap checkpoint) after
-    // a cooldown/skip notice fired first — and emitting is unconditional on
+    // a skip notice fired first — and emitting is unconditional on
     // first occurrence, so checking the gate would instead silence the resolve
     // notice after unrelated progress. Repeats return above either way.
     try {
@@ -562,7 +548,6 @@ export class Runtime {
     if (this.configLoaded) return;
     this.config = loadConfig(cwd, warn);
     this.configLoaded = true;
-    expireCooldowns();
   }
 
   /**
@@ -610,10 +595,9 @@ export class Runtime {
    * When disabled, returns { ok: false } instead of using the session model,
    * allowing the stage to be skipped entirely when all configured OM models fail.
    *
-   * Skips models that are currently in a cooldown window.
-   * On retryable error (after the agent runs), the model that failed is cooled down
-   * and the next candidate is tried.  The caller must call `recordRetryableError`
-   * after the API attempt to mark the failed model.
+   * Skips models that already failed in the current stage. The caller must
+   * call `recordStageFailure` after a failed attempt so the next candidate
+   * is tried. Models are eligible again at the next stage boundary.
    *
    * Returns `ok: true` with the resolved model, or `ok: false` with a reason
    * if all candidates (including session model, if enabled) are exhausted or unavailable.
@@ -628,10 +612,8 @@ export class Runtime {
       signal?.throwIfAborted();
       const key = modelKey(candidate);
 
-      // In-memory skip: model failed earlier in this stage with cooldownHours 0,
-      // or hit the agent turn cap (an input-size limit, not a broken model).
-      // The turn-cap skip gets its own key and text so the toast names the
-      // cause instead of reusing the generic failed-model wording.
+      // Failed identities are skipped only for this stage. Turn-cap skips
+      // retain their own notice so the input-size limit stays visible.
       if (this.failedInCycle.has(key)) {
         if (this.turnCapSkippedInCycle.has(key)) {
           this.emitNotice(
@@ -662,31 +644,6 @@ export class Runtime {
           `Observational memory: ${stageName} skipping ${key} (context window too small for this input)`,
         );
         debugLog("model.size_skipped_this_cycle", { stage: stageName, model: key });
-        continue;
-      }
-
-      if (isCooldownActive(candidate)) {
-        // Issue #80: the cooldown reason can be an error body — keep it in
-        // the log file only, never interpolate it into the toast. The key is
-        // per-cooldown-window, so a fresh cooldown after this one expires can
-        // announce again while repeats of the same window stay collapsed.
-        const cooldown = getCooldownEntry(candidate);
-        this.emitNotice(
-          ctx.hasUI,
-          ctx.ui,
-          `cooldown:${stageName}:${key}:${cooldown?.until ?? ""}`,
-          `Observational memory: ${stageName} skipping ${key} (cooldown — details in cooldown log)`,
-        );
-        // Issue #110 follow-up: a cycle skipped by cooldown is otherwise
-        // invisible in the debug log (only the toast shows it). Emit the
-        // persisted reason so log-only readers can compute denominators.
-        debugLog("model.cooldown_skip", {
-          stage: stageName,
-          model: key,
-          ...(cooldown
-            ? { until: cooldown.until, reason: cooldown.reason, cooldownStage: cooldown.stage }
-            : {}),
-        });
         continue;
       }
 
@@ -744,7 +701,6 @@ export class Runtime {
         apiKey: (auth.apiKey as string) ?? "",
         headers: auth.headers as Record<string, string> | undefined,
         env: (auth as any).env as Record<string, string> | undefined,
-        cooldownApplied: false,
       };
     }
 
@@ -758,30 +714,8 @@ export class Runtime {
         };
       }
 
-      // Deterministic-error cooldown also applies to the session model: a
-      // deterministically broken main model (e.g. missing provider-required
-      // headers) must not burn all stage attempts every cycle. Candidate
-      // models are skipped via isCooldownActive in the loop above; the session
-      // model has no candidate config, so check its persisted entry directly
-      // (recorded by recordDeterministicError). Transient errors never land
-      // here — only deterministic 4xx-class failures record session cooldowns.
+      // Do not retry a failed candidate under its session-model identity.
       const sessionIdentity = sessionModel as { provider?: unknown; id?: unknown };
-      if (
-        typeof sessionIdentity.provider === "string" &&
-        typeof sessionIdentity.id === "string" &&
-        isCooldownActive({ provider: sessionIdentity.provider, id: sessionIdentity.id })
-      ) {
-        return {
-          ok: false,
-          reason: `session model ${sessionIdentity.provider}/${sessionIdentity.id} in cooldown (deterministic error, will retry after window)`,
-        };
-      }
-
-      // In-memory per-cycle failures also apply to the session fallback: when
-      // the session model shares provider/id with a candidate that already
-      // failed this cycle (cooldownHours: 0), it IS the same model. Returning
-      // it would re-run an identical stalled model, and findCandidateConfig
-      // would match the configured entry — defeating the stage-level break.
       if (
         typeof sessionIdentity.provider === "string" &&
         typeof sessionIdentity.id === "string" &&
@@ -791,7 +725,7 @@ export class Runtime {
       ) {
         return {
           ok: false,
-          reason: `no model available for ${stageName} (all candidates exhausted, session model ${sessionIdentity.provider}/${sessionIdentity.id} failed this cycle)`,
+          reason: `no model available for ${stageName} (all candidates exhausted, session model ${sessionIdentity.provider}/${sessionIdentity.id} failed this cycle, will retry next run)`,
         };
       }
 
@@ -844,7 +778,6 @@ export class Runtime {
         apiKey: (auth.apiKey as string) ?? "",
         headers: auth.headers as Record<string, string> | undefined,
         env: (auth as any).env as Record<string, string> | undefined,
-        cooldownApplied: false,
       };
     }
 
@@ -950,7 +883,7 @@ export class Runtime {
    * persisting a cooldown. Used for input-size limits (the agent turn cap)
    * rather than a broken model: re-offering the identical input now would only
    * burn the same budget, but a smaller input may fit next cycle, so the model
-   * must not be benched for `cooldownHours`. Pass `"turn_cap"` for a turn-cap
+   * must remain eligible next run. Pass `"turn_cap"` for a turn-cap
    * skip so the notice names the cause; any other skip keeps the generic
    * failed-this-cycle text. Accepts a candidate config or a
    * resolved model identity; undefined (an unresolvable session model) is a
@@ -963,81 +896,11 @@ export class Runtime {
     if (reason === "turn_cap") this.turnCapSkippedInCycle.add(key);
   }
 
-  /**
-   * Record a retryable error for a model.  The model must be one of the candidates
-   * (not the session model).  If it's the session model we don't cool it down.
-   *
-   * When cooldownHours is explicitly 0, the model is tracked in-memory for the
-   * current consolidation stage (no disk writes). Local execution errors/aborts
-   * and request-local size/option errors
-   * are also in-cycle only. Otherwise a persisted cooldown
-   * is recorded.
-   */
-  recordRetryableError(
-    modelConfig: ConfiguredModel | undefined,
-    error: unknown,
-    stage: ConsolidationPhase,
-  ): void {
-    if (!modelConfig) return;
-    // Thinking-only modifiers carry no identity to cool down; the session
-    // model's deterministic errors are handled via recordDeterministicError.
-    if (!hasModelIdentity(modelConfig)) return;
-    if (
-      modelConfig.cooldownHours === 0 ||
-      isLocalExecutionError(error) ||
-      isRequestLocalError(error)
-    ) {
-      // In-memory only: skip this model for the rest of this stage.
-      // No disk writes, no persistent cooldown.
-      this.failedInCycle.add(modelKey(modelConfig));
-      return;
-    }
-    const rawReason = error instanceof Error ? error.message : String(error || "unknown error");
-    // Issue #80: strip trailing JSON bodies AND HTML error pages (WAF blocks)
-    // down to a short `HTTP <status>` line, capped at ~200 chars, so the
-    // cooldown log never stores a full page and the skip toast stays short.
-    // recordCooldown re-sanitizes as defense-in-depth.
-    const brief = sanitizeCooldownReason(rawReason);
-    const causeClass = isDeterministicError(error)
-      ? "provider_configuration"
-      : isRetryableError(error) ||
-          /\b(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENOTFOUND)\b/.test(rawReason)
-        ? "provider_transient"
-        : "unknown";
-    recordCooldown(modelConfig, brief, stage, causeClass);
-  }
-
-  /**
-   * Record a deterministic client error (4xx-class: missing provider-required
-   * headers, bad credentials, unknown model) for the RESOLVED model — including
-   * the session model, which has no candidate config and is therefore invisible
-   * to `recordRetryableError`. Without this, a deterministically broken session
-   * model retries identically on every consolidation cycle (up to
-   * MAX_STAGE_ATTEMPTS per stage) instead of cooling down and letting the
-   * pipeline settle. Transient errors are excluded: a blip on the user's main
-   * model must not disable OM for an hour (the 30s consolidation retry gate
-   * throttles those).
-   */
-  recordDeterministicError(
-    resolvedModel: unknown,
-    error: unknown,
-    stage: ConsolidationPhase,
-  ): void {
+  /** Skip any failed model, including the session model, for this stage only. */
+  recordStageFailure(resolvedModel: unknown): void {
     const model = resolvedModel as { provider?: unknown; id?: unknown } | null | undefined;
     if (typeof model?.provider !== "string" || typeof model?.id !== "string") return;
-    if (isLocalExecutionError(error) || isRequestLocalError(error)) {
-      this.skipFailedForCycle({ provider: model.provider, id: model.id });
-      return;
-    }
-    if (!isDeterministicError(error)) return;
-    const rawReason = error instanceof Error ? error.message : String(error || "unknown error");
-    // recordCooldown sanitizes + defaults to a 1h window when cooldownHours is unset.
-    recordCooldown(
-      { provider: model.provider, id: model.id },
-      sanitizeCooldownReason(rawReason),
-      stage,
-      "provider_configuration",
-    );
+    this.failedInCycle.add(modelKey({ provider: model.provider, id: model.id }));
   }
 
   /**

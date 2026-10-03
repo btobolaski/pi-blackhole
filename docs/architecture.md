@@ -30,7 +30,7 @@ Five architectural pillars define the extension:
 1. **Deterministic compaction** — The [[vcc-compaction#compile pipeline]] extracts structured sections (goals, files, commits, preferences, brief transcript) using regex heuristics. No LLM, no hallucination, no API cost. Trigger paths (settled + mid-run) and their history: [[mid-run-compaction]].
 2. **Observational memory** — Three [[observational-memory#The three workers|background workers]] (Observer, Reflector, Dropper) capture timestamped observations and durable reflections in a session ledger that persists across compactions.
 3. **Unified configuration** — One JSON file (`~/.pi/agent/pi-blackhole/pi-blackhole-config.json`) replaces two upstream configs. See [[config#Unified configuration]].
-4. **Per-worker model fallback** — Each OM worker has a primary model and ordered fallback list with persisted cooldowns. See [[observational-memory#Model resolution]].
+4. **Per-worker model fallback** — Each OM worker has a primary model and ordered fallback list with stage-local failure tracking, not persistent model bans. See [[observational-memory#Model resolution]].
 5. **Graceful degradation** — Failed stages skip silently; the pipeline retries on the next trigger. A 30-second retry gate prevents hammering failing APIs.
 
 ## Module map
@@ -71,13 +71,12 @@ src/
   hooks/
     before-compact.ts         # session_before_compact hook — VCC + OM injection
   om/                         # Observational memory system
-    runtime.ts                # Central runtime, model resolution, cooldown
+    runtime.ts                # Central runtime, model resolution, stage-local failures
     consolidation.ts          # Observer → Reflector → Dropper pipeline
     compaction-trigger.ts     # agent_end → auto-compaction
     config.ts                 # OM config re-exports
     pending.ts                # Per-session pending state (manual mode)
     model-budget.ts           # Token budget / context window estimation
-    cooldown.ts               # Model cooldown persistence
     provider-stream.ts        # Provider stream bridge for jiti agents
     retryable-error.ts        # Retryable error detection
     reverse-recall.ts         # OM id → session entry reverse lookup
@@ -205,7 +204,7 @@ interface Reflection {
 
 ### Runtime
 
-Central OM runtime managing model resolution, consolidation lifecycle, cooldown integration, and error tracking. Defined in [[src/om/runtime.ts]]. Holds in-memory state: config, cursors, error timestamps, in-flight flags, compaction stats.
+Central OM runtime managing model resolution, consolidation lifecycle, stage-local model failures, and error tracking. Defined in [[src/om/runtime.ts]]. Holds in-memory state: config, cursors, error timestamps, in-flight flags, compaction stats.
 
 ## Provider stream bridge
 
@@ -224,7 +223,7 @@ pi-blackhole carries DNA from both upstreams but has diverged significantly. A l
 
 - **From pi-vcc**: The `compile()` pipeline, section extraction, recall core — `src/core/` and `src/extract/` modules are largely unmodified from upstream.
 - **From pi-observational-memory**: Session-ledger-based observation/reflection capture, memory agents, ledger folding — `src/om/ledger/` is unmodified, `src/om/runtime.ts` and `src/om/consolidation.ts` are modified for fallback chains.
-- **pi-blackhole additions**: Unified config, per-worker model fallback with cooldowns, manual flush mode, memory toggle, per-session pending state, provider stream bridge, retryable error detection, improved prompts, OM-recall coupling, thinking level support.
+- **pi-blackhole additions**: Unified config, per-worker model fallback with stage-local failure tracking, manual flush mode, memory toggle, per-session pending state, provider stream bridge, retryable error detection, improved prompts, OM-recall coupling, thinking level support.
 
 ### Shutdown lifecycle
 
