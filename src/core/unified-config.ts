@@ -3,7 +3,7 @@
  *
  * Created by pi-vcc-om.
  * Reads ~/.pi/agent/pi-blackhole/pi-blackhole-config.json with legacy fallback support.
- * Model configs support cooldownHours and fallbackModel arrays.
+ * Model configs support per-stage fallback arrays.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -63,9 +63,6 @@ export interface OmModelConfig {
   provider: string;
   id: string;
   thinking?: ModelThinkingLevel;
-  /** Cooldown duration in hours after a retryable error (429/5xx/timeout).
-   *  Defaults to 1 hour when omitted. */
-  cooldownHours?: number;
   /** Context window override for this model. Inherits from Pi's model registry when unset. */
   contextWindow?: number;
 }
@@ -429,7 +426,7 @@ function positiveInt(v: unknown): number | undefined {
   return Number.isInteger(v) && typeof v === "number" && v > 0 ? v : undefined;
 }
 
-/** Like positiveInt but allows 0. Used for cooldownHours where 0 means "disabled". */
+/** Like positiveInt, but allows 0 for disabled or unbounded numeric settings. */
 function nonNegativeInt(v: unknown): number | undefined {
   return Number.isInteger(v) && typeof v === "number" && v >= 0 ? v : undefined;
 }
@@ -441,8 +438,6 @@ function parseModel(v: unknown): OmModelConfig | undefined {
   if (!provider || !id) return undefined;
   const model: OmModelConfig = { provider, id };
   if (isThinkingLevel(v.thinking)) model.thinking = v.thinking;
-  const cooldown = nonNegativeInt(v.cooldownHours);
-  if (cooldown !== undefined) model.cooldownHours = cooldown;
   const ctxWindow = positiveInt(v.contextWindow);
   if (ctxWindow !== undefined) model.contextWindow = ctxWindow;
   return model;

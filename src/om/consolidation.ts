@@ -4,7 +4,7 @@
  * Upstream: https://github.com/elpapi42/pi-observational-memory (src/hooks/consolidation-trigger.ts)
  * Modified by pi-vcc-om:
  * - Each stage retries through fallback models when any error occurs.
- * - All errors record cooldown (so the failed model is skipped next iteration).
+ * - Failed models are skipped for the current stage only, never across runs.
  * - 30s retry gate prevents repeated failed runs (isConsolidationRetryGated).
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -18,7 +18,6 @@ import { withProviderAttributionHeaders } from "./provider-stream.js";
 import { runWorkerAttempt, WorkerAttemptTimeoutError } from "./worker-attempt.js";
 import {
   getDiscardedCount,
-  isCooldownWorthyError,
   isDeterministicError,
   isRetryableError,
   isStaleExtensionContextError,
@@ -134,8 +133,8 @@ type ReflectorStageResult = {
 };
 
 // Max attempts per stage (primary + all fallbacks the runtime will try internally).
-// Each call to resolveModel tries all non-cooldown candidates.  If the agent throws
-// a retryable error, we record cooldown and call resolveModel again (up to this many times).
+// Each call to resolveModel tries candidates that have not failed in this stage.
+// On failure, skip that model and try the next (up to this many attempts).
 const MAX_STAGE_ATTEMPTS = 10;
 
 /**
@@ -168,19 +167,6 @@ const MAX_SIZE_SKIP_CONTINUATIONS = 10;
 
 function sourceEntriesAfter(entries: Entry[], index: number): Entry[] {
   return entries.slice(index + 1).filter(isSourceEntry);
-}
-
-/** Catch-up must retain the oldest unobserved entries rather than skip over them. */
-export function capCatchUp(entries: Entry[], maxTokens: number): Entry[] {
-  const kept: Entry[] = [];
-  let tokens = 0;
-  for (const entry of entries) {
-    const size = estimateEntryTokens(entry);
-    if (kept.length > 0 && tokens + size > maxTokens) break;
-    kept.push(entry);
-    tokens += size;
-  }
-  return kept;
 }
 
 /**
@@ -550,10 +536,9 @@ export function makeModelResolver(
       return resolved;
     }
     debugLog(`${stage}.model_unavailable`, { reason: resolved.reason });
+    if (runtime.failedInCycle.size > 0) runtime.markConsolidationError();
     if (!runtime.resolveFailureNotified && ctx.hasUI && ctx.ui) {
-      // Cooldown toast only: a size-skipped session reason also contains
-      // "all candidates exhausted" ("too small for this input") but names no
-      // cooldown, so gating on the reason keeps the toast from misattributing it.
+      // Distinguish exhausted failed models from inputs that are simply too large.
       if (
         runtime.failedInCycle.size > 0 &&
         resolved.reason.includes("all candidates exhausted") &&
@@ -564,7 +549,7 @@ export function makeModelResolver(
         runtime.tryEmitInfo(
           true,
           ctx.ui,
-          `Observational memory: ${stage} skipped — model unavailable (cooldown set to 0, ${fallbackMsg}, will retry next run)`,
+          `Observational memory: ${stage} skipped — model unavailable (${fallbackMsg}, will retry next run)`,
         );
       } else {
         ctx.ui.notify(`Observational memory: ${stage} skipped — ${resolved.reason}`, "warning");
@@ -902,22 +887,10 @@ export async function runConsolidationPipeline(
 // ── Kept-close error handling (observer + reflector) ─────────────────────────
 
 /**
- * Classify and record a provider failure from a turn after a valid
- * complete=true close that the worker kept.
- *
- * The close is kept, but the failure must not be silent: a deterministic
- * error (bad key, removed model) gets the same cooldown the stage catch
- * applies, so the next cycle falls back instead of reporting success forever;
- * a transient one only warns, since the model just produced a usable close.
- * The error is classified with the same framing the throw path builds
- * (`workerStreamErrorMessage`), so a bare provider code such as `401` is
- * deterministic on both paths and the two cannot drift apart.
- *
- * The toast names only the destination that was written, never the provider
- * body (issue #80): a cooldownHours-0 candidate is only skipped in-memory for
- * the stage, and a session model without provider/id never reaches the
- * cooldown file (`recordDeterministicError` keys it on both), so the
- * not-cooled branch claims no skip and no cooldown.
+ * Preserve completed work while surfacing a later provider failure.
+ * Deterministic errors will fail identically, so skip that model for the stage.
+ * A transient error after a valid close leaves it eligible: it just produced
+ * usable work, unlike an attempt that failed before completing the chunk.
  */
 function handleWorkerErrorAfterClose(args: {
   runtime: Runtime;
@@ -927,65 +900,26 @@ function handleWorkerErrorAfterClose(args: {
   keptNoun: string;
   errorText: string;
   resolved: ResolvedModel;
-  stageModelForThinking: ConfiguredModel | undefined;
   coverageId: string | undefined;
 }): void {
-  const {
-    runtime,
-    ctx,
-    stage,
-    worker,
-    keptNoun,
-    errorText,
-    resolved,
-    stageModelForThinking,
-    coverageId,
-  } = args;
-  const afterClose = new Error(workerStreamErrorMessage(worker, errorText));
-  const deterministic = isDeterministicError(afterClose);
-  // The toast must describe what was actually written: a cooldownHours-0
-  // candidate cools in-memory only, and a session model whose resolved model
-  // has no provider/id never reaches the cooldown file at all —
-  // recordDeterministicError keys it on both.
-  const sessionIdentity: { provider?: unknown; id?: unknown } | null | undefined = resolved.model;
-  const cooled =
-    deterministic &&
-    (stageModelForThinking
-      ? stageModelForThinking.cooldownHours !== 0
-      : typeof sessionIdentity?.provider === "string" && typeof sessionIdentity?.id === "string");
-  if (stage === "observer") {
-    debugLog("observer.error_after_close", {
-      error: errorText,
-      deterministic,
-      coversUpToId: coverageId,
-    });
-  } else {
-    debugLog("reflector.error_after_close", {
-      error: errorText,
-      deterministic,
-      observationCoverageId: coverageId,
-    });
-  }
-  if (deterministic) {
-    runtime.recordRetryableError(stageModelForThinking, afterClose, stage);
-    if (!stageModelForThinking) {
-      runtime.recordDeterministicError(resolved.model, afterClose, stage);
-    }
-  }
+  const { runtime, ctx, stage, worker, keptNoun, errorText, resolved, coverageId } = args;
+  const deterministic = isDeterministicError(
+    new Error(workerStreamErrorMessage(worker, errorText)),
+  );
+  if (deterministic) runtime.recordStageFailure(oversizedIdentityForSkip(resolved));
+  debugLog(`${stage}.error_after_close`, {
+    error: errorText,
+    deterministic,
+    ...(stage === "observer"
+      ? { coversUpToId: coverageId }
+      : { observationCoverageId: coverageId }),
+  });
   if (ctx.hasUI) {
-    // Issue #80: the error text can be a provider body; it goes to the
-    // cooldown/debug log only, never into the toast. The pointer itself
-    // must be true too, so it names only a destination that was written.
+    // Provider bodies belong only in debug logs, never in notifications.
     ctx.ui?.notify(
       `Observational memory: ${stage} kept its ${keptNoun}, but a later turn failed (${
-        deterministic
-          ? cooled
-            ? "deterministic error, model cooled down; details in cooldown log"
-            : "deterministic error; no cooldown recorded"
-          : runtime.config.debugLog === true
-            ? "transient error; details in debug log"
-            : "transient error; enable debugLog for details"
-      })`,
+        deterministic ? "deterministic" : "transient"
+      } error; ${runtime.config.debugLog === true ? "details in debug log" : "enable debugLog for details"})`,
       "warning",
     );
   }
@@ -1076,11 +1010,7 @@ export async function runObserverStage(
   // Cap observer input to observerChunkMaxTokens (oldest prefix first)
   const maxChunkTokens = runtime.config.observerChunkMaxTokens;
   chunkEntries =
-    tokens > maxChunkTokens
-      ? catchingUp
-        ? capCatchUp(source, maxChunkTokens)
-        : capSourceEntriesToTokens(source, maxChunkTokens)
-      : source;
+    tokens > maxChunkTokens ? capSourceEntriesToTokens(source, maxChunkTokens) : source;
   const advanceObserver = (id: string, state: "recorded" | "empty", offset?: number) => {
     runtime.advanceCursor("observer", id, state);
     if (!catchingUp || !catchUpThroughId) return;
@@ -1477,11 +1407,7 @@ export async function runObserverStage(
             model: (resolved.model as any).id,
           });
           if (++sizeSkips > MAX_SIZE_SKIP_CONTINUATIONS) return "abort";
-          runtime.recordRetryableError(
-            stageModelForThinking,
-            new Error("observer slice cannot fit the source header and next character"),
-            "observer",
-          );
+          runtime.recordStageFailure(oversizedIdentityForSkip(resolved));
           continue;
         }
         chunk = prefix + body.slice(offset, end);
@@ -1571,7 +1497,7 @@ export async function runObserverStage(
 
       // The run closed the chunk and then a later turn failed (a host that
       // ignores `terminate`). Shared with the reflector stage: same framing,
-      // same cooldown, same toast shape.
+      // same stage-local skip, same toast shape.
       if (result.errorAfterClose) {
         handleWorkerErrorAfterClose({
           runtime,
@@ -1581,7 +1507,6 @@ export async function runObserverStage(
           keptNoun: "completed chunk",
           errorText: result.errorAfterClose,
           resolved,
-          stageModelForThinking,
           coverageId: coversUpToId,
         });
       }
@@ -1690,11 +1615,7 @@ export async function runObserverStage(
           continue;
         }
       }
-      // Always try next fallback — don't abort pipeline for a single model failure.
-      // Record cooldown so resolveModel skips this model in the next iteration.
-      // Deterministic 4xx (e.g. MissingSessionID) additionally cools the
-      // resolved model itself: the session model has no candidate config, so
-      // without this it would retry identically on every cycle.
+      // Skip failed candidates and session models only for this stage.
       // Any error reaching this point ran a model that fit. Provider errors
       // and timeouts keep error semantics owning the outcome, so the
       // shrink-to-fit pass stays out — but a turn-cap or output cut is
@@ -1704,32 +1625,22 @@ export async function runObserverStage(
       if (!(error instanceof WorkerStreamError && (error.turnCapExhausted || error.lengthCut)))
         sawAttemptError = true;
       const candidateConfig = stageModelForThinking;
-      runtime.recordRetryableError(candidateConfig, error, "observer");
-      if (!candidateConfig) runtime.recordDeterministicError(resolved.model, error, "observer");
+      runtime.recordStageFailure(oversizedIdentityForSkip(resolved));
       debugLog("observer.error", {
         error: String(error),
         retryable: isRetryableError(error),
         deterministic: isDeterministicError(error),
-        cooldownWorthy: isCooldownWorthyError(error),
         // Records written before a stream error and discarded with the run.
         discardedCount: getDiscardedCount(error),
       });
-      // A timed-out session model has no candidate config to cool down, so
-      // the loop would re-resolve the same stalled model and burn the full
-      // deadline on every remaining attempt. Treat the stage as exhausted.
-      // A session model cut off by the agent turn cap — or by an output-length
-      // cut on an input the preflight accepted — fails the same way for the
-      // same reason: the turn budget and the output cap derive from the same
-      // window, so a retry spends another whole budget on an identical
-      // outcome. Candidates differ — they cool down and the fallback chain
-      // takes over.
+      // Do not spend another full budget retrying an exhausted final session model.
       if (
         !candidateConfig &&
         (error instanceof WorkerAttemptTimeoutError ||
           (error instanceof WorkerStreamError && (error.turnCapExhausted || error.lengthCut)))
       )
         break;
-      // Continue loop — resolveModel will skip the cooled-down model
+
       continue;
     }
   }
@@ -1951,8 +1862,6 @@ export async function runReflectorStage(
         keptNoun: "completed review",
         errorText,
         resolved,
-        stageModelForThinking:
-          resolved.source === "candidate" ? resolved.candidateConfig : undefined,
         coverageId: observationCoverageId,
       });
     }
@@ -2091,14 +2000,11 @@ export async function runReflectorStage(
     // prefix would advance coverage over unreviewed observations, so the run
     // is abandoned with the cursor unmoved.
     const voidBatchedRun = (error: unknown): ReflectorStageResult => {
-      const candidateConfig = stageModelForBatch;
-      runtime.recordRetryableError(candidateConfig, error, "reflector");
-      if (!candidateConfig) runtime.recordDeterministicError(bestModel, error, "reflector");
+      runtime.recordStageFailure(oversizedIdentityForSkip(best.resolved));
       debugLog("reflector.error", {
         error: String(error),
         retryable: isRetryableError(error),
         deterministic: isDeterministicError(error),
-        cooldownWorthy: isCooldownWorthyError(error),
         discardedCount: getDiscardedCount(error),
       });
       runtime.recordConsolidationStageError(ctx, "reflector", error);
@@ -2172,7 +2078,7 @@ export async function runReflectorStage(
         // pool). Provider errors, a single item even the smallest batch
         // cannot emit, and a session model that must not spin all void the
         // run with the cursor unmoved — classified like a normal attempt
-        // failure so cooldowns and the retry gate behave identically.
+        // failure so stage-local skips and the retry gate behave identically.
         if (
           !isSessionBest &&
           error instanceof WorkerStreamError &&
@@ -2355,23 +2261,15 @@ export async function runReflectorStage(
       if (!(error instanceof WorkerStreamError && (error.turnCapExhausted || error.lengthCut)))
         sawAttemptError = true;
       const candidateConfig = stageModelForThinking;
-      runtime.recordRetryableError(candidateConfig, error, "reflector");
-      if (!candidateConfig) runtime.recordDeterministicError(resolved.model, error, "reflector");
+      runtime.recordStageFailure(oversizedIdentityForSkip(resolved));
       debugLog("reflector.error", {
         error: String(error),
         retryable: isRetryableError(error),
         deterministic: isDeterministicError(error),
-        cooldownWorthy: isCooldownWorthyError(error),
         // Reflections recorded before the run failed and discarded with it.
         discardedCount: getDiscardedCount(error),
       });
-      // A timed-out session model has no candidate config to cool down, so
-      // retrying would stall on the same model for the full deadline again. A
-      // session model cut off by the agent turn cap — or by an output-length
-      // cut on an input the preflight accepted — fails the same way: the turn
-      // budget and the output cap derive from the same window, so a retry
-      // spends another whole budget on an identical outcome. Candidates
-      // differ — they cool down and the fallback chain takes over.
+      // Do not spend another full budget retrying an exhausted final session model.
       if (
         !candidateConfig &&
         (error instanceof WorkerAttemptTimeoutError ||
@@ -2758,14 +2656,11 @@ export async function runDropperStage(
     // evaluation is never published, so the run is abandoned with the cursor
     // unmoved.
     const voidBatchedRun = (error: unknown): StageOutcome => {
-      const candidateConfig = stageModelForBatch;
-      runtime.recordRetryableError(candidateConfig, error, "dropper");
-      if (!candidateConfig) runtime.recordDeterministicError(bestModel, error, "dropper");
+      runtime.recordStageFailure(oversizedIdentityForSkip(best.resolved));
       debugLog("dropper.error", {
         error: String(error),
         retryable: isRetryableError(error),
         deterministic: isDeterministicError(error),
-        cooldownWorthy: isCooldownWorthyError(error),
         discardedCount: getDiscardedCount(error),
       });
       runtime.recordConsolidationStageError(ctx, "dropper", error);
@@ -3021,23 +2916,15 @@ export async function runDropperStage(
       if (!(error instanceof WorkerStreamError && (error.turnCapExhausted || error.lengthCut)))
         sawAttemptError = true;
       const candidateConfig = stageModelForThinking;
-      runtime.recordRetryableError(candidateConfig, error, "dropper");
-      if (!candidateConfig) runtime.recordDeterministicError(resolved.model, error, "dropper");
+      runtime.recordStageFailure(oversizedIdentityForSkip(resolved));
       debugLog("dropper.error", {
         error: String(error),
         retryable: isRetryableError(error),
         deterministic: isDeterministicError(error),
-        cooldownWorthy: isCooldownWorthyError(error),
         // Drop candidates recorded before the run failed and discarded with it.
         discardedCount: getDiscardedCount(error),
       });
-      // A timed-out session model has no candidate config to cool down, so
-      // retrying would stall on the same model for the full deadline again. A
-      // session model cut off by the agent turn cap — or by an output-length
-      // cut on an input the preflight accepted — fails the same way: the turn
-      // budget and the output cap derive from the same window, so a retry
-      // spends another whole budget on an identical outcome. Candidates
-      // differ — they cool down and the fallback chain takes over.
+      // Do not spend another full budget retrying an exhausted final session model.
       if (
         !candidateConfig &&
         (error instanceof WorkerAttemptTimeoutError ||

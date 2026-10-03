@@ -8,7 +8,7 @@
  * the reflector cursor over observations that were never crystallized. The
  * same guard covers a run the agent turn cap cut off mid-review. A trailing
  * failure after a kept close is returned as `errorAfterClose` (mirroring the
- * observer) so the stage can cool a deterministically broken model instead of
+ * observer) so the stage can skip a failed model for this stage instead of
  * only debug-logging it.
  */
 import { agentLoop, type AgentLoopConfig, type AgentTool } from "@earendil-works/pi-agent-core";
@@ -344,8 +344,8 @@ export async function runReflector(args: RunReflectorArgs): Promise<ReflectorRes
 
   // The cap ended the run before the model closed the review. Throwing keeps
   // the cursor where it is; the message names no status code, because this is a
-  // config limit rather than a provider failure and must not cool a session
-  // model as deterministic. This check runs BEFORE the completion check below:
+  // config limit rather than a deterministic provider failure.
+  // This check runs BEFORE the completion check below:
   // a length cut can land on the same turn the cap fires (turn-cap.ts only
   // exempts error/aborted turns), and the stage's session-model break-glass
   // keys on turnCapExhausted. A provider `error` is carved out: it keeps its
@@ -391,7 +391,7 @@ export async function runReflector(args: RunReflectorArgs): Promise<ReflectorRes
 
   // A kept close is a kept result with a surfaced failure: return the trailing
   // error alongside the reflections so the stage can classify it with the same
-  // framing the throw path uses and cool a deterministically broken model. A
+  // framing the throw path uses and skip the failed model for this stage. A
   // cap firing before anything was recorded is still an empty success (the
   // stage advances the cursor as "empty"); with recordings but no close the
   // run throws above.

@@ -13,7 +13,6 @@ import {
   runObserverStage,
   capSourceEntriesToTokens,
   anyStageDue,
-  capCatchUp,
   type ConsolidationCtx,
 } from "../src/om/consolidation.js";
 import {
@@ -94,6 +93,27 @@ function mockCtx(notifyCalls: Array<{ message: string; level?: string }>): Conso
 }
 
 describe("makeModelResolver — per-stage failure notifications", () => {
+  test("does not engage the retry gate when no models are configured", async () => {
+    const runtime = new Runtime();
+    const ctx = mockCtx([]);
+    const resolver = makeModelResolver(runtime, ctx, runtime.captureGeneration("test-session"));
+
+    await resolver("observer");
+
+    expect(runtime.isConsolidationRetryGated()).toBe(false);
+  });
+
+  test("retains the short retry gate after failed models are exhausted", async () => {
+    const runtime = new Runtime();
+    runtime.failedInCycle.add("openrouter/failed-worker");
+    const ctx = mockCtx([]);
+    const resolver = makeModelResolver(runtime, ctx, runtime.captureGeneration("test-session"));
+
+    await resolver("observer");
+
+    expect(runtime.isConsolidationRetryGated()).toBe(true);
+  });
+
   test("each stage shows its own failure notification when no models are available", async () => {
     const runtime = new Runtime("/tmp");
     runtime.config.memory = true;
@@ -1330,27 +1350,21 @@ describe("observer error after a kept close", () => {
       entries: [rawMessage("big-1", "x".repeat(40_000))],
       notify: (message, level) => notices.push({ message, level }),
     });
-    const retryable = vi
-      .spyOn(fixture.runtime, "recordRetryableError")
-      .mockImplementation(() => {});
+    const failure = vi.spyOn(fixture.runtime, "recordStageFailure");
     agents.runObserver.mockResolvedValue({
       observations: [observation("aaaaaaaaaaaa", { sourceEntryIds: ["big-1"] })],
       errorAfterClose,
     });
-    return { fixture, notices, retryable };
+    return { fixture, notices, failure };
   }
 
-  test("a deterministic error keeps the chunk and cools the model down", async () => {
-    const { fixture, notices, retryable } = keptCloseFixture("HTTP 401 Unauthorized");
+  test("a deterministic error keeps the chunk and skips the model for this stage", async () => {
+    const { fixture, notices, failure } = keptCloseFixture("HTTP 401 Unauthorized");
 
     await fixture.run();
 
     expect(fixture.runtime.getCursor("observer")).toEqual({ entryId: "big-1", state: "recorded" });
-    expect(retryable).toHaveBeenCalledWith(
-      { provider: "test", id: "model" },
-      expect.objectContaining({ message: "Observer API error: HTTP 401 Unauthorized" }),
-      "observer",
-    );
+    expect(failure).toHaveBeenCalledWith({ provider: "test", id: "model" });
     expect(notices).toContainEqual({
       message: expect.stringContaining("later turn failed (deterministic error"),
       level: "warning",
@@ -1359,23 +1373,19 @@ describe("observer error after a kept close", () => {
   });
 
   test("a bare status code is classified like the throw path", async () => {
-    const { fixture, retryable } = keptCloseFixture("401");
+    const { fixture, failure } = keptCloseFixture("401");
 
     await fixture.run();
 
-    expect(retryable).toHaveBeenCalledWith(
-      { provider: "test", id: "model" },
-      expect.objectContaining({ message: "Observer API error: 401" }),
-      "observer",
-    );
+    expect(failure).toHaveBeenCalledWith({ provider: "test", id: "model" });
   });
 
   test("a bare retryable code is not treated as deterministic", async () => {
-    const { fixture, notices, retryable } = keptCloseFixture("429");
+    const { fixture, notices, failure } = keptCloseFixture("429");
 
     await fixture.run();
 
-    expect(retryable).not.toHaveBeenCalled();
+    expect(failure).not.toHaveBeenCalled();
     expect(notices).toContainEqual({
       message: expect.stringContaining("later turn failed (transient error"),
       level: "warning",
@@ -1383,19 +1393,19 @@ describe("observer error after a kept close", () => {
   });
 
   test("a status-shaped token count is not treated as a status code", async () => {
-    const { fixture, notices, retryable } = keptCloseFixture("processed 401 rows");
+    const { fixture, notices, failure } = keptCloseFixture("processed 401 rows");
 
     await fixture.run();
 
-    expect(retryable).not.toHaveBeenCalled();
+    expect(failure).not.toHaveBeenCalled();
     expect(notices).toContainEqual({
       message: expect.stringContaining("later turn failed (transient error"),
       level: "warning",
     });
   });
 
-  test("a deterministic error on the session model cools that model down", async () => {
-    const { fixture, retryable } = keptCloseFixture("HTTP 401 Unauthorized");
+  test("a deterministic error on the session model skips the model for this stage", async () => {
+    const { fixture, failure } = keptCloseFixture("HTTP 401 Unauthorized");
     const sessionModel = { provider: "test", id: "session", contextWindow: 1_000_000 };
     fixture.runtime.resolveModel = async () => ({
       ok: true as const,
@@ -1403,19 +1413,11 @@ describe("observer error after a kept close", () => {
       model: sessionModel,
       apiKey: "test",
     });
-    const deterministic = vi
-      .spyOn(fixture.runtime, "recordDeterministicError")
-      .mockImplementation(() => {});
 
     await fixture.run();
 
     expect(fixture.runtime.getCursor("observer")).toEqual({ entryId: "big-1", state: "recorded" });
-    expect(retryable).toHaveBeenCalledWith(undefined, expect.any(Error), "observer");
-    expect(deterministic).toHaveBeenCalledWith(
-      sessionModel,
-      expect.objectContaining({ message: "Observer API error: HTTP 401 Unauthorized" }),
-      "observer",
-    );
+    expect(failure).toHaveBeenCalledWith({ provider: "test", id: "session" });
   });
 
   test("a session model with no coolable identity does not claim a cooldown log entry", async () => {
@@ -1430,19 +1432,19 @@ describe("observer error after a kept close", () => {
     await fixture.run();
 
     expect(notices).toContainEqual({
-      message: expect.stringContaining("no cooldown recorded"),
+      message: expect.stringContaining("later turn failed (deterministic error;"),
       level: "warning",
     });
     expect(notices.some((n) => n.message.includes("details in cooldown log"))).toBe(false);
   });
 
   test("a transient error keeps the chunk and only warns", async () => {
-    const { fixture, notices, retryable } = keptCloseFixture("Stream connection severed");
+    const { fixture, notices, failure } = keptCloseFixture("Stream connection severed");
 
     await fixture.run();
 
     expect(fixture.runtime.getCursor("observer")).toEqual({ entryId: "big-1", state: "recorded" });
-    expect(retryable).not.toHaveBeenCalled();
+    expect(failure).not.toHaveBeenCalled();
     expect(notices).toContainEqual({
       message: expect.stringContaining("later turn failed (transient error"),
       level: "warning",
@@ -1488,7 +1490,7 @@ describe("observer error after a kept close", () => {
     await fixture.run();
 
     expect(notices).toContainEqual({
-      message: expect.stringContaining("no cooldown recorded"),
+      message: expect.stringContaining("later turn failed (deterministic error;"),
       level: "warning",
     });
     expect(notices.some((n) => n.message.includes("cooldown log"))).toBe(false);
@@ -1510,21 +1512,16 @@ describe("reflector error after a kept close", () => {
       ],
     });
     fixture.runtime.config.reflectAfterTokens = 100;
-    const retryable = vi
-      .spyOn(fixture.runtime, "recordRetryableError")
-      .mockImplementation(() => {});
-    const deterministic = vi
-      .spyOn(fixture.runtime, "recordDeterministicError")
-      .mockImplementation(() => {});
+    const failure = vi.spyOn(fixture.runtime, "recordStageFailure");
     agents.runReflector.mockResolvedValue({
       reflections: [reflection("rrrrrrrrrrrr", ["aaaaaaaaaaaa"])],
       errorAfterClose,
     });
-    return { fixture, notices, retryable, deterministic };
+    return { fixture, notices, failure };
   }
 
-  test("a deterministic error keeps the review and cools the model down", async () => {
-    const { fixture, notices, retryable } = keptReviewFixture("HTTP 401 Unauthorized");
+  test("a deterministic error keeps the review and skips the model for this stage", async () => {
+    const { fixture, notices, failure } = keptReviewFixture("HTTP 401 Unauthorized");
 
     await fixture.run();
 
@@ -1532,11 +1529,7 @@ describe("reflector error after a kept close", () => {
       entryId: "big-1",
       state: "recorded",
     });
-    expect(retryable).toHaveBeenCalledWith(
-      { provider: "test", id: "model" },
-      expect.objectContaining({ message: "Reflector API error: HTTP 401 Unauthorized" }),
-      "reflector",
-    );
+    expect(failure).toHaveBeenCalledWith({ provider: "test", id: "model" });
     expect(notices).toContainEqual({
       message: expect.stringContaining("later turn failed (deterministic error"),
       level: "warning",
@@ -1545,23 +1538,19 @@ describe("reflector error after a kept close", () => {
   });
 
   test("a bare status code is classified like the throw path", async () => {
-    const { fixture, retryable } = keptReviewFixture("401");
+    const { fixture, failure } = keptReviewFixture("401");
 
     await fixture.run();
 
-    expect(retryable).toHaveBeenCalledWith(
-      { provider: "test", id: "model" },
-      expect.objectContaining({ message: "Reflector API error: 401" }),
-      "reflector",
-    );
+    expect(failure).toHaveBeenCalledWith({ provider: "test", id: "model" });
   });
 
   test("a bare retryable code is not treated as deterministic", async () => {
-    const { fixture, notices, retryable } = keptReviewFixture("429");
+    const { fixture, notices, failure } = keptReviewFixture("429");
 
     await fixture.run();
 
-    expect(retryable).not.toHaveBeenCalled();
+    expect(failure).not.toHaveBeenCalled();
     expect(notices).toContainEqual({
       message: expect.stringContaining("later turn failed (transient error"),
       level: "warning",
@@ -1569,19 +1558,19 @@ describe("reflector error after a kept close", () => {
   });
 
   test("a status-shaped token count is not treated as a status code", async () => {
-    const { fixture, notices, retryable } = keptReviewFixture("processed 401 rows");
+    const { fixture, notices, failure } = keptReviewFixture("processed 401 rows");
 
     await fixture.run();
 
-    expect(retryable).not.toHaveBeenCalled();
+    expect(failure).not.toHaveBeenCalled();
     expect(notices).toContainEqual({
       message: expect.stringContaining("later turn failed (transient error"),
       level: "warning",
     });
   });
 
-  test("a deterministic error on the session model cools that model down", async () => {
-    const { fixture, retryable, deterministic } = keptReviewFixture("HTTP 401 Unauthorized");
+  test("a deterministic error on the session model skips the model for this stage", async () => {
+    const { fixture, failure } = keptReviewFixture("HTTP 401 Unauthorized");
     const sessionModel = { provider: "test", id: "session", contextWindow: 1_000_000 };
     fixture.runtime.resolveModel = async () => ({
       ok: true as const,
@@ -1596,12 +1585,7 @@ describe("reflector error after a kept close", () => {
       entryId: "big-1",
       state: "recorded",
     });
-    expect(retryable).toHaveBeenCalledWith(undefined, expect.any(Error), "reflector");
-    expect(deterministic).toHaveBeenCalledWith(
-      sessionModel,
-      expect.objectContaining({ message: "Reflector API error: HTTP 401 Unauthorized" }),
-      "reflector",
-    );
+    expect(failure).toHaveBeenCalledWith({ provider: "test", id: "session" });
   });
 
   test("a session model with no coolable identity does not claim a cooldown log entry", async () => {
@@ -1616,14 +1600,14 @@ describe("reflector error after a kept close", () => {
     await fixture.run();
 
     expect(notices).toContainEqual({
-      message: expect.stringContaining("no cooldown recorded"),
+      message: expect.stringContaining("later turn failed (deterministic error;"),
       level: "warning",
     });
     expect(notices.some((n) => n.message.includes("details in cooldown log"))).toBe(false);
   });
 
   test("a transient error keeps the review and only warns", async () => {
-    const { fixture, notices, retryable } = keptReviewFixture("Stream connection severed");
+    const { fixture, notices, failure } = keptReviewFixture("Stream connection severed");
 
     await fixture.run();
 
@@ -1631,7 +1615,7 @@ describe("reflector error after a kept close", () => {
       entryId: "big-1",
       state: "recorded",
     });
-    expect(retryable).not.toHaveBeenCalled();
+    expect(failure).not.toHaveBeenCalled();
     expect(notices).toContainEqual({
       message: expect.stringContaining("later turn failed (transient error"),
       level: "warning",
@@ -1652,7 +1636,7 @@ describe("reflector error after a kept close", () => {
     await fixture.run();
 
     expect(notices).toContainEqual({
-      message: expect.stringContaining("no cooldown recorded"),
+      message: expect.stringContaining("later turn failed (deterministic error;"),
       level: "warning",
     });
     expect(notices.some((n) => n.message.includes("cooldown log"))).toBe(false);
@@ -1682,20 +1666,28 @@ describe("observer turn-cap exhaustion", () => {
     expect(agents.runObserver).toHaveBeenCalledTimes(1);
   });
 
-  test("a candidate that exhausts the cap cools down and the fallback is tried", async () => {
+  test("a candidate that exhausts the cap is skipped for this stage and the fallback is tried", async () => {
     const fixture = makePipelineFixture({
       observeAfterTokens: 100,
       entries: [rawMessage("big-1", "x".repeat(40_000))],
+      useRuntimeModelResolver: true,
+      modelRegistry: {
+        find: (provider: string, id: string) => ({ provider, id, contextWindow: 1_000_000 }),
+        getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test" }),
+        hasConfiguredAuth: () => true,
+      },
     });
-    const retryable = vi
-      .spyOn(fixture.runtime, "recordRetryableError")
-      .mockImplementation(() => {});
+    fixture.runtime.config.observerModel = { provider: "test", id: "primary" };
+    fixture.runtime.config.observerFallbackModels = [{ provider: "test", id: "fallback" }];
+    fixture.runtime.config.sessionFallback = false;
     agents.runObserver.mockRejectedValue(turnCapError());
 
     await fixture.run();
 
-    expect(retryable).toHaveBeenCalled();
-    expect(agents.runObserver.mock.calls.length).toBeGreaterThan(1);
+    expect(agents.runObserver.mock.calls.map(([input]) => input.model.id)).toEqual([
+      "primary",
+      "fallback",
+    ]);
   });
 });
 
@@ -1717,7 +1709,14 @@ function workerStageFixture(source: "session" | "candidate") {
   const fixture = makePipelineFixture({
     observeAfterTokens: 100_000,
     entries: workerStageEntries as unknown as TestEntry[],
+    useRuntimeModelResolver: source === "candidate",
+    modelRegistry: {
+      find: (provider: string, id: string) => ({ provider, id, contextWindow: 1_000_000 }),
+      getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test" }),
+      hasConfiguredAuth: () => true,
+    },
   });
+  fixture.runtime.config.model = { provider: "test", id: "primary" };
   fixture.runtime.config.reflectAfterTokens = 100;
   if (source === "session") {
     fixture.runtime.resolveModel = async () => ({
@@ -1749,17 +1748,19 @@ describe("reflector turn-cap exhaustion", () => {
     expect(agents.runReflector).toHaveBeenCalledTimes(1);
   });
 
-  test("a candidate that exhausts the cap cools down and the fallback is tried", async () => {
+  test("a candidate that exhausts the cap is skipped for this stage and the fallback is tried", async () => {
     const fixture = workerStageFixture("candidate");
-    const retryable = vi
-      .spyOn(fixture.runtime, "recordRetryableError")
-      .mockImplementation(() => {});
+    fixture.runtime.config.reflectorModel = { provider: "test", id: "primary" };
+    fixture.runtime.config.reflectorFallbackModels = [{ provider: "test", id: "fallback" }];
+    fixture.runtime.config.sessionFallback = false;
     agents.runReflector.mockRejectedValue(turnCapError());
 
     await fixture.run();
 
-    expect(retryable).toHaveBeenCalled();
-    expect(agents.runReflector.mock.calls.length).toBeGreaterThan(1);
+    expect(agents.runReflector.mock.calls.map(([input]) => input.model.id)).toEqual([
+      "primary",
+      "fallback",
+    ]);
   });
 });
 
@@ -1777,18 +1778,20 @@ describe("dropper turn-cap exhaustion", () => {
     expect(agents.runDropper).toHaveBeenCalledTimes(1);
   });
 
-  test("a candidate that exhausts the cap cools down and the fallback is tried", async () => {
+  test("a candidate that exhausts the cap is skipped for this stage and the fallback is tried", async () => {
     const fixture = workerStageFixture("candidate");
     agents.runReflector.mockResolvedValue({ reflections: [] });
-    const retryable = vi
-      .spyOn(fixture.runtime, "recordRetryableError")
-      .mockImplementation(() => {});
+    fixture.runtime.config.dropperModel = { provider: "test", id: "primary" };
+    fixture.runtime.config.dropperFallbackModels = [{ provider: "test", id: "fallback" }];
+    fixture.runtime.config.sessionFallback = false;
     agents.runDropper.mockRejectedValue(turnCapError());
 
     await fixture.run();
 
-    expect(retryable).toHaveBeenCalled();
-    expect(agents.runDropper.mock.calls.length).toBeGreaterThan(1);
+    expect(agents.runDropper.mock.calls.map(([input]) => input.model.id)).toEqual([
+      "primary",
+      "fallback",
+    ]);
   });
 });
 
@@ -2320,6 +2323,55 @@ describe("catch-up with persisted SessionManager history", () => {
     };
   }
 
+  test.each(["observer", "reflector", "dropper"] as const)(
+    "retries %s on the next cycle after a timeout",
+    async (stage) => {
+      const h = history();
+      h.runtime.config.compaction = "manual";
+      h.runtime.config.reflectAfterTokens = 1;
+      h.runtime.config.observationsPoolMaxTokens = 1;
+      h.runtime.config.model = { provider: "openrouter", id: "worker" };
+      h.runtime.resolveModel = Runtime.prototype.resolveModel;
+      h.ctx.model = { provider: "openrouter", id: "worker", contextWindow: 1_000_000 };
+      h.ctx.modelRegistry = {
+        find: () => h.ctx.model,
+        hasConfiguredAuth: () => true,
+        getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test" }),
+      };
+      const source = h.source("RETRY-AFTER-TRANSIENT-FAILURE");
+      if (stage === "observer") h.queue(source);
+      else {
+        const { savePendingObservation, savePendingReflection } =
+          await import("../src/om/pending.js");
+        const obs = observation("aaaaaaaaaaaa", { sourceEntryIds: [source] });
+        savePendingObservation(h.manager.getSessionId(), {
+          coversUpToId: source,
+          data: { observations: [obs] },
+        });
+        if (stage === "dropper")
+          savePendingReflection(h.manager.getSessionId(), {
+            coversUpToId: source,
+            data: { reflections: [reflection("bbbbbbbbbbbb", [obs.id])] },
+          });
+      }
+      const agent =
+        stage === "observer"
+          ? agents.runObserver
+          : stage === "reflector"
+            ? agents.runReflector
+            : agents.runDropper;
+      agent.mockResolvedValue(stage === "observer" ? { observations: [] } : []);
+      agent.mockRejectedValueOnce(new Error("Request timed out."));
+      await h.run();
+      agent.mockClear();
+      // Arm the next eligible trigger without waiting for the short retry gate.
+      h.runtime.lastConsolidationErrorAt = Date.now() - 30_001;
+      await h.run();
+
+      expect(agent).toHaveBeenCalledTimes(1);
+    },
+  );
+
   test("keeps sources and job progress through repeated compactions with no new source", async () => {
     const h = history();
     const first = h.source("OLDER-CAPPED-SOURCE");
@@ -2456,7 +2508,7 @@ describe("catch-up with persisted SessionManager history", () => {
         mkdirSync(pendingFile);
         return result;
       });
-    const modelFailure = vi.spyOn(h.runtime, "recordRetryableError");
+    const modelFailure = vi.spyOn(h.runtime, "recordStageFailure");
     try {
       await h.run();
       expect(agent).toHaveBeenCalledTimes(failure === "save" ? 1 : 2);
@@ -2769,17 +2821,6 @@ describe("ordinary observer cursor lifecycle", () => {
 });
 
 describe("capSourceEntriesToTokens", () => {
-  test("catch-up cap retains oldest entries before the first over-budget entry", () => {
-    const entries = [smallSource("first"), smallSource("middle"), smallSource("last")];
-    expect(capCatchUp(entries, 70).map((entry) => entry.id)).toEqual(["first", "middle"]);
-  });
-
-  test("catch-up cap retains an oversized first entry", () => {
-    expect(
-      capCatchUp([smallSource("first"), smallSource("next")], 1).map((entry) => entry.id),
-    ).toEqual(["first"]);
-  });
-
   test("custom_message with string content contributes tokens (not 0)", () => {
     // Before the fix, custom_message counted as 0 tokens, so the cap
     // would keep all of these. With the prefix walk each custom_message is

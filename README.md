@@ -2,7 +2,7 @@
 
 **Deterministic compaction + session-aware observational memory for [Pi](https://github.com/earendil-works/pi) — in one unified extension.**
 
-`/blackhole` replaces Pi's LLM-based `/compact` with an algorithmic structural summary — fast, and the compaction step itself is zero-cost. Three background workers (Observer, Reflector, Dropper) run as separate billed model calls to capture durable facts and decisions that survive across compactions. Per-worker model fallback chains with persisted cooldowns. Manual flush mode. One JSON file to configure it all.
+`/blackhole` replaces Pi's LLM-based `/compact` with an algorithmic structural summary — fast, and the compaction step itself is zero-cost. Three background workers (Observer, Reflector, Dropper) run as separate billed model calls to capture durable facts and decisions that survive across compactions. Per-worker model fallback chains without persistent model bans. Manual flush mode. One JSON file to configure it all.
 
 > **A note from the maintainer: this is experimental.**
 >
@@ -141,7 +141,7 @@ With the default `compactionEngine: "blackhole"`, blackhole's `session_before_co
 ### How does `/blackhole` compare to `/compact`?
 
 - `/compact` calls an LLM to write a free-form summary — costly, lossy, no memory layer.
-- `/blackhole` uses algorithmic section extraction (goals, files, commits, preferences…) **plus** injects observations and reflections from the session ledger. No LLM is involved in the compaction itself. With memory enabled, it queues a separate background observer pass over the reachable pre-compaction tail; it may re-offer previously observed messages because a newest-first cursor cannot prove older coverage. This can incur model cost but does not delay the command.
+- `/blackhole` uses algorithmic section extraction (goals, files, commits, preferences…) **plus** injects observations and reflections from the session ledger. No LLM is involved in the compaction itself. With memory enabled, it queues a separate background observer pass over the reachable pre-compaction tail; it may re-offer previously observed messages because catch-up tracks the whole tail independently of normal observer coverage. This can incur model cost but does not delay the command.
 
 `/blackhole` is essentially a single `/compact` that just works — especially in manual mode.
 
@@ -276,21 +276,21 @@ Use `recall` with an id to retrieve original context.
 <details>
 <summary>Feature comparison</summary>
 
-|                                             | pi-blackhole | pi-vcc | pi-obs-memory | Pi default |
-| ------------------------------------------- | ------------ | ------ | ------------- | ---------- |
-| Algorithmic compaction (no LLM cost)        | ✓            | ✓      | —             | —          |
-| Deterministic output                        | ✓            | ✓      | —             | —          |
-| Structured summary sections                 | ✓            | ✓      | —             | —          |
-| Observations + reflections                  | ✓            | —      | ✓             | —          |
-| Context survives across compactions         | ✓            | —      | ✓             | —          |
-| Background memory workers                   | ✓            | —      | ✓             | —          |
-| Searchable history after compaction         | ✓            | ✓      | partial       | —          |
-| Per-worker model config                     | ✓            | —      | —             | —          |
-| Fallback model chains + persisted cooldowns | ✓            | —      | —             | —          |
-| Manual flush mode (`compaction: "manual"`)  | ✓            | —      | —             | —          |
-| Memory toggle (`/blackhole om-off`)         | ✓            | —      | —             | —          |
-| Unified single-file config                  | ✓            | —      | —             | —          |
-| Per-session pending state                   | ✓            | —      | —             | —          |
+|                                            | pi-blackhole | pi-vcc | pi-obs-memory | Pi default |
+| ------------------------------------------ | ------------ | ------ | ------------- | ---------- |
+| Algorithmic compaction (no LLM cost)       | ✓            | ✓      | —             | —          |
+| Deterministic output                       | ✓            | ✓      | —             | —          |
+| Structured summary sections                | ✓            | ✓      | —             | —          |
+| Observations + reflections                 | ✓            | —      | ✓             | —          |
+| Context survives across compactions        | ✓            | —      | ✓             | —          |
+| Background memory workers                  | ✓            | —      | ✓             | —          |
+| Searchable history after compaction        | ✓            | ✓      | partial       | —          |
+| Per-worker model config                    | ✓            | —      | —             | —          |
+| Fallback model chains + bounded retries    | ✓            | —      | —             | —          |
+| Manual flush mode (`compaction: "manual"`) | ✓            | —      | —             | —          |
+| Memory toggle (`/blackhole om-off`)        | ✓            | —      | —             | —          |
+| Unified single-file config                 | ✓            | —      | —             | —          |
+| Per-session pending state                  | ✓            | —      | —             | —          |
 
 </details>
 
@@ -333,13 +333,13 @@ rm -rf ~/.pi/agent/pi-blackhole
 What blackhole adds and reworks on top:
 
 - **Unified configuration** — one JSON file, not two.
-- **Per-worker model fallback chains** with persisted cooldowns that survive Pi restarts.
+- **Per-worker model fallback chains** — failed models are skipped within a stage and eligible again on the next run.
 - **Manual flush mode** — `compaction: "manual"` saves observations to per-session disk buffers.
 - **Conflict resolution** — OM hooks into vcc's compaction, not Pi's default.
 - **Memory toggle** (`/blackhole om-off` / `/blackhole om-on`) — disable the memory layer without uninstalling.
 - **Per-session pending state** — isolated per-session JSON files, no cross-session contamination.
 - **Custom provider bridge** — consolidation agents loaded via jiti can still use provider stream functions registered by other extensions.
-- **Retryable error detection with per-model cooldowns** — models that fail get cooled down, fallbacks tried automatically, 30-second retry gate prevents spam.
+- **Bounded worker retries** — fallbacks are tried automatically, failures never persist across runs, and a 30-second retry gate prevents spam.
 - **Improved observer/reflector/dropper prompts** — each heavily customized with detailed extraction rules, relevance guidance, and error handling.
 - **OM-recall coupling** — when expanding session entries via `recall`, related observations and reflections are automatically shown.
 - **Thinking level support** — per-model `thinking` field for reasoning effort control, including `max` where supported by the provider.

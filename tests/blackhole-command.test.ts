@@ -133,23 +133,30 @@ function catchUpContext(
   ],
 ) {
   const lastSourceId = branch.filter(isSourceEntry).at(-1)?.id;
-  return env.makeHandlerArgs({
+  let currentBranch = branch;
+  const ctx = env.makeHandlerArgs({
     sessionManager: {
       getSessionId: () => "test-session",
-      getBranch: vi
-        .fn()
-        .mockReturnValueOnce(branch) // Host eligibility probe.
-        .mockReturnValueOnce(branch) // Pre-compaction catch-up snapshot.
-        .mockReturnValue([
-          ...branch,
-          {
-            type: "compaction",
-            id: `compact-${lastSourceId ?? "none"}`,
-            firstKeptEntryId: lastSourceId ?? "",
-          },
-        ]),
+      getBranch: vi.fn(() => currentBranch),
     },
   });
+  const compact = ctx.compact.getMockImplementation();
+  ctx.compact.mockImplementation((options: { onComplete?: () => void }) => {
+    const onComplete = options.onComplete;
+    options.onComplete = () => {
+      currentBranch = [
+        ...branch,
+        {
+          type: "compaction",
+          id: `compact-${lastSourceId ?? "none"}`,
+          firstKeptEntryId: lastSourceId ?? "",
+        },
+      ];
+      onComplete?.();
+    };
+    compact?.(options);
+  });
+  return ctx;
 }
 
 async function runCatchUpCommand(
@@ -345,7 +352,6 @@ describe("/blackhole command", () => {
     ctx.compact.mock.calls[0][0].onComplete();
 
     expect(env.appendEntryCalls).toEqual([]);
-    expect(ctx.sessionManager.getBranch).toHaveBeenCalledTimes(1); // Eligibility only.
   });
 
   it("loads disabled memory before the first command snapshots config", async () => {
@@ -363,7 +369,6 @@ describe("/blackhole command", () => {
     ctx.compact.mock.calls[0][0].onComplete();
     expect(env.runtime.config.memory).toBe(false);
     expect(env.appendEntryCalls).toEqual([]);
-    expect(ctx.sessionManager.getBranch).toHaveBeenCalledTimes(1); // Eligibility only.
   });
 
   it("reports compaction success even when history-job persistence fails", async () => {
@@ -386,6 +391,8 @@ describe("/blackhole command", () => {
   });
 
   it("launches existing work even when this compaction has no new tail", async () => {
+    // Test launch behavior, not the time needed to transform a cold module.
+    await import("../src/om/consolidation.js");
     const env = createMockEnvironment();
     env.runtime.isConsolidationRetryGated = () => {
       throw new Error("background launch reached");

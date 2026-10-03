@@ -565,7 +565,7 @@ describe("Config with model IDs containing slashes and colons", () => {
     expect(config.observerModel).toBeUndefined();
   });
 
-  it("parses cooldownHours on model config", async () => {
+  it("ignores obsolete cooldownHours on model config", async () => {
     const { loadUnifiedConfig } = await import("../src/core/unified-config.js");
     writeConfig({
       observerModel: {
@@ -575,20 +575,10 @@ describe("Config with model IDs containing slashes and colons", () => {
       },
     });
     const config = loadUnifiedConfig(testDir);
-    expect(config.observerModel!.cooldownHours).toBe(12);
-  });
-
-  it("parses cooldownHours: 0 as valid (cooldown disabled)", async () => {
-    const { loadUnifiedConfig } = await import("../src/core/unified-config.js");
-    writeConfig({
-      observerModel: {
-        provider: "openrouter",
-        id: "some-model:free",
-        cooldownHours: 0,
-      },
+    expect(config.observerModel).toEqual({
+      provider: "openrouter",
+      id: "google/gemma-4-26b-a4b-it:free",
     });
-    const config = loadUnifiedConfig(testDir);
-    expect(config.observerModel!.cooldownHours).toBe(0);
   });
 
   it("parses fallback model arrays", async () => {
@@ -604,7 +594,7 @@ describe("Config with model IDs containing slashes and colons", () => {
     const config = loadUnifiedConfig(testDir);
     expect(config.observerFallbackModels).toHaveLength(2);
     expect(config.observerFallbackModels![0].id).toBe("fb1:free");
-    expect(config.observerFallbackModels![0].cooldownHours).toBe(6);
+    expect(config.observerFallbackModels?.[0]).toEqual({ provider: "openrouter", id: "fb1:free" });
     expect(config.observerFallbackModels![1].id).toBe("fb2:free");
     expect(config.reflectorFallbackModels).toHaveLength(1);
     expect(config.reflectorFallbackModels![0].thinking).toBe("low");

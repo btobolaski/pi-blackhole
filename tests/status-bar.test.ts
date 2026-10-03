@@ -625,7 +625,7 @@ describe("status bar", () => {
       h.setEntries([msg("e1", 1_000)]);
       const timersBefore = vi.getTimerCount();
       await h.fire("session_start", {}, { ...h.ctx, hasUI: false });
-      expect(h.setStatus).not.toHaveBeenCalled();
+      expect(h.setWidget).not.toHaveBeenCalled();
       expect(vi.getTimerCount()).toBe(timersBefore);
     });
 
@@ -634,7 +634,7 @@ describe("status bar", () => {
       h.setEntries([msg("e1", 1_000)]);
       const timersBefore = vi.getTimerCount();
       await h.fire("session_start", {}, { ...h.ctx, ui: undefined });
-      expect(h.setStatus).not.toHaveBeenCalled();
+      expect(h.setWidget).not.toHaveBeenCalled();
       expect(vi.getTimerCount()).toBe(timersBefore);
     });
   });
