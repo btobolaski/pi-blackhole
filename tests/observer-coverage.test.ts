@@ -103,6 +103,14 @@ const emptyResult = () => ({
   emptyReason: { kind: "no_new_content" as const },
 });
 
+/** Agent-level shape for a capped run whose citations form no head-anchored prefix. */
+const turnCapError = (count = 1) =>
+  new WorkerStreamError(
+    `Observer turn cap exhausted: ${count} observation${count === 1 ? "" : "s"} recorded with no complete=true close`,
+    count,
+    true,
+  );
+
 beforeEach(() => {
   runObserverSpy.mockReset();
   runObserverSpy.mockResolvedValue(emptyResult());
@@ -195,17 +203,139 @@ describe("observer never covers source entries it was never shown", () => {
     ];
     const runtime = makeRuntime(700, 1000);
     const advance = vi.spyOn(runtime, "advanceCursor");
-    // A partial id the batch never delivered must not move the cursor: claiming
-    // it would cover entries the model never saw.
-    runObserverSpy.mockResolvedValueOnce({
-      observations: [observation("o1", { sourceEntryIds: ["s0"] })],
-      partialCoverageId: "bogus-id",
-    });
+    const recordRetryable = vi.spyOn(runtime, "recordRetryableError");
+    // A partial id the batch never delivered must never be committed: the
+    // batch is discarded and the halved retry below also caps, so the run
+    // aborts with the cursor unmoved — still with no cooldown.
+    runObserverSpy
+      .mockResolvedValueOnce({
+        observations: [observation("o1", { sourceEntryIds: ["s0"] })],
+        partialCoverageId: "bogus-id",
+      })
+      .mockRejectedValueOnce(turnCapError());
 
-    await runStage(runtime, entries);
+    const outcome = await runStage(runtime, entries);
 
+    // The first attempt delivered [s0..s2]; the retry is halved to [s0] —
+    // but "bogus-id" itself is never claimed as coverage.
+    expect(observedInput(1).allowedSourceEntryIds).toEqual(["s0"]);
     expect(advance).not.toHaveBeenCalled();
     expect(runtime.getCursor("observer")).toBeUndefined();
+    expect(recordRetryable).not.toHaveBeenCalled();
+    expect(outcome).toBe("abort");
+  });
+
+  test("a turn-cap cut with no head-anchored citation halves the chunk and retries", async () => {
+    const entries = [
+      rawMessage("s0", text("OLD-A")),
+      rawMessage("s1", text("OLD-B")),
+      rawMessage("s2", text("OLD-C")),
+      rawMessage("s3", text("OLD-D")),
+    ];
+    // 4 × ~302 ≈ 1208 tokens fits one 2000-token chunk, so the first attempt
+    // delivers [s0..s3].
+    const runtime = makeRuntime(700, 2000);
+    const recordRetryable = vi.spyOn(runtime, "recordRetryableError");
+    runObserverSpy
+      .mockRejectedValueOnce(turnCapError())
+      .mockResolvedValueOnce({
+        observations: [observation("o1", { sourceEntryIds: ["s0"] })],
+        partialCoverageId: "s0",
+      })
+      .mockResolvedValueOnce(emptyResult());
+
+    const outcome = await runStage(runtime, entries);
+
+    // No committable prefix on [s0..s3], so the stage halves to [s0, s1] and
+    // retries the same model instead of burning the fallback chain on the
+    // identical chunk — and never cools the model down for a config limit.
+    expect(runObserverSpy).toHaveBeenCalledTimes(3);
+    expect(observedInput(0).allowedSourceEntryIds).toEqual(["s0", "s1", "s2", "s3"]);
+    expect(observedInput(1).allowedSourceEntryIds).toEqual(["s0", "s1"]);
+    expect(recordRetryable).not.toHaveBeenCalled();
+    expect(outcome).toBe("continue");
+    expect(runtime.getCursor("observer")?.entryId).toBe("s3");
+  });
+
+  test("repeated turn-cap cuts halve down to a single entry and advance", async () => {
+    const entries = [
+      rawMessage("s0", text("OLD-A")),
+      rawMessage("s1", text("OLD-B")),
+      rawMessage("s2", text("OLD-C")),
+      rawMessage("s3", text("OLD-D")),
+    ];
+    const runtime = makeRuntime(700, 2000);
+    runObserverSpy
+      .mockRejectedValueOnce(turnCapError())
+      .mockRejectedValueOnce(turnCapError())
+      .mockResolvedValueOnce(emptyResult())
+      .mockResolvedValueOnce(emptyResult());
+
+    const outcome = await runStage(runtime, entries);
+
+    // [s0..s3] → [s0, s1] → [s0]: every cut halves the delivered entries, so
+    // the cursor advances within ⌈log2(n)⌉ retries instead of stalling on the
+    // identical chunk every cycle.
+    expect(runObserverSpy).toHaveBeenCalledTimes(4);
+    expect(observedInput(0).allowedSourceEntryIds).toEqual(["s0", "s1", "s2", "s3"]);
+    expect(observedInput(1).allowedSourceEntryIds).toEqual(["s0", "s1"]);
+    expect(observedInput(2).allowedSourceEntryIds).toEqual(["s0"]);
+    expect(outcome).toBe("continue");
+    expect(runtime.getCursor("observer")?.entryId).toBe("s3");
+  });
+
+  test("a turn-cap cut on a single-entry chunk neither halves nor loops", async () => {
+    const entries = [rawMessage("s0", text("ONLY"))];
+    const runtime = makeRuntime(100, 10_000);
+    runObserverSpy.mockRejectedValueOnce(turnCapError());
+
+    const outcome = await runStage(runtime, entries);
+
+    // Nothing to halve: the existing skip-and-break path runs once and the
+    // stage aborts instead of re-offering the same single entry forever.
+    expect(runObserverSpy).toHaveBeenCalledTimes(1);
+    expect(outcome).toBe("abort");
+    expect(runtime.getCursor("observer")).toBeUndefined();
+  });
+
+  test("a halved turn-cap retry re-offers the capped candidate instead of skipping it", async () => {
+    const entries = [
+      rawMessage("s0", text("OLD-A")),
+      rawMessage("s1", text("OLD-B")),
+      rawMessage("s2", text("OLD-C")),
+      rawMessage("s3", text("OLD-D")),
+    ];
+    const runtime = makeRuntime(700, 2000);
+    const candidate = { provider: "test", id: "m" };
+    runObserverSpy
+      .mockRejectedValueOnce(turnCapError())
+      .mockResolvedValueOnce({
+        observations: [observation("o1", { sourceEntryIds: ["s0"] })],
+        partialCoverageId: "s0",
+      })
+      .mockResolvedValueOnce(emptyResult());
+
+    // Candidate resolver that ignores in-cycle skips: the point under test is
+    // that the stage never records the skip, so the offer sequence alone
+    // proves the retry went to the same model on the smaller input.
+    const resolveCandidate = async () =>
+      ({
+        ok: true as const,
+        source: "candidate" as const,
+        candidateConfig: candidate,
+        model: { ...candidate, contextWindow: 100_000 },
+        apiKey: "test",
+      }) as any;
+
+    const outcome = await runStage(runtime, entries, resolveCandidate);
+
+    expect(observedInput(0).allowedSourceEntryIds).toEqual(["s0", "s1", "s2", "s3"]);
+    expect(observedInput(1).allowedSourceEntryIds).toEqual(["s0", "s1"]);
+    // The capped model was retried on the smaller input, not benched: no
+    // in-cycle skip of either kind.
+    expect(runtime.failedInCycle.size).toBe(0);
+    expect(runtime.turnCapSkippedInCycle.size).toBe(0);
+    expect(outcome).toBe("continue");
   });
 
   test("the drain is bounded so an oversized backlog waits for the next cycle", async () => {

@@ -1297,7 +1297,10 @@ export async function runObserverStage(
         // contiguous cited prefix, never to the delivered chunk end.
         // Committing that prefix keeps the batch (instead of discarding it
         // and re-offering the same chunk forever); the drain below then
-        // resumes from an honestly-observed point.
+        // resumes from an honestly-observed point. A capped batch with no
+        // head-anchored prefix at all never reaches here — the agent throws,
+        // and the catch halves the delivered entries and retries (converging
+        // to a single entry, which always advances).
         //
         // The partial id is validated against the delivered chunk: trusting a
         // point outside it blind would move the cursor over entries the model
@@ -1438,6 +1441,56 @@ export async function runObserverStage(
           continue;
         }
       }
+      // Turn-cap cut with no committable prefix (the agent throws when the
+      // cited entries do not start at the chunk head): the batch is discarded,
+      // but the fault is the input size, not the model — so halve the
+      // delivered entries and re-offer instead of burning the fallback chain
+      // on the identical chunk. Halving converges: a single entry always
+      // yields a prefix (any recorded observation must cite it) or an empty
+      // advance, so the cursor moves within ⌈log2(n)⌉ retries, bounded further
+      // by MAX_STAGE_ATTEMPTS since every retry is a counted attempt. The
+      // model is deliberately NOT skipped in-cycle: the shrunk input may fit
+      // its turn budget, and skipping would starve single-model setups of the
+      // retry (resolution would exhaust and abort without re-offering it). A
+      // single-entry chunk cannot halve: it falls through to the skip +
+      // break-glass path below exactly as before.
+      if (error instanceof WorkerStreamError && error.turnCapExhausted && chunkEntries.length > 1) {
+        const halvedEntries = chunkEntries.slice(
+          0,
+          Math.max(1, Math.floor(chunkEntries.length / 2)),
+        );
+        const halved = serializeSourceAddressedBranchEntries(halvedEntries);
+        const halvedCover = halved.sourceEntryIds.at(-1);
+        if (halvedCover && halved.text.trim()) {
+          chunkEntries = halvedEntries;
+          chunk = halved.text;
+          sourceEntryIds = halved.sourceEntryIds;
+          sourceEntryTimestamps = halved.sourceEntryTimestamps;
+          coversUpToId = halvedCover;
+          chunkTokens = estimateStringTokens(chunk);
+          capTokens = chunkEntries.reduce((s: number, e) => s + estimateEntryTokens(e), 0);
+          didShrink = true;
+          // The halved chunk has a new coverage point: re-check the
+          // manual-mode pending gate before spending a model call on it (same
+          // as tryShrinkToFit above).
+          if (isManualMode(runtime.config) && isObservationChunkPending(sessionId, coversUpToId)) {
+            debugLog("observer.pending_skip", { coversUpToId, sessionId });
+            return "continue";
+          }
+          runtime.tryEmitWorkerInfo(
+            ctx.hasUI,
+            ctx.ui,
+            `Observational memory: observer turn cap — halving chunk to ${halvedEntries.length} ${halvedEntries.length === 1 ? "entry" : "entries"} and retrying`,
+          );
+          debugLog("observer.turncap_halve", {
+            chunkEntries: halvedEntries.length,
+            chunkTokens,
+            coversUpToId,
+            discardedCount: getDiscardedCount(error),
+          });
+          continue;
+        }
+      }
       // Always try next fallback — don't abort pipeline for a single model failure.
       // Record cooldown so resolveModel skips this model in the next iteration.
       // Deterministic 4xx (e.g. MissingSessionID) additionally cools the
@@ -1456,8 +1509,10 @@ export async function runObserverStage(
         // Input-size limit, not a broken model: skip in-cycle so the fallback
         // chain is tried now, but never persist a cooldown — a healthy model
         // benched for `cooldownHours` after merely hitting `agentMaxTurns` is
-        // what wedged the observer. (The agent now returns a partial
-        // checkpoint instead of throwing this; the guard is defense-in-depth.)
+        // what wedged the observer. (The agent returns a partial checkpoint
+        // for a committable prefix, and the halve-and-retry above handles a
+        // multi-entry chunk with none — so this skip now only runs for a
+        // single-entry chunk, which cannot shrink further.)
         runtime.skipFailedForCycle(candidateConfig, "turn_cap");
       } else {
         runtime.recordRetryableError(candidateConfig, error, "observer");
@@ -1474,12 +1529,13 @@ export async function runObserverStage(
       // A timed-out session model has no candidate config to cool down, so
       // the loop would re-resolve the same stalled model and burn the full
       // deadline on every remaining attempt. Treat the stage as exhausted.
-      // A session model cut off by the agent turn cap — or by an output-length
-      // cut on an input the preflight accepted — fails the same way for the
-      // same reason: the turn budget and the output cap derive from the same
-      // window, so a retry spends another whole budget on an identical
-      // outcome. Candidates differ — they cool down and the fallback chain
-      // takes over.
+      // A session model cut off by the agent turn cap on a single-entry chunk —
+      // or by an output-length cut on an input the preflight accepted — fails
+      // the same way for the same reason: the turn budget and the output cap
+      // derive from the same window, so a retry spends another whole budget on
+      // an identical outcome. (A turn cap on a multi-entry chunk never reaches
+      // here: the halve-and-retry above continues on the smaller input.)
+      // Candidates differ — they cool down and the fallback chain takes over.
       if (
         !candidateConfig &&
         (error instanceof WorkerAttemptTimeoutError ||

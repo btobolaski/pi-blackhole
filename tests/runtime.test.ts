@@ -1760,4 +1760,25 @@ describe("Runtime — per-run notice collection (warning spam gate)", () => {
       notify.mockClear();
     }
   });
+
+  it("keeps notice dedupe when the same session re-announces", async () => {
+    const { Runtime } = await import("../src/om/runtime.js");
+    const runtime = new Runtime();
+    const notify = vi.fn();
+    try {
+      runtime.startSession("session-a");
+      expect(runtime.emitNotice(true, { notify }, "k", "Observational memory: x", "info")).toBe(
+        true,
+      );
+      // Same id — e.g. a looped or nested launch re-announcing its session:
+      // the collection must survive, so the repeat stays suppressed. An
+      // unconditional resetNoticeGate() in startSession would re-emit here.
+      runtime.startSession("session-a");
+      expect(runtime.emitNotice(true, { notify }, "k", "Observational memory: x", "info")).toBe(
+        false,
+      );
+    } finally {
+      notify.mockClear();
+    }
+  });
 });

@@ -2,7 +2,7 @@
 
 ### Fixed
 
-- **Observer turn-cap keeps partial work instead of cooling the model.** A capped run returns its recorded observations with a cited-prefix checkpoint; the stage commits that prefix, drains the rest in-run, and skips the model in-cycle only. Coverage never advances past a citation.
+- **Observer turn-cap keeps partial work instead of cooling the model.** A capped run returns its recorded observations with a cited-prefix checkpoint; the stage commits that prefix, drains the rest in-run, and skips the model in-cycle only. Coverage never advances past a citation. A capped batch with no head-anchored prefix is halved and retried (converging to a single entry) instead of discarded, still with no cooldown.
 - **Resolve-time notices emit once per run with an end-of-run summary.** Per-stage dedupe (capped at five entries), headless-safe, and the checkpoint toast is no longer gated away.
 
 ---

@@ -454,9 +454,12 @@ ${conversation}`;
         partialCoverageId,
       };
     }
-    // No valid citation (unreachable while accumulated.size > 0, since every
-    // recorded observation carries validated ids): fail closed rather than
-    // advance over work whose coverage cannot be proven.
+    // No head-anchored citation: reachable whenever the model cites only
+    // later entries (every recorded observation carries validated ids, but
+    // none cites the chunk head, so the contiguous prefix is empty). Fail
+    // closed rather than advance over work whose coverage cannot be proven —
+    // the stage halves the delivered entries and retries on the smaller
+    // input instead of discarding the run outright.
     throw new WorkerStreamError(
       `Observer turn cap exhausted: ${accumulated.size} observation${accumulated.size === 1 ? "" : "s"} recorded with no complete=true close`,
       accumulated.size,

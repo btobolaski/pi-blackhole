@@ -1012,6 +1012,29 @@ describe("runObserver", () => {
     expect(result.partialCoverageId).toBe("entry-a");
   });
 
+  it("throws a turn-cap error when the capped run cited only later entries", async () => {
+    const error = await runObserver({
+      ...baseArgs,
+      allowedSourceEntryIds: ["entry-a", "entry-b", "entry-c"],
+      agentLoop: turnCapLoop(
+        [
+          {
+            observations: [{ content: "late fact", relevance: "low", sourceEntryIds: ["entry-c"] }],
+            complete: false,
+          },
+        ],
+        true,
+      ),
+      maxTurns: 1,
+    }).catch((caught: unknown) => caught);
+
+    // entry-a is uncited, so no contiguous prefix exists: there is no honest
+    // coverage point, and the run must fail closed with a turn-cap error the
+    // stage halves-and-retries on — never a partial return past the gap.
+    expect(error).toBeInstanceOf(WorkerStreamError);
+    expect(error).toMatchObject({ turnCapExhausted: true, discardedCount: 1 });
+  });
+
   it("returns the partial batch when the legacy turn-cap hook ends a run that never closed", async () => {
     const result = await runObserver({
       ...baseArgs,
