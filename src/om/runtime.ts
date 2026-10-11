@@ -260,6 +260,10 @@ export class Runtime {
    */
   startSession(sessionIdentity: string | undefined): void {
     if (this.disposed) return;
+    // A new session gets a fresh notice collection so the previous session's
+    // dedupe cannot suppress the new session's first announcements. Same-id
+    // repeats keep the collection (per-run reset stays on agent_start).
+    if (this.sessionIdentity !== sessionIdentity) this.resetNoticeGate();
     if (this.sessionIdentity !== undefined && this.sessionIdentity !== sessionIdentity) {
       this.lifecycleController.abort();
       this.lifecycleController = new AbortController();
@@ -436,7 +440,13 @@ export class Runtime {
     });
     const hidden = collected.length - shown.length;
     if (hidden > 0) labels.push(`+${hidden} more`);
-    const prefix = collected.length === 1 ? "" : `${collected.length} repeated notices this run — `;
+    const total = collected.reduce((sum, entry) => sum + entry.count, 0);
+    const prefix =
+      collected.length === 1
+        ? ""
+        : total > collected.length
+          ? `${collected.length} repeated notices this run — `
+          : `${collected.length} notices this run — `;
     const anyWarning = collected.some((entry) => entry.level === "warning");
     try {
       ui.notify(
@@ -580,7 +590,7 @@ export class Runtime {
         this.emitNotice(
           ctx.hasUI,
           ctx.ui,
-          `notfound:${candidate.provider}/${candidate.id}`,
+          `notfound:${stageName}:${candidate.provider}/${candidate.id}`,
           `Observational memory: ${stageName} model ${candidate.provider}/${candidate.id} not found`,
           "warning",
         );
@@ -599,7 +609,7 @@ export class Runtime {
         this.emitNotice(
           ctx.hasUI,
           ctx.ui,
-          `noauth:${candidate.provider}`,
+          `noauth:${stageName}:${candidate.provider}`,
           `Observational memory: ${stageName} no auth for ${candidate.provider}`,
           "warning",
         );

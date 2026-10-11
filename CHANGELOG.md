@@ -2,8 +2,8 @@
 
 ### Fixed
 
-- **A turn cap no longer discards recorded observer observations or benches the model.** When the observer exhausts `agentMaxTurns`, the run returns the batch it already recorded with a partial-coverage point at the end of the contiguous cited prefix; the stage commits that prefix and drains the remainder in the same run, and the model is skipped only for the cycle — never written to the cooldown file. Coverage never advances over an entry that no observation cited.
-- **Resolve-time notices are no longer re-emitted on every candidate walk.** Removed-model, missing-auth, cooldown and in-cycle skips emit once per run, repeats are counted, and `agent_end` re-surfaces a single deduped summary (capped at five named entries); headless/RPC runs never emit. Info-level notices still respect the one-toast-per-phase gate, while a warning no longer silences the progress toast that follows (such as the observer turn-cap checkpoint), and the per-run dedupe set now survives `agent_end` so a pipeline still in flight does not re-announce the same key.
+- **Observer turn-cap keeps partial work instead of cooling the model.** A capped run returns its recorded observations with a cited-prefix checkpoint; the stage commits that prefix, drains the rest in-run, and skips the model in-cycle only. Coverage never advances past a citation.
+- **Resolve-time notices emit once per run with an end-of-run summary.** Per-stage dedupe (capped at five entries), headless-safe, and the checkpoint toast is no longer gated away.
 
 ---
 

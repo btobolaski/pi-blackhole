@@ -1614,4 +1614,109 @@ describe("Runtime — per-run notice collection (warning spam gate)", () => {
     const notFound = notify.mock.calls.filter((call) => String(call[0]).includes("not found"));
     expect(notFound).toHaveLength(1);
   });
+
+  it("emits a not-found warning once per stage, not once per run", async () => {
+    writeConfig({
+      observerModel: { provider: "openrouter", id: "nonexistent:free" },
+      sessionFallback: false,
+    });
+    const { Runtime } = await import("../src/om/runtime.js");
+    const runtime = new Runtime();
+    runtime.ensureConfig(testDir);
+    const notify = vi.fn();
+    const base = {
+      model: undefined,
+      modelRegistry: makeRegistry([]),
+      hasUI: true,
+      ui: { notify },
+      stageModel: { provider: "openrouter", id: "nonexistent:free" },
+    };
+
+    runtime.consolidationPhase = "observer";
+    await runtime.resolveModel(base as any);
+    runtime.consolidationPhase = "reflector";
+    await runtime.resolveModel(base as any);
+
+    const notFound = notify.mock.calls.filter((call) => String(call[0]).includes("not found"));
+    expect(notFound).toHaveLength(2);
+  });
+
+  it("emits a no-auth warning once per stage, not once per run", async () => {
+    writeConfig({
+      observerModel: { provider: "openrouter", id: "m" },
+      sessionFallback: false,
+    });
+    const { Runtime } = await import("../src/om/runtime.js");
+    const runtime = new Runtime();
+    runtime.ensureConfig(testDir);
+    const notify = vi.fn();
+    const registry: any = makeRegistry([makeModel("m")]);
+    registry.hasConfiguredAuth = vi.fn(() => false);
+    const base = {
+      model: undefined,
+      modelRegistry: registry,
+      hasUI: true,
+      ui: { notify },
+      stageModel: { provider: "openrouter", id: "m" },
+    };
+
+    runtime.consolidationPhase = "observer";
+    await runtime.resolveModel(base as any);
+    runtime.consolidationPhase = "reflector";
+    await runtime.resolveModel(base as any);
+
+    const noAuth = notify.mock.calls.filter((call) => String(call[0]).includes("no auth"));
+    expect(noAuth).toHaveLength(2);
+  });
+
+  it("says repeated only when a key actually repeated", async () => {
+    const { Runtime } = await import("../src/om/runtime.js");
+    const runtime = new Runtime();
+    const notify = vi.fn();
+    try {
+      runtime.emitNotice(true, { notify }, "a", "Observational memory: alpha", "info");
+      runtime.emitNotice(true, { notify }, "b", "Observational memory: beta", "info");
+      runtime.flushNoticeSummary(true, { notify });
+      const [summary] = notify.mock.calls.at(-1)!;
+      expect(String(summary)).toContain("2 notices this run");
+      expect(String(summary)).not.toContain("repeated");
+    } finally {
+      notify.mockClear();
+    }
+  });
+
+  it("says repeated when a key was seen more than once", async () => {
+    const { Runtime } = await import("../src/om/runtime.js");
+    const runtime = new Runtime();
+    const notify = vi.fn();
+    try {
+      runtime.emitNotice(true, { notify }, "a", "Observational memory: alpha", "info");
+      runtime.emitNotice(true, { notify }, "a", "Observational memory: alpha", "info");
+      runtime.emitNotice(true, { notify }, "b", "Observational memory: beta", "info");
+      runtime.flushNoticeSummary(true, { notify });
+      const [summary] = notify.mock.calls.at(-1)!;
+      expect(String(summary)).toContain("repeated notices");
+      expect(String(summary)).toContain("(×2)");
+    } finally {
+      notify.mockClear();
+    }
+  });
+
+  it("re-opens notice dedupe on session change", async () => {
+    const { Runtime } = await import("../src/om/runtime.js");
+    const runtime = new Runtime();
+    const notify = vi.fn();
+    try {
+      runtime.startSession("session-a");
+      expect(runtime.emitNotice(true, { notify }, "k", "Observational memory: x", "info")).toBe(
+        true,
+      );
+      runtime.startSession("session-b");
+      expect(runtime.emitNotice(true, { notify }, "k", "Observational memory: x", "info")).toBe(
+        true,
+      );
+    } finally {
+      notify.mockClear();
+    }
+  });
 });

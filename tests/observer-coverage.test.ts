@@ -269,4 +269,53 @@ describe("observer never covers source entries it was never shown", () => {
     // cursor and is re-measured next cycle.
     expect(runtime.getCursor("observer")?.entryId).toBe("s0");
   });
+
+  test("a turn-cap checkpoint stays visible even when the info gate is spent", async () => {
+    const entries = [
+      rawMessage("s0", text("OLD-A")),
+      rawMessage("s1", text("OLD-B")),
+      rawMessage("s2", text("OLD-C")),
+    ];
+    const runtime = makeRuntime(700, 1000);
+    // The "observer running" toast already spent the per-phase gate, so a
+    // gated checkpoint would be silently dropped.
+    runtime.hasEmittedInfoThisTurn = true;
+    const notify = vi.fn();
+    const generation = runtime.captureGeneration("test-session");
+    runObserverSpy
+      .mockResolvedValueOnce({
+        observations: [observation("o1", { sourceEntryIds: ["s0"] })],
+        partialCoverageId: "s0",
+      })
+      .mockResolvedValueOnce(emptyResult());
+    try {
+      await runObserverStage(
+        { appendEntry: vi.fn() } as any,
+        runtime,
+        {
+          cwd: "/tmp",
+          hasUI: true,
+          ui: { notify },
+          model: undefined,
+          modelRegistry: {
+            find: () => undefined,
+            getApiKeyAndHeaders: async () => ({ ok: false }),
+          },
+          sessionManager: {
+            getBranch: () => entries,
+            getSessionId: () => "test-session",
+          },
+        } as unknown as ConsolidationCtx,
+        generation,
+        resolveModelSession(),
+      );
+
+      const checkpoint = notify.mock.calls.filter((call) =>
+        String(call[0]).includes("checkpointed"),
+      );
+      expect(checkpoint).toHaveLength(1);
+    } finally {
+      notify.mockClear();
+    }
+  });
 });

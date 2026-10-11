@@ -1297,6 +1297,12 @@ export async function runObserverStage(
         // never saw. A mismatch fails closed like the no-citation path — the
         // batch is discarded, the cursor stays put, and the fallback chain is
         // tried without a persisted cooldown.
+        //
+        // A length cut landing on the same capped turn is deliberately not
+        // treated as an output-shrink trigger here: the remainder the drain
+        // re-offers is strictly smaller, so output need shrinks with it, and
+        // the drain is bounded (OBSERVER_DRAIN_MAX_BATCHES) — the rest waits
+        // for the next cycle instead of looping.
         if (
           result.partialCoverageId !== undefined &&
           !sourceEntryIds.includes(result.partialCoverageId)
@@ -1304,6 +1310,7 @@ export async function runObserverStage(
           debugLog("observer.partial_outside_chunk", {
             partialCoverageId: result.partialCoverageId,
             coversUpToId,
+            sourceEntryIds,
           });
           throw new WorkerStreamError(
             `Observer turn cap checkpoint outside delivered chunk: ${result.observations.length} observation${result.observations.length === 1 ? "" : "s"} recorded with no verifiable coverage point`,
@@ -1338,6 +1345,13 @@ export async function runObserverStage(
           });
         }
         runtime.advanceCursor("observer", coverageId, "recorded");
+        // A turn-cap checkpoint must stay visible even when the "observer
+        // running" toast at the top of this attempt already spent the
+        // per-phase info gate: both go through tryEmitWorkerInfo, so without
+        // this the checkpoint — the signal that partial work was kept instead
+        // of discarded — would never reach the terminal. The gate's single
+        // slot belongs to the outcome, not the announcement that work started.
+        if (result.partialCoverageId) runtime.resetInfoGate();
         runtime.tryEmitWorkerInfo(
           ctx.hasUI,
           ctx.ui,
