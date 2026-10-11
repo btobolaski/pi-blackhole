@@ -26,6 +26,20 @@ import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type { AuthResult } from "@earendil-works/pi-ai";
 import { debugLog } from "./debug-log.js";
 
+/** A model entry with a resolvable identity (provider+id). Thinking-only
+ *  modifiers (`{ thinking }`) lack this and are skipped as candidates. */
+function hasModelIdentity(
+  model: ConfiguredModel | undefined,
+): model is ConfiguredModel & { provider: string; id: string } {
+  return (
+    !!model &&
+    typeof model.provider === "string" &&
+    model.provider.length > 0 &&
+    typeof model.id === "string" &&
+    model.id.length > 0
+  );
+}
+
 interface ResolvedModelBase {
   ok: true;
   model: any;
@@ -527,16 +541,23 @@ export class Runtime {
    * 2. Stage fallbacks (observerFallbackModels, etc.)
    * 3. Base config.model
    *
+   * Thinking-only modifiers (`{ thinking }` without provider/id) are skipped:
+   * they carry no identity to resolve, but still supply the stage thinking
+   * level via stageThinkingLevel on the session-fallback path.
    * Session model (ctx.model) is only used as the last resort inside resolveModel.
    */
   private buildCandidateList(
     stageModel?: ConfiguredModel,
     stageFallbacks?: ConfiguredModel[],
-  ): ConfiguredModel[] {
-    const candidates: ConfiguredModel[] = [];
-    if (stageModel) candidates.push(stageModel);
-    if (stageFallbacks) candidates.push(...stageFallbacks);
-    if (this.config.model) candidates.push(this.config.model);
+  ): (ConfiguredModel & { provider: string; id: string })[] {
+    const candidates: (ConfiguredModel & { provider: string; id: string })[] = [];
+    if (hasModelIdentity(stageModel)) candidates.push(stageModel);
+    if (stageFallbacks) {
+      for (const fallback of stageFallbacks) {
+        if (hasModelIdentity(fallback)) candidates.push(fallback);
+      }
+    }
+    if (hasModelIdentity(this.config.model)) candidates.push(this.config.model);
     return candidates;
   }
 
@@ -871,18 +892,18 @@ export class Runtime {
    * Accepts a candidate config or a resolved model identity; undefined (e.g. an
    * unresolvable session model) is a no-op.
    */
-  skipOversizedForCycle(model: { provider: string; id: string } | undefined): void {
+  skipOversizedForCycle(model: ConfiguredModel | undefined): void {
     if (!model || typeof model.provider !== "string" || typeof model.id !== "string") return;
-    this.sizeSkippedInCycle.add(modelKey(model));
+    this.sizeSkippedInCycle.add(modelKey({ provider: model.provider, id: model.id }));
   }
 
   /**
    * Re-offer a size-skipped model. The shrink-to-fit pass calls this for the
    * largest-window model before re-resolving: the shrunk input fits it now.
    */
-  unskipOversizedForCycle(model: { provider: string; id: string } | undefined): void {
+  unskipOversizedForCycle(model: ConfiguredModel | undefined): void {
     if (!model || typeof model.provider !== "string" || typeof model.id !== "string") return;
-    this.sizeSkippedInCycle.delete(modelKey(model));
+    this.sizeSkippedInCycle.delete(modelKey({ provider: model.provider, id: model.id }));
   }
 
   /**
@@ -896,12 +917,9 @@ export class Runtime {
    * resolved model identity; undefined (an unresolvable session model) is a
    * no-op — the session-model break-glass handles those.
    */
-  skipFailedForCycle(
-    model: { provider: string; id: string } | undefined,
-    reason?: "turn_cap",
-  ): void {
+  skipFailedForCycle(model: ConfiguredModel | undefined, reason?: "turn_cap"): void {
     if (!model || typeof model.provider !== "string" || typeof model.id !== "string") return;
-    const key = modelKey(model);
+    const key = modelKey({ provider: model.provider, id: model.id });
     this.failedInCycle.add(key);
     if (reason === "turn_cap") this.turnCapSkippedInCycle.add(key);
   }
@@ -920,6 +938,9 @@ export class Runtime {
     stage: ConsolidationPhase,
   ): void {
     if (!modelConfig) return;
+    // Thinking-only modifiers carry no identity to cool down; the session
+    // model's deterministic errors are handled via recordDeterministicError.
+    if (!hasModelIdentity(modelConfig)) return;
     if (modelConfig.cooldownHours === 0) {
       // In-memory only: skip this model for the rest of this stage.
       // No disk writes, no persistent cooldown.

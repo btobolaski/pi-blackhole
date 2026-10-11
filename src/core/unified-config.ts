@@ -60,8 +60,12 @@ export function configPath(): string {
 // ── Types ────────────────────────────────────────────────────────────────────
 
 export interface OmModelConfig {
-  provider: string;
-  id: string;
+  /** Provider name. Optional to allow thinking-only modifiers
+   *  (`{ thinking: "low" }`) that track the session model via sessionFallback.
+   *  `cooldownHours`/`contextWindow` require provider+id to take effect. */
+  provider?: string;
+  /** Model ID. Optional — see `provider`. */
+  id?: string;
   thinking?: ModelThinkingLevel;
   /** Cooldown duration in hours after a retryable error (429/5xx/timeout).
    *  Defaults to 1 hour when omitted. */
@@ -435,6 +439,19 @@ function parseModel(v: unknown): OmModelConfig | undefined {
   if (!isRecord(v)) return undefined;
   const provider = nonEmptyString(v.provider);
   const id = nonEmptyString(v.id);
+  const thinkingValid = isThinkingLevel(v.thinking);
+  // Thinking-only modifier: no identity, but a valid thinking level.
+  // Half-present identity (provider xor id) is still rejected so a forgotten
+  // id/provider cannot silently become a modifier and hide a typo.
+  if (!provider && !id) {
+    if (!thinkingValid) return undefined;
+    const model: OmModelConfig = { thinking: v.thinking as ModelThinkingLevel };
+    const cooldown = nonNegativeInt(v.cooldownHours);
+    if (cooldown !== undefined) model.cooldownHours = cooldown;
+    const ctxWindow = positiveInt(v.contextWindow);
+    if (ctxWindow !== undefined) model.contextWindow = ctxWindow;
+    return model;
+  }
   if (!provider || !id) return undefined;
   const model: OmModelConfig = { provider, id };
   if (isThinkingLevel(v.thinking)) model.thinking = v.thinking;

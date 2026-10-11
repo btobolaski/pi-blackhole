@@ -96,7 +96,12 @@ export type ResolvedModel = Extract<ResolveResult, { ok: true }>;
 function oversizedIdentityForSkip(
   resolved: ResolvedModel,
 ): { provider: string; id: string } | undefined {
-  if (resolved.source === "candidate") return resolved.candidateConfig;
+  if (resolved.source === "candidate") {
+    const cfg = resolved.candidateConfig;
+    return typeof cfg.provider === "string" && typeof cfg.id === "string"
+      ? { provider: cfg.provider, id: cfg.id }
+      : undefined;
+  }
   const model = resolved.model as { provider?: unknown; id?: unknown };
   return typeof model.provider === "string" && typeof model.id === "string"
     ? { provider: model.provider, id: model.id }
@@ -477,13 +482,22 @@ function stageFallbackModels(
   return runtime.config.dropperFallbackModels ?? [];
 }
 
-function stageThinkingLevel(
+export function stageThinkingLevel(
   runtime: Runtime,
   stage: "observer" | "reflector" | "dropper",
   modelConfig?: ConfiguredModel,
 ): ModelThinkingLevel {
-  const stageModel = modelConfig ?? stageModelConfig(runtime, stage);
-  return stageModel?.thinking ?? runtime.config.model?.thinking ?? "low";
+  // Precedence: running candidate's explicit thinking wins (per-model tuning,
+  // e.g. a fallback with its own level), then the stage entry — which covers
+  // thinking-only modifiers on the session-fallback path — then the base
+  // model, then the default. Previously a fallback/base without thinking fell
+  // straight to base/default, skipping the stage entry.
+  return (
+    modelConfig?.thinking ??
+    stageModelConfig(runtime, stage)?.thinking ??
+    runtime.config.model?.thinking ??
+    "low"
+  );
 }
 
 export function makeModelResolver(

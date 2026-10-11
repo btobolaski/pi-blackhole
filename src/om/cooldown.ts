@@ -41,7 +41,7 @@ type CooldownMap = Record<string, CooldownEntry>;
 
 /** Provider/id key for cooldown lookup (trimmed + case-folded: a host may
  * return a differently-cased id from `find()` than the candidate declares). */
-export function modelKey(model: OmModelConfig): string {
+export function modelKey(model: { provider: string; id: string }): string {
   return `${model.provider.trim().toLowerCase()}/${model.id.trim().toLowerCase()}`;
 }
 
@@ -101,9 +101,11 @@ export function getCooldownEntry(
 ): CooldownEntry | undefined {
   // cooldownHours === 0 means cooldown disabled
   if (model.cooldownHours === 0) return undefined;
+  // Thinking-only modifiers carry no identity: inert, never cooled down.
+  if (typeof model.provider !== "string" || typeof model.id !== "string") return undefined;
 
   const map = readCooldownMap();
-  const key = modelKey(model);
+  const key = modelKey({ provider: model.provider, id: model.id });
   const entry = map[key];
   if (!entry) return undefined;
 
@@ -188,13 +190,19 @@ function httpStatusFrom(text: string): string | undefined {
 export function recordCooldown(model: OmModelConfig, reason: string, stage: string): void {
   // cooldownHours === 0 means cooldown disabled
   if (model.cooldownHours === 0) return;
+  // Thinking-only modifiers carry no identity: nothing to cool down.
+  if (typeof model.provider !== "string" || typeof model.id !== "string") return;
 
   const hours = model.cooldownHours ?? 1;
   const until = new Date(Date.now() + hours * 3_600_000).toISOString();
   const map = readCooldownMap();
   // Defense-in-depth (issue #80): callers pass a sanitized brief, but never
   // persist a raw HTML page even if one slips through.
-  map[modelKey(model)] = { until, reason: sanitizeCooldownReason(reason), stage };
+  map[modelKey({ provider: model.provider, id: model.id })] = {
+    until,
+    reason: sanitizeCooldownReason(reason),
+    stage,
+  };
   writeCooldownMap(map);
 }
 
