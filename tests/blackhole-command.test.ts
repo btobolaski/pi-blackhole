@@ -65,6 +65,8 @@ function createMockEnvironment() {
   const runtime: any = {
     ensureConfig: vi.fn(),
     resetInfoGate: vi.fn(),
+    resetNoticeGate: vi.fn(),
+    flushNoticeSummary: vi.fn(),
     tryEmitInfo: vi.fn((hasUI: boolean, ui: any, msg: string) => {
       if (!hasUI || !ui) return;
       try {

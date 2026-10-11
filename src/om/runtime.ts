@@ -162,6 +162,14 @@ export class Runtime {
    */
   failedInCycle: Set<string> = new Set();
   /**
+   * Subset of `failedInCycle` skipped for hitting the agent turn cap rather
+   * than erroring: an input-size limit, not a broken model. Kept separately
+   * so the skip toast can say so instead of reusing the generic failed-model
+   * text. Populated only via `skipFailedForCycle(..., "turn_cap")`; cleared
+   * alongside `failedInCycle` between stages.
+   */
+  turnCapSkippedInCycle: Set<string> = new Set();
+  /**
    * Models skipped in the current consolidation stage because the sized input
    * does not fit their context window (in-memory only). A too-small window is
    * not a broken model, so — unlike recordRetryableError — this never writes
@@ -228,6 +236,22 @@ export class Runtime {
   cursorsLoadedSessionId: string | undefined = undefined;
   /** Info-notification gate: only the first info-level notification per turn/phase is emitted. */
   hasEmittedInfoThisTurn = false;
+  /**
+   * Per-run notice dedupe/collection: keys whose first occurrence was already
+   * emitted this run, and the collapsed summary flushed at agent_end.
+   *
+   * Resolve-time problems (removed model, missing auth, active cooldown) repeat
+   * on every candidate walk of every cycle. Emitting each one floods the
+   * terminal and scrolls the first hit out of view; suppressing all of them
+   * hides the problem. The compromise: the first occurrence of each distinct
+   * key emits immediately, repeats are only counted, and agent_end re-surfaces
+   * a single deduped summary so the user still sees it after the run.
+   */
+  private noticesThisRun = new Set<string>();
+  private noticeSummary = new Map<
+    string,
+    { message: string; level: "info" | "warning"; count: number }
+  >();
 
   // ── Session generation lifecycle (PR #58: stale-runtime append protection) ──
   private generation = 0;
@@ -244,6 +268,10 @@ export class Runtime {
    */
   startSession(sessionIdentity: string | undefined): void {
     if (this.disposed) return;
+    // A new session gets a fresh notice collection so the previous session's
+    // dedupe cannot suppress the new session's first announcements. Same-id
+    // repeats keep the collection (per-run reset stays on agent_start).
+    if (this.sessionIdentity !== sessionIdentity) this.resetNoticeGate();
     if (this.sessionIdentity !== undefined && this.sessionIdentity !== sessionIdentity) {
       this.lifecycleController.abort();
       this.lifecycleController = new AbortController();
@@ -344,6 +372,126 @@ export class Runtime {
   }
 
   /**
+   * Emit a notice keyed by `key`, deduped for the current agent run.
+   *
+   * The first occurrence emits immediately at `level` (so the user notices it
+   * as it happens); every occurrence (including the first) is counted so
+   * `flushNoticeSummary` can re-surface the run's issues once at agent_end.
+   * Returns true when this call emitted immediately.
+   *
+   * Never touches the UI in headless/RPC mode (`hasUI === false`): emitting
+   * there crashes the host, so there is nothing to collect either.
+   */
+  emitNotice(
+    hasUI: boolean,
+    ui: { notify: Notify } | undefined,
+    key: string,
+    message: string,
+    level: "info" | "warning" = "info",
+  ): boolean {
+    if (!hasUI || !ui || typeof ui.notify !== "function") return false;
+    const previous = this.noticeSummary.get(key);
+    this.noticeSummary.set(key, {
+      message,
+      level: previous?.level === "warning" || level === "warning" ? "warning" : "info",
+      count: (previous?.count ?? 0) + 1,
+    });
+    if (this.noticesThisRun.has(key)) return false;
+    this.noticesThisRun.add(key);
+    // Resolve-time notices never touch the per-phase progress gate: they have
+    // their own per-run dedupe plus the end-of-run summary, while the gate's
+    // single slot belongs to progress toasts. Spending it here would silence
+    // the progress that follows (e.g. the observer turn-cap checkpoint) after
+    // a cooldown/skip notice fired first — and emitting is unconditional on
+    // first occurrence, so checking the gate would instead silence the resolve
+    // notice after unrelated progress. Repeats return above either way.
+    try {
+      ui.notify(message, level);
+    } catch {
+      // Stale extension context — harmless.
+    }
+    return true;
+  }
+
+  /** Clear the per-run notice collection. Call at agent_start so a new run
+   *  re-announces and re-summarizes from scratch. */
+  resetNoticeGate(): void {
+    this.noticesThisRun.clear();
+    this.noticeSummary.clear();
+  }
+
+  /** Maximum distinct keys named in the end-of-run summary before the rest
+   *  are collapsed into a count — the summary must never be one line per
+   *  occurrence. */
+  static readonly NOTICE_SUMMARY_MAX_ENTRIES = 5;
+
+  /**
+   * Maximum toast characters per summary entry. The full text stays in the
+   * debug log (`notice.summary`); the toast carries only the head of each
+   * label so one long notice cannot blow up the end-of-run line.
+   */
+  static readonly NOTICE_LABEL_MAX_CHARS = 120;
+
+  /**
+   * Emit one deduped summary of everything `emitNotice` collected this run,
+   * then clear the summary. The per-run dedupe set is deliberately kept: a
+   * consolidation pipeline can straddle `agent_end` (it is launched
+   * fire-and-forget), and clearing the set here would re-announce keys already
+   * reported. `agent_start`'s `resetNoticeGate` re-opens both.
+   * No-op when nothing was collected or when there is no UI (headless/RPC must
+   * never emit).
+   */
+  flushNoticeSummary(hasUI: boolean, ui: { notify: Notify } | undefined): void {
+    const collected = [...this.noticeSummary.values()];
+    this.noticeSummary.clear();
+    if (collected.length === 0) return;
+    if (!hasUI || !ui || typeof ui.notify !== "function") return;
+
+    collected.sort((a, b) => b.count - a.count);
+    // The full text goes to the debug log — log-only readers get everything,
+    // uncapped. Forced on/off from config: this flush runs outside ALS context
+    // (agent_end), same as the compaction trigger's own debugLog calls.
+    debugLog(
+      "notice.summary",
+      {
+        notices: collected.map((entry) => ({
+          message: entry.message,
+          level: entry.level,
+          count: entry.count,
+        })),
+      },
+      this.config.debugLog === true,
+    );
+    const shown = collected.slice(0, Runtime.NOTICE_SUMMARY_MAX_ENTRIES);
+    const labels = shown.map(({ message, count }) => {
+      const text = message.replace(/^Observational memory:\s*/, "");
+      const short =
+        text.length > Runtime.NOTICE_LABEL_MAX_CHARS
+          ? `${text.slice(0, Runtime.NOTICE_LABEL_MAX_CHARS - 3)}...`
+          : text;
+      return count > 1 ? `${short} (×${count})` : short;
+    });
+    const hidden = collected.length - shown.length;
+    if (hidden > 0) labels.push(`+${hidden} more`);
+    const total = collected.reduce((sum, entry) => sum + entry.count, 0);
+    const prefix =
+      collected.length === 1
+        ? ""
+        : total > collected.length
+          ? `${collected.length} repeated notices this run — `
+          : `${collected.length} notices this run — `;
+    const anyWarning = collected.some((entry) => entry.level === "warning");
+    try {
+      ui.notify(
+        `Observational memory: ${prefix}${labels.join("; ")}`,
+        anyWarning ? "warning" : "info",
+      );
+    } catch {
+      // Stale extension context — harmless.
+    }
+  }
+
+  /**
    * Emit a routine observer/reflector/dropper progress toast, unless the user
    * turned worker notifications off (`showWorkerNotifications: false`).
    *
@@ -420,13 +568,26 @@ export class Runtime {
       signal?.throwIfAborted();
       const key = modelKey(candidate);
 
-      // In-memory skip: model failed earlier in this stage with cooldownHours 0
+      // In-memory skip: model failed earlier in this stage with cooldownHours 0,
+      // or hit the agent turn cap (an input-size limit, not a broken model).
+      // The turn-cap skip gets its own key and text so the toast names the
+      // cause instead of reusing the generic failed-model wording.
       if (this.failedInCycle.has(key)) {
-        this.tryEmitInfo(
-          ctx.hasUI,
-          ctx.ui,
-          `Observational memory: ${stageName} skipping ${key} (failed this cycle, cooldown disabled)`,
-        );
+        if (this.turnCapSkippedInCycle.has(key)) {
+          this.emitNotice(
+            ctx.hasUI,
+            ctx.ui,
+            `turncap:${stageName}:${key}`,
+            `Observational memory: ${stageName} skipping ${key} (turn cap — input too large for the turn budget, no cooldown)`,
+          );
+        } else {
+          this.emitNotice(
+            ctx.hasUI,
+            ctx.ui,
+            `failed:${stageName}:${key}`,
+            `Observational memory: ${stageName} skipping ${key} (failed this cycle)`,
+          );
+        }
         debugLog("model.failed_this_cycle", { stage: stageName, model: key });
         continue;
       }
@@ -434,9 +595,10 @@ export class Runtime {
       // In-memory skip: the sized input does not fit this model's window. No
       // persisted cooldown — the model is tried again for smaller inputs.
       if (this.sizeSkippedInCycle.has(key)) {
-        this.tryEmitInfo(
+        this.emitNotice(
           ctx.hasUI,
           ctx.ui,
+          `sizeskip:${stageName}:${key}`,
           `Observational memory: ${stageName} skipping ${key} (context window too small for this input)`,
         );
         debugLog("model.size_skipped_this_cycle", { stage: stageName, model: key });
@@ -445,16 +607,19 @@ export class Runtime {
 
       if (isCooldownActive(candidate)) {
         // Issue #80: the cooldown reason can be an error body — keep it in
-        // the log file only, never interpolate it into the toast.
-        this.tryEmitInfo(
+        // the log file only, never interpolate it into the toast. The key is
+        // per-cooldown-window, so a fresh cooldown after this one expires can
+        // announce again while repeats of the same window stay collapsed.
+        const cooldown = getCooldownEntry(candidate);
+        this.emitNotice(
           ctx.hasUI,
           ctx.ui,
+          `cooldown:${stageName}:${key}:${cooldown?.until ?? ""}`,
           `Observational memory: ${stageName} skipping ${key} (cooldown — details in cooldown log)`,
         );
         // Issue #110 follow-up: a cycle skipped by cooldown is otherwise
         // invisible in the debug log (only the toast shows it). Emit the
         // persisted reason so log-only readers can compute denominators.
-        const cooldown = getCooldownEntry(candidate);
         debugLog("model.cooldown_skip", {
           stage: stageName,
           model: key,
@@ -467,12 +632,18 @@ export class Runtime {
 
       const configured = ctx.modelRegistry.find(candidate.provider, candidate.id);
       if (!configured) {
-        if (ctx.hasUI && ctx.ui) {
-          ctx.ui.notify(
-            `Observational memory: ${stageName} model ${candidate.provider}/${candidate.id} not found`,
-            "warning",
-          );
-        }
+        this.emitNotice(
+          ctx.hasUI,
+          ctx.ui,
+          `notfound:${stageName}:${candidate.provider}/${candidate.id}`,
+          `Observational memory: ${stageName} model ${candidate.provider}/${candidate.id} not found`,
+          "warning",
+        );
+        debugLog("model.resolve_skip", {
+          stage: stageName,
+          reason: "not_found",
+          model: `${candidate.provider}/${candidate.id}`,
+        });
         continue;
       }
 
@@ -485,12 +656,18 @@ export class Runtime {
         hasAuth = await this.recheckProviderCredential(ctx.modelRegistry, configured, authProvider);
       }
       if (!auth.ok || !hasAuth) {
-        if (ctx.hasUI && ctx.ui) {
-          ctx.ui.notify(
-            `Observational memory: ${stageName} no auth for ${candidate.provider}`,
-            "warning",
-          );
-        }
+        this.emitNotice(
+          ctx.hasUI,
+          ctx.ui,
+          `noauth:${stageName}:${candidate.provider}`,
+          `Observational memory: ${stageName} no auth for ${candidate.provider}`,
+          "warning",
+        );
+        debugLog("model.resolve_skip", {
+          stage: stageName,
+          reason: "no_auth",
+          provider: candidate.provider,
+        });
         continue;
       }
 
@@ -706,6 +883,27 @@ export class Runtime {
   unskipOversizedForCycle(model: { provider: string; id: string } | undefined): void {
     if (!model || typeof model.provider !== "string" || typeof model.id !== "string") return;
     this.sizeSkippedInCycle.delete(modelKey(model));
+  }
+
+  /**
+   * Skip a model for the rest of the current consolidation stage without
+   * persisting a cooldown. Used for input-size limits (the agent turn cap)
+   * rather than a broken model: re-offering the identical input now would only
+   * burn the same budget, but a smaller input may fit next cycle, so the model
+   * must not be benched for `cooldownHours`. Pass `"turn_cap"` for a turn-cap
+   * skip so the notice names the cause; any other skip keeps the generic
+   * failed-this-cycle text. Accepts a candidate config or a
+   * resolved model identity; undefined (an unresolvable session model) is a
+   * no-op — the session-model break-glass handles those.
+   */
+  skipFailedForCycle(
+    model: { provider: string; id: string } | undefined,
+    reason?: "turn_cap",
+  ): void {
+    if (!model || typeof model.provider !== "string" || typeof model.id !== "string") return;
+    const key = modelKey(model);
+    this.failedInCycle.add(key);
+    if (reason === "turn_cap") this.turnCapSkippedInCycle.add(key);
   }
 
   /**

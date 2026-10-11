@@ -6,8 +6,10 @@
  * and throws unless the run already closed the chunk with a valid
  * complete=true batch that recorded observations, so the consolidation
  * pipeline can fall back to another model instead of advancing coversUpToId
- * over a half-observed chunk. The same guard covers a run the agent turn cap
- * cut off mid-chunk.
+ * over a half-observed chunk. A run the agent turn cap cuts off mid-chunk
+ * after recording observations instead returns them with a partialCoverageId
+ * (end of the contiguous cited prefix) so the stage can commit that prefix
+ * and resume the remainder — coverage never claims past a citation.
  */
 import { agentLoop, type AgentLoopConfig, type AgentTool } from "@earendil-works/pi-agent-core";
 import type { CacheRetention, Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
@@ -110,6 +112,31 @@ function joinOrEmpty(items: string[]): string {
   return items.length ? items.join("\n") : "(none yet)";
 }
 
+/**
+ * End of the contiguous cited prefix (in delivery order) for the recorded
+ * observations. This is the honest partial-coverage point when a run ends
+ * before its complete=true close: every entry at or before it was delivered
+ * and cited, so a caller may commit that prefix and re-offer the rest. The
+ * scan stops at the first uncited entry — an entry past a gap is never
+ * claimed, even when a later observation cited it. The chunk is presented
+ * oldest-first, and `allowedSourceEntryIds` is that order.
+ */
+function contiguousCitedPrefixEnd(
+  allowedSourceEntryIds: readonly string[],
+  observations: Iterable<Observation>,
+): string | undefined {
+  const cited = new Set<string>();
+  for (const observation of observations) {
+    for (const id of observation.sourceEntryIds) cited.add(id);
+  }
+  let prefixEnd: string | undefined;
+  for (const id of allowedSourceEntryIds) {
+    if (!cited.has(id)) break;
+    prefixEnd = id;
+  }
+  return prefixEnd;
+}
+
 export function normalizeSourceEntryIds(
   sourceEntryIds: readonly string[] | undefined,
   allowedSourceEntryIds: readonly string[],
@@ -150,6 +177,14 @@ export interface ObserverResult {
    * its result (the chunk was declared covered); the caller should log this.
    */
   errorAfterClose?: string;
+  /**
+   * Set when the run was cut off by the turn cap after recording observations
+   * without a complete=true close. The end of the contiguous cited prefix:
+   * everything at or before it was actually observed, so the stage may commit
+   * that prefix and resume the remainder. Absent on a normal completed or
+   * empty run.
+   */
+  partialCoverageId?: string;
 }
 
 export async function runObserver(args: RunObserverArgs): Promise<ObserverResult> {
@@ -376,16 +411,19 @@ ${conversation}`;
 
   // The turn cap ended the run before the model ever closed the chunk: the
   // partial batch is not completed coverage, so returning it as success would
-  // advance coversUpToId and silently drop the tail of the chunk. Throwing
-  // keeps the cursor where it is and lets the stage's fallback chain retry.
-  // This check runs BEFORE the completion check below: a length cut can land
-  // on the same turn the cap fires (turn-cap.ts only exempts error/aborted
-  // turns), and the stage's session-model break-glass keys on
-  // turnCapExhausted — letting the completion check claim it first would
-  // misreport a config limit as a retryable provider failure. A provider
-  // `error` is carved out: it keeps its own classification (deterministic
-  // cooldown depends on its message), and error turns never spend budget, so
-  // the cap did not cause it. A valid close
+  // advance coversUpToId and silently drop the tail of the chunk. The run
+  // instead returns what it recorded with the end of the contiguous cited
+  // prefix as a partial coverage point, and the stage commits that prefix and
+  // drains the remainder in-run; a cap firing with nothing recorded is still
+  // an empty success handled below. This check runs BEFORE the completion
+  // check below: a length cut can land on the same turn the cap fires
+  // (turn-cap.ts only exempts error/aborted turns), and the stage's
+  // session-model break-glass keys on turnCapExhausted — letting the
+  // completion check claim it first would misreport a config limit as a
+  // retryable provider failure. A provider `error` is carved out: it keeps
+  // its own classification (deterministic cooldown depends on its message),
+  // and error turns never spend budget, so the cap did not cause it. A valid
+  // close
   // that recorded something already settled the chunk, so a cap
   // firing after it changes nothing; a cap firing before anything was recorded
   // is still an empty success (the stage advances the cursor as "empty"). The
@@ -402,6 +440,26 @@ ${conversation}`;
     failureKind !== "error" &&
     !(failureKind === "length" && agentError != null && isDeterministicError(agentError))
   ) {
+    // A turn cap is a config/input-size limit, not a model defect. The model
+    // already recorded observations; discarding them (and cooling the model
+    // down) wedges the observer on the same chunk forever. Return them with
+    // the end of the contiguous cited prefix as the partial coverage point:
+    // the stage commits that prefix and drains the remainder in-run —
+    // coverage never claims past a citation, and the unobserved tail stays
+    // pending.
+    const partialCoverageId = contiguousCitedPrefixEnd(allowedSourceEntryIds, accumulated.values());
+    if (partialCoverageId) {
+      return {
+        observations: Array.from(accumulated.values()),
+        partialCoverageId,
+      };
+    }
+    // No head-anchored citation: reachable whenever the model cites only
+    // later entries (every recorded observation carries validated ids, but
+    // none cites the chunk head, so the contiguous prefix is empty). Fail
+    // closed rather than advance over work whose coverage cannot be proven —
+    // the stage halves the delivered entries and retries on the smaller
+    // input instead of discarding the run outright.
     throw new WorkerStreamError(
       `Observer turn cap exhausted: ${accumulated.size} observation${accumulated.size === 1 ? "" : "s"} recorded with no complete=true close`,
       accumulated.size,

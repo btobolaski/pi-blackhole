@@ -551,6 +551,9 @@ export function registerConsolidationTrigger(pi: ExtensionAPI, runtime: Runtime)
   const launch = (_event: unknown, ctx: ConsolidationCtx) => {
     maybeLaunchConsolidation(pi, runtime, ctx);
   };
+  // The per-run notice collection resets in index.ts's agent_start handler,
+  // which registers before both triggers — keep it there, not here, so the
+  // reset never depends on trigger registration order.
   pi.on("agent_start", launch);
   pi.on("turn_end", launch);
 }
@@ -689,6 +692,7 @@ export async function runConsolidationPipeline(
 
   runtime.consolidationPhase = "observer";
   runtime.failedInCycle.clear();
+  runtime.turnCapSkippedInCycle.clear();
   runtime.sizeSkippedInCycle.clear();
   runtime.resolveFailureNotified = false;
   try {
@@ -704,6 +708,7 @@ export async function runConsolidationPipeline(
 
   runtime.consolidationPhase = "reflector";
   runtime.failedInCycle.clear();
+  runtime.turnCapSkippedInCycle.clear();
   runtime.sizeSkippedInCycle.clear();
   runtime.resolveFailureNotified = false;
   let reflectorResult: ReflectorStageResult;
@@ -720,6 +725,7 @@ export async function runConsolidationPipeline(
 
   runtime.consolidationPhase = "dropper";
   runtime.failedInCycle.clear();
+  runtime.turnCapSkippedInCycle.clear();
   runtime.sizeSkippedInCycle.clear();
   runtime.resolveFailureNotified = false;
   try {
@@ -1038,6 +1044,10 @@ export async function runObserverStage(
   // A drain batch re-evaluates size-skips against its smaller remainder: the
   // parent priced a bigger chunk, so a model skipped there may fit here. The
   // parent finished its attempt loop before recursing, so clearing is safe.
+  // Turn-cap skips deliberately persist through the drain: the remainder is
+  // smaller and might fit the budget, but re-offering it to the model that
+  // just exhausted its turns would burn another full budget proving it —
+  // the fallback chain already in flight covers the remainder instead.
   if (drain) runtime.sizeSkippedInCycle.clear();
 
   // Shrink-to-fit fallback, shared by the total-exhaustion path (!resolved)
@@ -1283,36 +1293,85 @@ export async function runObserverStage(
       }
 
       if (result.observations && result.observations.length > 0) {
-        const data = buildObservationsRecordedData(result.observations, coversUpToId);
+        // A turn-cap partial advances coverage only to the end of the
+        // contiguous cited prefix, never to the delivered chunk end.
+        // Committing that prefix keeps the batch (instead of discarding it
+        // and re-offering the same chunk forever); the drain below then
+        // resumes from an honestly-observed point. A capped batch with no
+        // head-anchored prefix at all never reaches here — the agent throws,
+        // and the catch halves the delivered entries and retries (converging
+        // to a single entry, which always advances).
+        //
+        // The partial id is validated against the delivered chunk: trusting a
+        // point outside it blind would move the cursor over entries the model
+        // never saw. A mismatch fails closed like the no-citation path — the
+        // batch is discarded, the cursor stays put, and the fallback chain is
+        // tried without a persisted cooldown.
+        //
+        // A length cut landing on the same capped turn is deliberately not
+        // treated as an output-shrink trigger here: the remainder the drain
+        // re-offers is strictly smaller, so output need shrinks with it, and
+        // the drain is bounded (OBSERVER_DRAIN_MAX_BATCHES) — the rest waits
+        // for the next cycle instead of looping.
+        if (
+          result.partialCoverageId !== undefined &&
+          !sourceEntryIds.includes(result.partialCoverageId)
+        ) {
+          debugLog("observer.partial_outside_chunk", {
+            partialCoverageId: result.partialCoverageId,
+            coversUpToId,
+            sourceEntryIds,
+          });
+          throw new WorkerStreamError(
+            `Observer turn cap checkpoint outside delivered chunk: ${result.observations.length} observation${result.observations.length === 1 ? "" : "s"} recorded with no verifiable coverage point`,
+            result.observations.length,
+            true,
+          );
+        }
+        const coverageId: string = result.partialCoverageId ?? coversUpToId;
+        const data = buildObservationsRecordedData(result.observations, coverageId);
         if (!data) {
-          runtime.advanceCursor("observer", coversUpToId, "empty");
+          runtime.advanceCursor("observer", coverageId, "empty");
           return "continue";
         }
         debugLog("observer.records", {
           count: result.observations.length,
           observationTokens: result.observations.reduce((s: number, o: any) => s + o.tokenCount, 0),
-          coversUpToId,
+          coversUpToId: coverageId,
+          ...(result.partialCoverageId ? { partial: true, chunkCoversUpToId: coversUpToId } : {}),
         });
         if (isManualMode(runtime.config)) {
-          savePendingObservation(sessionId, { coversUpToId, data });
+          savePendingObservation(sessionId, { coversUpToId: coverageId, data });
           debugLog("observer.pending", {
             count: result.observations.length,
-            coversUpToId,
+            coversUpToId: coverageId,
             sessionId,
           });
         } else {
           if (!appendEntry(pi, runtime, generation, OM_OBSERVATIONS_RECORDED, data)) return "abort";
           debugLog("observer.appended", {
             count: result.observations.length,
-            coversUpToId,
+            coversUpToId: coverageId,
           });
         }
-        runtime.advanceCursor("observer", coversUpToId, "recorded");
+        runtime.advanceCursor("observer", coverageId, "recorded");
+        // A turn-cap checkpoint must stay visible even when the "observer
+        // running" toast at the top of this attempt already spent the
+        // per-phase info gate: both go through tryEmitWorkerInfo, so without
+        // this the checkpoint — the signal that partial work was kept instead
+        // of discarded — would never reach the terminal. The gate's single
+        // slot belongs to the outcome, not the announcement that work started.
+        if (result.partialCoverageId) runtime.resetInfoGate();
         runtime.tryEmitWorkerInfo(
           ctx.hasUI,
           ctx.ui,
-          `Observational memory: ${result.observations.length} observation${result.observations.length === 1 ? "" : "s"} recorded`,
+          result.partialCoverageId
+            ? `Observational memory: observer turn cap — checkpointed ${result.observations.length} observation${result.observations.length === 1 ? "" : "s"} and continuing`
+            : `Observational memory: ${result.observations.length} observation${result.observations.length === 1 ? "" : "s"} recorded`,
         );
+        // The partial point is now the drain's starting line: without this the
+        // recursion below would re-offer the already-covered prefix.
+        if (result.partialCoverageId) coversUpToId = coverageId;
         // Recorded and covered up to the delivered point — drain the rest of
         // the backlog now instead of waiting for the next turn_end.
         return continueSources();
@@ -1382,6 +1441,56 @@ export async function runObserverStage(
           continue;
         }
       }
+      // Turn-cap cut with no committable prefix (the agent throws when the
+      // cited entries do not start at the chunk head): the batch is discarded,
+      // but the fault is the input size, not the model — so halve the
+      // delivered entries and re-offer instead of burning the fallback chain
+      // on the identical chunk. Halving converges: a single entry always
+      // yields a prefix (any recorded observation must cite it) or an empty
+      // advance, so the cursor moves within ⌈log2(n)⌉ retries, bounded further
+      // by MAX_STAGE_ATTEMPTS since every retry is a counted attempt. The
+      // model is deliberately NOT skipped in-cycle: the shrunk input may fit
+      // its turn budget, and skipping would starve single-model setups of the
+      // retry (resolution would exhaust and abort without re-offering it). A
+      // single-entry chunk cannot halve: it falls through to the skip +
+      // break-glass path below exactly as before.
+      if (error instanceof WorkerStreamError && error.turnCapExhausted && chunkEntries.length > 1) {
+        const halvedEntries = chunkEntries.slice(
+          0,
+          Math.max(1, Math.floor(chunkEntries.length / 2)),
+        );
+        const halved = serializeSourceAddressedBranchEntries(halvedEntries);
+        const halvedCover = halved.sourceEntryIds.at(-1);
+        if (halvedCover && halved.text.trim()) {
+          chunkEntries = halvedEntries;
+          chunk = halved.text;
+          sourceEntryIds = halved.sourceEntryIds;
+          sourceEntryTimestamps = halved.sourceEntryTimestamps;
+          coversUpToId = halvedCover;
+          chunkTokens = estimateStringTokens(chunk);
+          capTokens = chunkEntries.reduce((s: number, e) => s + estimateEntryTokens(e), 0);
+          didShrink = true;
+          // The halved chunk has a new coverage point: re-check the
+          // manual-mode pending gate before spending a model call on it (same
+          // as tryShrinkToFit above).
+          if (isManualMode(runtime.config) && isObservationChunkPending(sessionId, coversUpToId)) {
+            debugLog("observer.pending_skip", { coversUpToId, sessionId });
+            return "continue";
+          }
+          runtime.tryEmitWorkerInfo(
+            ctx.hasUI,
+            ctx.ui,
+            `Observational memory: observer turn cap — halving chunk to ${halvedEntries.length} ${halvedEntries.length === 1 ? "entry" : "entries"} and retrying`,
+          );
+          debugLog("observer.turncap_halve", {
+            chunkEntries: halvedEntries.length,
+            chunkTokens,
+            coversUpToId,
+            discardedCount: getDiscardedCount(error),
+          });
+          continue;
+        }
+      }
       // Always try next fallback — don't abort pipeline for a single model failure.
       // Record cooldown so resolveModel skips this model in the next iteration.
       // Deterministic 4xx (e.g. MissingSessionID) additionally cools the
@@ -1396,7 +1505,18 @@ export async function runObserverStage(
       if (!(error instanceof WorkerStreamError && (error.turnCapExhausted || error.lengthCut)))
         sawAttemptError = true;
       const candidateConfig = stageModelForThinking;
-      runtime.recordRetryableError(candidateConfig, error, "observer");
+      if (error instanceof WorkerStreamError && error.turnCapExhausted) {
+        // Input-size limit, not a broken model: skip in-cycle so the fallback
+        // chain is tried now, but never persist a cooldown — a healthy model
+        // benched for `cooldownHours` after merely hitting `agentMaxTurns` is
+        // what wedged the observer. (The agent returns a partial checkpoint
+        // for a committable prefix, and the halve-and-retry above handles a
+        // multi-entry chunk with none — so this skip now only runs for a
+        // single-entry chunk, which cannot shrink further.)
+        runtime.skipFailedForCycle(candidateConfig, "turn_cap");
+      } else {
+        runtime.recordRetryableError(candidateConfig, error, "observer");
+      }
       if (!candidateConfig) runtime.recordDeterministicError(resolved.model, error, "observer");
       debugLog("observer.error", {
         error: String(error),
@@ -1409,12 +1529,13 @@ export async function runObserverStage(
       // A timed-out session model has no candidate config to cool down, so
       // the loop would re-resolve the same stalled model and burn the full
       // deadline on every remaining attempt. Treat the stage as exhausted.
-      // A session model cut off by the agent turn cap — or by an output-length
-      // cut on an input the preflight accepted — fails the same way for the
-      // same reason: the turn budget and the output cap derive from the same
-      // window, so a retry spends another whole budget on an identical
-      // outcome. Candidates differ — they cool down and the fallback chain
-      // takes over.
+      // A session model cut off by the agent turn cap on a single-entry chunk —
+      // or by an output-length cut on an input the preflight accepted — fails
+      // the same way for the same reason: the turn budget and the output cap
+      // derive from the same window, so a retry spends another whole budget on
+      // an identical outcome. (A turn cap on a multi-entry chunk never reaches
+      // here: the halve-and-retry above continues on the smaller input.)
+      // Candidates differ — they cool down and the fallback chain takes over.
       if (
         !candidateConfig &&
         (error instanceof WorkerAttemptTimeoutError ||
