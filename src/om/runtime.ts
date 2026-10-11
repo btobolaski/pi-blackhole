@@ -162,6 +162,14 @@ export class Runtime {
    */
   failedInCycle: Set<string> = new Set();
   /**
+   * Subset of `failedInCycle` skipped for hitting the agent turn cap rather
+   * than erroring: an input-size limit, not a broken model. Kept separately
+   * so the skip toast can say so instead of reusing the generic failed-model
+   * text. Populated only via `skipFailedForCycle(..., "turn_cap")`; cleared
+   * alongside `failedInCycle` between stages.
+   */
+  turnCapSkippedInCycle: Set<string> = new Set();
+  /**
    * Models skipped in the current consolidation stage because the sized input
    * does not fit their context window (in-memory only). A too-small window is
    * not a broken model, so — unlike recordRetryableError — this never writes
@@ -418,6 +426,13 @@ export class Runtime {
   static readonly NOTICE_SUMMARY_MAX_ENTRIES = 5;
 
   /**
+   * Maximum toast characters per summary entry. The full text stays in the
+   * debug log (`notice.summary`); the toast carries only the head of each
+   * label so one long notice cannot blow up the end-of-run line.
+   */
+  static readonly NOTICE_LABEL_MAX_CHARS = 120;
+
+  /**
    * Emit one deduped summary of everything `emitNotice` collected this run,
    * then clear the summary. The per-run dedupe set is deliberately kept: a
    * consolidation pipeline can straddle `agent_end` (it is launched
@@ -433,10 +448,28 @@ export class Runtime {
     if (!hasUI || !ui || typeof ui.notify !== "function") return;
 
     collected.sort((a, b) => b.count - a.count);
+    // The full text goes to the debug log — log-only readers get everything,
+    // uncapped. Forced on/off from config: this flush runs outside ALS context
+    // (agent_end), same as the compaction trigger's own debugLog calls.
+    debugLog(
+      "notice.summary",
+      {
+        notices: collected.map((entry) => ({
+          message: entry.message,
+          level: entry.level,
+          count: entry.count,
+        })),
+      },
+      this.config.debugLog === true,
+    );
     const shown = collected.slice(0, Runtime.NOTICE_SUMMARY_MAX_ENTRIES);
     const labels = shown.map(({ message, count }) => {
       const text = message.replace(/^Observational memory:\s*/, "");
-      return count > 1 ? `${text} (×${count})` : text;
+      const short =
+        text.length > Runtime.NOTICE_LABEL_MAX_CHARS
+          ? `${text.slice(0, Runtime.NOTICE_LABEL_MAX_CHARS - 3)}...`
+          : text;
+      return count > 1 ? `${short} (×${count})` : short;
     });
     const hidden = collected.length - shown.length;
     if (hidden > 0) labels.push(`+${hidden} more`);
@@ -535,14 +568,26 @@ export class Runtime {
       signal?.throwIfAborted();
       const key = modelKey(candidate);
 
-      // In-memory skip: model failed earlier in this stage with cooldownHours 0
+      // In-memory skip: model failed earlier in this stage with cooldownHours 0,
+      // or hit the agent turn cap (an input-size limit, not a broken model).
+      // The turn-cap skip gets its own key and text so the toast names the
+      // cause instead of reusing the generic failed-model wording.
       if (this.failedInCycle.has(key)) {
-        this.emitNotice(
-          ctx.hasUI,
-          ctx.ui,
-          `failed:${stageName}:${key}`,
-          `Observational memory: ${stageName} skipping ${key} (failed this cycle)`,
-        );
+        if (this.turnCapSkippedInCycle.has(key)) {
+          this.emitNotice(
+            ctx.hasUI,
+            ctx.ui,
+            `turncap:${stageName}:${key}`,
+            `Observational memory: ${stageName} skipping ${key} (turn cap — input too large for the turn budget, no cooldown)`,
+          );
+        } else {
+          this.emitNotice(
+            ctx.hasUI,
+            ctx.ui,
+            `failed:${stageName}:${key}`,
+            `Observational memory: ${stageName} skipping ${key} (failed this cycle)`,
+          );
+        }
         debugLog("model.failed_this_cycle", { stage: stageName, model: key });
         continue;
       }
@@ -594,6 +639,11 @@ export class Runtime {
           `Observational memory: ${stageName} model ${candidate.provider}/${candidate.id} not found`,
           "warning",
         );
+        debugLog("model.resolve_skip", {
+          stage: stageName,
+          reason: "not_found",
+          model: `${candidate.provider}/${candidate.id}`,
+        });
         continue;
       }
 
@@ -613,6 +663,11 @@ export class Runtime {
           `Observational memory: ${stageName} no auth for ${candidate.provider}`,
           "warning",
         );
+        debugLog("model.resolve_skip", {
+          stage: stageName,
+          reason: "no_auth",
+          provider: candidate.provider,
+        });
         continue;
       }
 
@@ -835,13 +890,20 @@ export class Runtime {
    * persisting a cooldown. Used for input-size limits (the agent turn cap)
    * rather than a broken model: re-offering the identical input now would only
    * burn the same budget, but a smaller input may fit next cycle, so the model
-   * must not be benched for `cooldownHours`. Accepts a candidate config or a
+   * must not be benched for `cooldownHours`. Pass `"turn_cap"` for a turn-cap
+   * skip so the notice names the cause; any other skip keeps the generic
+   * failed-this-cycle text. Accepts a candidate config or a
    * resolved model identity; undefined (an unresolvable session model) is a
    * no-op — the session-model break-glass handles those.
    */
-  skipFailedForCycle(model: { provider: string; id: string } | undefined): void {
+  skipFailedForCycle(
+    model: { provider: string; id: string } | undefined,
+    reason?: "turn_cap",
+  ): void {
     if (!model || typeof model.provider !== "string" || typeof model.id !== "string") return;
-    this.failedInCycle.add(modelKey(model));
+    const key = modelKey(model);
+    this.failedInCycle.add(key);
+    if (reason === "turn_cap") this.turnCapSkippedInCycle.add(key);
   }
 
   /**

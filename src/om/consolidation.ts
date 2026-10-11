@@ -692,6 +692,7 @@ export async function runConsolidationPipeline(
 
   runtime.consolidationPhase = "observer";
   runtime.failedInCycle.clear();
+  runtime.turnCapSkippedInCycle.clear();
   runtime.sizeSkippedInCycle.clear();
   runtime.resolveFailureNotified = false;
   try {
@@ -707,6 +708,7 @@ export async function runConsolidationPipeline(
 
   runtime.consolidationPhase = "reflector";
   runtime.failedInCycle.clear();
+  runtime.turnCapSkippedInCycle.clear();
   runtime.sizeSkippedInCycle.clear();
   runtime.resolveFailureNotified = false;
   let reflectorResult: ReflectorStageResult;
@@ -723,6 +725,7 @@ export async function runConsolidationPipeline(
 
   runtime.consolidationPhase = "dropper";
   runtime.failedInCycle.clear();
+  runtime.turnCapSkippedInCycle.clear();
   runtime.sizeSkippedInCycle.clear();
   runtime.resolveFailureNotified = false;
   try {
@@ -1041,6 +1044,10 @@ export async function runObserverStage(
   // A drain batch re-evaluates size-skips against its smaller remainder: the
   // parent priced a bigger chunk, so a model skipped there may fit here. The
   // parent finished its attempt loop before recursing, so clearing is safe.
+  // Turn-cap skips deliberately persist through the drain: the remainder is
+  // smaller and might fit the budget, but re-offering it to the model that
+  // just exhausted its turns would burn another full budget proving it —
+  // the fallback chain already in flight covers the remainder instead.
   if (drain) runtime.sizeSkippedInCycle.clear();
 
   // Shrink-to-fit fallback, shared by the total-exhaustion path (!resolved)
@@ -1451,7 +1458,7 @@ export async function runObserverStage(
         // benched for `cooldownHours` after merely hitting `agentMaxTurns` is
         // what wedged the observer. (The agent now returns a partial
         // checkpoint instead of throwing this; the guard is defense-in-depth.)
-        runtime.skipFailedForCycle(candidateConfig);
+        runtime.skipFailedForCycle(candidateConfig, "turn_cap");
       } else {
         runtime.recordRetryableError(candidateConfig, error, "observer");
       }

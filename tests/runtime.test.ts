@@ -1441,6 +1441,47 @@ it("handles missing pending file gracefully", async () => {
 });
 
 describe("Runtime — per-run notice collection (warning spam gate)", () => {
+  it("caps each summary label so one long notice cannot blow up the toast", async () => {
+    const { Runtime } = await import("../src/om/runtime.js");
+    const runtime = new Runtime();
+    const notify = vi.fn();
+    const longText = `Observational memory: ${"y".repeat(200)}`;
+
+    runtime.emitNotice(true, { notify }, "k-long", longText, "info");
+    runtime.emitNotice(true, { notify }, "k-long", longText, "info");
+    runtime.flushNoticeSummary(true, { notify });
+
+    const [summary] = notify.mock.calls.at(-1)!;
+    // The full 200-char text stays in the debug log; the toast carries at
+    // most 120 chars of it plus the repeat count.
+    expect(summary).not.toContain("y".repeat(200));
+    expect(summary).toContain(`${"y".repeat(117)}... (×2)`);
+  });
+
+  it("announces a turn-cap skip distinctly from a failed model", async () => {
+    const { Runtime } = await import("../src/om/runtime.js");
+    const runtime = new Runtime();
+    runtime.consolidationPhase = "observer";
+    const notify = vi.fn();
+    const candidate = { provider: "openrouter", id: "big:free" };
+    const registry = makeRegistry([makeModel("big:free")]);
+
+    // A turn cap is an input-size limit, not a broken model: the skip must say
+    // so instead of reusing the generic failed-this-cycle text.
+    runtime.skipFailedForCycle(candidate, "turn_cap");
+    await runtime.resolveModel({
+      model: undefined,
+      modelRegistry: registry,
+      hasUI: true,
+      ui: { notify },
+      stageModel: candidate,
+    });
+
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify.mock.calls[0][0]).toContain("turn cap");
+    expect(notify.mock.calls[0][1]).toBe("info");
+  });
+
   it("emits the first occurrence immediately, suppresses repeats, and summarizes at flush", async () => {
     const { Runtime } = await import("../src/om/runtime.js");
     const runtime = new Runtime();
