@@ -44,6 +44,11 @@ export default async (pi: ExtensionAPI) => {
     new Map());
   pi.on("agent_start", (_event: unknown, ctx: any) => {
     captureRegisteredProviderStreams(ctx.modelRegistry, providerStreams);
+    // Reset the per-run notice collection before the run's first consolidation
+    // launch. This handler is registered before both triggers below, so the
+    // reset cannot clear notices a launch just emitted — a reset placed in a
+    // later agent_start handler would depend on registration order.
+    omRuntime.resetNoticeGate();
   });
 
   // 0.5.2 migration notice: nudge pinned-threshold users toward the

@@ -1059,10 +1059,15 @@ describe("Runtime — sessionFallback notification", () => {
 
     expect(result.ok).toBe(false);
     expect(result.reason).toContain("sessionFallback disabled");
-    // The first info notification fires ("failed this cycle"), the
-    // second ("sessionFallback disabled") is gated by tryEmitInfo
-    expect(notify).toHaveBeenCalledTimes(1);
+    // Both fire: the resolve-time skip ("failed this cycle") has its own
+    // per-run dedupe and never consumes the progress gate, so the terminal
+    // "sessionFallback disabled" info still goes out via tryEmitInfo.
+    expect(notify).toHaveBeenCalledTimes(2);
     expect(notify.mock.calls[0]).toEqual([expect.stringContaining("failed this cycle"), "info"]);
+    expect(notify.mock.calls[1]).toEqual([
+      expect.stringContaining("sessionFallback disabled"),
+      "info",
+    ]);
   });
 });
 
@@ -1513,7 +1518,7 @@ describe("Runtime — per-run notice collection (warning spam gate)", () => {
     expect(notify).toHaveBeenCalledTimes(2);
   });
 
-  it("lets an info-level notice spend the info-toast gate", async () => {
+  it("does not let an info-level notice spend the info-toast gate", async () => {
     const { Runtime } = await import("../src/om/runtime.js");
     const runtime = new Runtime();
     const notify = vi.fn();
@@ -1526,7 +1531,11 @@ describe("Runtime — per-run notice collection (warning spam gate)", () => {
       "info",
     );
 
-    expect(runtime.tryEmitInfo(true, { notify }, "Observational memory: progress")).toBe(false);
+    // Resolve-time notices have their own per-run dedupe + end-of-run summary,
+    // so they must not consume the progress-toast slot: the observer turn-cap
+    // checkpoint (via tryEmitWorkerInfo) has to stay visible even when a
+    // cooldown/skip notice fired first in the same run.
+    expect(runtime.tryEmitInfo(true, { notify }, "Observational memory: progress")).toBe(true);
   });
 
   it("does not let a warning-level notice spend the info-toast gate", async () => {

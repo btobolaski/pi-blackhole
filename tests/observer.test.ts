@@ -972,8 +972,8 @@ describe("runObserver", () => {
 
   // A turn cap is a config/input-size limit, not a model defect. Rather than
   // discarding the observations the model already recorded (and cooling the
-  // model down for hours), the run returns them with the highest cited source
-  // entry as a partial coverage point so the stage can commit that prefix and
+  // model down for hours), the run returns them with the end of the contiguous
+  // cited source prefix so the stage can commit that prefix and
   // resume the remainder.
   it("returns the recorded batch and its partial coverage id when the turn cap ends a run that never closed", async () => {
     const result = await runObserver({

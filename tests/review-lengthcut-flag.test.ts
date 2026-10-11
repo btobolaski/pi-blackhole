@@ -154,7 +154,7 @@ describe("length-cut flag on cut-off failures", () => {
     });
 
     // A turn cap is a config limit, not a provider failure: the recorded batch
-    // is kept as a partial checkpoint at the highest cited source entry.
+    // is kept as a partial checkpoint at the end of the contiguous cited prefix.
     expect(result.observations).toHaveLength(1);
     expect(result.partialCoverageId).toBe("entry-a");
     expect(result.errorAfterClose).toBeUndefined();

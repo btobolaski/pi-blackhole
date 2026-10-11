@@ -386,11 +386,13 @@ export class Runtime {
     });
     if (this.noticesThisRun.has(key)) return false;
     this.noticesThisRun.add(key);
-    // Only routine info notices spend the per-phase info gate; a higher-severity
-    // warning must stay visible without silencing the progress toast that
-    // follows (e.g. the observer turn-cap checkpoint). Repeats return above and
-    // never spend it either.
-    if (level === "info") this.hasEmittedInfoThisTurn = true;
+    // Resolve-time notices never touch the per-phase progress gate: they have
+    // their own per-run dedupe plus the end-of-run summary, while the gate's
+    // single slot belongs to progress toasts. Spending it here would silence
+    // the progress that follows (e.g. the observer turn-cap checkpoint) after
+    // a cooldown/skip notice fired first — and emitting is unconditional on
+    // first occurrence, so checking the gate would instead silence the resolve
+    // notice after unrelated progress. Repeats return above either way.
     try {
       ui.notify(message, level);
     } catch {

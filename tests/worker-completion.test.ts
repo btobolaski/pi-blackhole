@@ -284,7 +284,7 @@ describe("observer completion strictness", () => {
 
     // The cap and a non-deterministic length cut are both input-size limits,
     // not provider failures: the recorded batch is kept as a partial checkpoint
-    // at its highest cited source entry instead of being discarded.
+    // at the end of its contiguous cited prefix instead of being discarded.
     expect(result.observations).toHaveLength(1);
     expect(result.partialCoverageId).toBe("entry-a");
   });

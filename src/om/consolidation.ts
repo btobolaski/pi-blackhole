@@ -551,14 +551,10 @@ export function registerConsolidationTrigger(pi: ExtensionAPI, runtime: Runtime)
   const launch = (_event: unknown, ctx: ConsolidationCtx) => {
     maybeLaunchConsolidation(pi, runtime, ctx);
   };
-  // Reset the per-run notice collection here — before the first consolidation
-  // launch of the run — because this trigger registers ahead of the compaction
-  // trigger and its agent_start handler, so a reset placed there would clear
-  // notices this launch just emitted.
-  pi.on("agent_start", (event, ctx) => {
-    runtime.resetNoticeGate();
-    launch(event, ctx);
-  });
+  // The per-run notice collection resets in index.ts's agent_start handler,
+  // which registers before both triggers — keep it there, not here, so the
+  // reset never depends on trigger registration order.
+  pi.on("agent_start", launch);
   pi.on("turn_end", launch);
 }
 
@@ -1290,11 +1286,31 @@ export async function runObserverStage(
       }
 
       if (result.observations && result.observations.length > 0) {
-        // A turn-cap partial advances coverage only to the highest source
-        // entry the model actually cited, never to the delivered chunk end.
+        // A turn-cap partial advances coverage only to the end of the
+        // contiguous cited prefix, never to the delivered chunk end.
         // Committing that prefix keeps the batch (instead of discarding it
         // and re-offering the same chunk forever); the drain below then
         // resumes from an honestly-observed point.
+        //
+        // The partial id is validated against the delivered chunk: trusting a
+        // point outside it blind would move the cursor over entries the model
+        // never saw. A mismatch fails closed like the no-citation path — the
+        // batch is discarded, the cursor stays put, and the fallback chain is
+        // tried without a persisted cooldown.
+        if (
+          result.partialCoverageId !== undefined &&
+          !sourceEntryIds.includes(result.partialCoverageId)
+        ) {
+          debugLog("observer.partial_outside_chunk", {
+            partialCoverageId: result.partialCoverageId,
+            coversUpToId,
+          });
+          throw new WorkerStreamError(
+            `Observer turn cap checkpoint outside delivered chunk: ${result.observations.length} observation${result.observations.length === 1 ? "" : "s"} recorded with no verifiable coverage point`,
+            result.observations.length,
+            true,
+          );
+        }
         const coverageId: string = result.partialCoverageId ?? coversUpToId;
         const data = buildObservationsRecordedData(result.observations, coverageId);
         if (!data) {

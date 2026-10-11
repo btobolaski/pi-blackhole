@@ -187,6 +187,27 @@ describe("observer never covers source entries it was never shown", () => {
     expect(recordRetryable).not.toHaveBeenCalled();
   });
 
+  test("a turn-cap checkpoint outside the delivered chunk fails closed", async () => {
+    const entries = [
+      rawMessage("s0", text("OLD-A")),
+      rawMessage("s1", text("OLD-B")),
+      rawMessage("s2", text("OLD-C")),
+    ];
+    const runtime = makeRuntime(700, 1000);
+    const advance = vi.spyOn(runtime, "advanceCursor");
+    // A partial id the batch never delivered must not move the cursor: claiming
+    // it would cover entries the model never saw.
+    runObserverSpy.mockResolvedValueOnce({
+      observations: [observation("o1", { sourceEntryIds: ["s0"] })],
+      partialCoverageId: "bogus-id",
+    });
+
+    await runStage(runtime, entries);
+
+    expect(advance).not.toHaveBeenCalled();
+    expect(runtime.getCursor("observer")).toBeUndefined();
+  });
+
   test("the drain is bounded so an oversized backlog waits for the next cycle", async () => {
     const entries: TestEntry[] = [];
     for (let i = 0; i < 8; i += 1) {
