@@ -1,5 +1,13 @@
 ## [Unreleased]
 
+---
+
+## [0.5.13] - 2026-10-13
+
+### Changed
+
+- Thinking-only worker models: observerModel/reflectorModel/dropperModel (and model) now accept { "thinking": "<level>" } without provider/id as a pure thinking-level modifier while the worker tracks the session model via sessionFallback (#153).
+
 ### Fixed
 
 - **Observer turn-cap keeps partial work instead of cooling the model.** A capped run returns its recorded observations with a cited-prefix checkpoint; the stage commits that prefix, drains the rest in-run, and skips the model in-cycle only. Coverage never advances past a citation. A capped batch with no head-anchored prefix is halved and retried (converging to a single entry) instead of discarded, still with no cooldown.
@@ -16,7 +24,6 @@
 - **Pi 1.x is supported.** The declared peer range for all four `@earendil-works/pi-*` packages widens from `>=0.85.1 <1.0.0` to `>=0.85.1 <2.0.0`, and the dev toolchain moves to `1.1.0`, so Pi 1.0/1.1 installs no longer report an out-of-range peer ([#151](https://github.com/k0valik/pi-blackhole/issues/151)). The extension-API test double picks up the required members Pi 1.1 added (`registerToolRenderer`, `getSettings`, the MCP registrations, and the virtual-model registrations).
 - **Toolchain: pnpm 12.10.0.** `packageManager` moves from 11.27.1 to 12.10.0; the lockfile now records pnpm's self-managed package-manager dependencies.
 - **Dev-dependency refresh.** The dev-dependencies group is bumped (lint-staged `17.6.0`, oxfmt `0.71.0`, oxlint `1.86.0`, vitest `5.0.3`) ([#145](https://github.com/k0valik/pi-blackhole/pull/145)).
-- Thinking-only worker models: observerModel/reflectorModel/dropperModel (and model) now accept { "thinking": "<level>" } without provider/id as a pure thinking-level modifier while the worker tracks the session model via sessionFallback (#153).
 
 ### Fixed
 
