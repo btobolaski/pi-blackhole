@@ -65,6 +65,8 @@ function createMockEnvironment() {
   const runtime: any = {
     ensureConfig: vi.fn(),
     resetInfoGate: vi.fn(),
+    resetNoticeGate: vi.fn(),
+    flushNoticeSummary: vi.fn(),
     tryEmitInfo: vi.fn((hasUI: boolean, ui: any, msg: string) => {
       if (!hasUI || !ui) return;
       try {
@@ -326,6 +328,41 @@ describe("/blackhole command", () => {
     expect(notifyCalls[0].msg).toContain("pending entries flushed");
     expect(existsSync(pendingFile)).toBe(false); // cleared after flush
     // Should call compact after flush
+    expect(ctx.compact).toHaveBeenCalledTimes(1);
+  });
+
+  it("flushes pending unanchored batches under their own key, never as recorded", async () => {
+    const { pi, runtime, handlerMap, makeHandlerArgs, notifyCalls, appendEntryCalls } =
+      createMockEnvironment();
+    runtime.config.compaction = "manual";
+    registerPiVccCommand(pi as any, runtime as any);
+
+    const pendingDir = join(testRoot, "agent", "pi-blackhole");
+    const pendingFile = join(pendingDir, "test-session-pending.json");
+    const keptData = {
+      observations: [
+        {
+          id: "aaaaaaaaaaaa",
+          content: "kept tail fact",
+          timestamp: "2026-05-02 10:00",
+          relevance: "medium",
+          sourceEntryIds: ["s2"],
+          tokenCount: 4,
+        },
+      ],
+    };
+    writeFileSync(pendingFile, JSON.stringify({ unanchoredBatches: [{ data: keptData }] }));
+
+    const ctx = makeHandlerArgs();
+    await handlerMap.get("blackhole")!("", ctx);
+
+    // Kept facts flush as coverage-inert entries: flushing them as recorded
+    // would advance coverage markers over entries never proven.
+    expect(appendEntryCalls).toEqual([
+      { customType: "om.observations.unanchored", data: keptData },
+    ]);
+    expect(notifyCalls[0].msg).toContain("pending entries flushed");
+    expect(existsSync(pendingFile)).toBe(false); // cleared after flush
     expect(ctx.compact).toHaveBeenCalledTimes(1);
   });
 });

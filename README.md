@@ -46,11 +46,14 @@ Then `/reload` or restart Pi. The config file at `~/.pi/agent/pi-blackhole/pi-bl
 
 ## ✨ What's new
 
-> **Latest release: [0.5.12](CHANGELOG.md)**
+> **Latest release: [0.5.13](CHANGELOG.md)**
 >
+> - **A capped observer run keeps its partial work instead of cooling the model** — the stage commits the cited-prefix checkpoint and drains the remaining backlog in-run, skipping only the current cycle; a batch with no head-anchored prefix is halved and retried rather than discarded.
+> - **Prefix-less observations are kept, not thrown away** — a capped batch whose citations form no head-anchored prefix is stored as coverage-inert `unanchoredObservations`, read by the pool, preamble, and reflector/dropper inputs.
+> - **Thinking-only worker models** — `observerModel`/`reflectorModel`/`dropperModel` (and `model`) accept `{ "thinking": "low" }` without `provider`/`id` as a pure thinking-level modifier while the worker tracks the session model ([#153](https://github.com/k0valik/pi-blackhole/pull/153)).
+> - **Quieter, more useful diagnostics** — resolve-time notices emit once per run with an end-of-run summary, and foreign custom session entries no longer flood the debug log with one line each.
 > - **Pi 1.x is supported** — the declared peer range widens to `<2.0.0`, so Pi 1.0/1.1 installs no longer report an out-of-range peer.
 > - **Mid-run inline compaction keeps the turn open for RPC/SDK clients** — the compaction event no longer advertises itself as a user-initiated `/compact`, so `pi --mode rpc` frontends stop ending the run mid-turn ([#150](https://github.com/k0valik/pi-blackhole/issues/150)).
-> - **Toolchain refresh** — pnpm 12.10.0 and the dev-dependency group are current; runtime behavior is unchanged.
 >
 > See [`CHANGELOG.md`](CHANGELOG.md) for the full history.
 

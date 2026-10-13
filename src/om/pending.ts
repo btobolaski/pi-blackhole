@@ -24,6 +24,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { isObservationsUnanchoredData } from "./ledger/types.js";
 // ── Types ───────────────────────────────────────────────────────────────────
 
 export interface PendingObservation {
@@ -38,6 +39,15 @@ export interface PendingReflection {
 
 export interface PendingDropped {
   coversUpToId: string;
+  data: unknown;
+}
+
+/**
+ * Coverage-inert kept facts buffered in manual mode. Unlike the other batch
+ * shapes this carries no coversUpToId: the facts were recorded without any
+ * head-anchored prefix, so there is no honest coverage point to store.
+ */
+export interface PendingUnanchored {
   data: unknown;
 }
 
@@ -67,6 +77,14 @@ export interface PendingOMState {
    * /blackhole flush.
    */
   droppedBatches?: PendingDropped[];
+  /**
+   * Coverage-inert kept facts accumulated across manual mode pipeline runs:
+   * observations a turn-cap cut recorded with no head-anchored prefix. Fed
+   * to the pool, preamble, reflector, and dropper inputs like observation
+   * batches, but never to any coverage gate or cursor — and flushed to the
+   * branch under the unanchored key, not the recorded key.
+   */
+  unanchoredBatches?: PendingUnanchored[];
   /** Pipeline progress cursors — persist across restarts and fork recovery. */
   cursors?: {
     observer?: { entryId: string; state: string };
@@ -110,7 +128,8 @@ function isEmptyState(s: PendingOMState): boolean {
     !s.dropped &&
     (!s.observationBatches || s.observationBatches.length === 0) &&
     (!s.reflectionBatches || s.reflectionBatches.length === 0) &&
-    (!s.droppedBatches || s.droppedBatches.length === 0)
+    (!s.droppedBatches || s.droppedBatches.length === 0) &&
+    (!s.unanchoredBatches || s.unanchoredBatches.length === 0)
   );
 }
 
@@ -199,7 +218,8 @@ function isPendingOMState(value: unknown): value is PendingOMState {
   const hasBatches =
     Array.isArray(v.observationBatches) ||
     Array.isArray(v.reflectionBatches) ||
-    Array.isArray(v.droppedBatches);
+    Array.isArray(v.droppedBatches) ||
+    Array.isArray(v.unanchoredBatches);
   // Accept cursor-only states (no observations/reflections yet, but persisted)
   const hasCursors = !!(v.cursors && typeof v.cursors === "object");
   return hasObs || hasRef || hasDrop || hasBatches || hasCursors;
@@ -244,6 +264,21 @@ function sanitizePendingState(raw: PendingOMState): PendingOMState {
         (b as any).data !== undefined,
     );
   }
+  // Unanchored batches carry no coverage point by design, but the payload
+  // itself is validated: the preamble/reflector/dropper merges flatMap
+  // observations without per-item checks (unlike the pool, which validates),
+  // so a malformed batch must die here at the read gate, not poison token
+  // budgets downstream. This is stricter than the recorded-batch
+  // payload-presence rule — deliberately, and only for this new key.
+  if (Array.isArray(raw.unanchoredBatches)) {
+    sanitized.unanchoredBatches = raw.unanchoredBatches.filter(
+      (b): b is PendingUnanchored =>
+        !!b &&
+        typeof b === "object" &&
+        (b as any).data !== undefined &&
+        isObservationsUnanchoredData((b as PendingUnanchored).data),
+    );
+  }
   return sanitized;
 }
 
@@ -284,6 +319,18 @@ export function savePendingDropped(sessionId: string, entry: PendingDropped): vo
   const state = readSessionState(sessionId);
   state.dropped = entry;
   state.droppedBatches = [...(state.droppedBatches ?? []), entry];
+  writeSessionState(sessionId, state);
+}
+
+/**
+ * Buffer coverage-inert kept facts for a session. Appended to
+ * unanchoredBatches so no kept fact is lost across cycles before
+ * /blackhole flush. Never touches pending.observation: there is no
+ * coverage point, so the pending chunk gate must not see it.
+ */
+export function savePendingUnanchored(sessionId: string, entry: PendingUnanchored): void {
+  const state = readSessionState(sessionId);
+  state.unanchoredBatches = [...(state.unanchoredBatches ?? []), entry];
   writeSessionState(sessionId, state);
 }
 

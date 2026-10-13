@@ -160,13 +160,15 @@ Each model entry supports these fields (parsed by `parseModel()` in `unified-con
 
 ```typescript
 interface OmModelConfig {
-  provider: string;        // required — must match a known Pi provider
-  id: string;              // required — model ID as the provider knows it
+  provider?: string;       // required with id — omit both for a thinking-only modifier
+  id?: string;             // required with provider — omit both for a thinking-only modifier
   thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
-  cooldownHours?: number;  // default 1h, 0 = in-memory only (no disk persistence)
-  contextWindow?: number;  // override Pi's registry value
+  cooldownHours?: number;  // default 1h, 0 = in-memory only (no disk persistence); requires provider+id
+  contextWindow?: number;  // override Pi's registry value; requires provider+id
 }
 ```
+
+A thinking-only entry (`{ "thinking": "low" }`, no `provider`/`id`) is never tried as a model candidate — it only supplies the stage thinking level while the worker tracks the session model via `sessionFallback`. An entry with exactly one of `provider`/`id` is rejected, even with valid `thinking`.
 
 **Model ID resolution:** `modelRegistry.find(provider, id)` is used to resolve models. This means:
 - Models explicitly in `models.json` work (they're registered)
@@ -574,7 +576,7 @@ These are processed in `loadUnifiedConfig()` in `unified-config.ts`. The passive
 
 **Do not pin `compactAfterTokens` above what the model can handle — and never write exactly 81000.** The default preset curve auto-scales the trigger to the model's window (a 32k model fires at ~29,491 ≈ 90% full; a 1M-class window at ~0.40), so a numeric pin is only needed when the user wants a fixed threshold — then keep it well under the window, because the compaction summary + retained tail + system prompt must still fit. Two traps: (1) if Pi doesn't know the model's window (local/custom providers), the curve resolves against the 128k fallback and can fire too late (or never) on a small model — set a `contextWindow` override on the model entry; (2) exactly `81000` is reserved as legacy scaffold residue and is silently dropped, so pin a deliberate value like 80000 or 83000 instead.
 
-**Do not set model fields without `provider` and `id`.** Both are required. Setting just one — e.g. `{ "provider": "openrouter" }` without an `id` — silently ignores the entire model block. The parser checks both are non-empty strings. Same for fallback array entries: invalid entries (missing provider or id) are filtered out silently.
+**Do not set model fields with only one of `provider`/`id`.** A full model needs both non-empty strings — e.g. `{ "provider": "openrouter" }` without an `id` silently ignores the entire model block, even with valid `thinking`. Same for fallback array entries: invalid entries (missing provider or id) are filtered out silently. The one exception is a thinking-only modifier with neither field: `{ "thinking": "low" }` is valid and only sets the stage thinking level for the session-fallback model.
 
 ---
 

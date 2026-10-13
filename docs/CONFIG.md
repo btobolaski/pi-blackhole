@@ -571,11 +571,13 @@ Each model config supports the following fields:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `provider` | string | Provider name (required). |
-| `id` | string | Model ID (required). |
-| `thinking` | enum | Thinking level: `"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"`. Defaults to `"low"` when unset. |
-| `cooldownHours` | number | Cooldown duration in hours after a cooldown-worthy error — transient (429/5xx/timeout) or deterministic 4xx (missing provider-required headers, bad credentials, unknown model). Defaults to `1` when omitted. Set to `0` to disable persistent cooldown. |
-| `contextWindow` | number | Override for the model's context window. Inherits from Pi's model registry when unset. |
+| `provider` | string | Provider name (required with `id`; omit both for a thinking-only modifier). |
+| `id` | string | Model ID (required with `provider`; omit both for a thinking-only modifier). |
+| `thinking` | enum | Thinking level: `"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"`. Defaults to `"low"` when unset. May be set alone, without `provider`/`id`, as a pure thinking-level modifier for the session-fallback model. |
+| `cooldownHours` | number | Cooldown duration in hours after a cooldown-worthy error — transient (429/5xx/timeout) or deterministic 4xx (missing provider-required headers, bad credentials, unknown model). Defaults to `1` when omitted. Set to `0` to disable persistent cooldown. Requires `provider`+`id`; inert on thinking-only modifiers. |
+| `contextWindow` | number | Override for the model's context window. Inherits from Pi's model registry when unset. Requires `provider`+`id`; inert on thinking-only modifiers. |
+
+A thinking-only entry (`{ "thinking": "low" }`, no `provider`/`id`) is never tried as a model candidate — it only supplies the stage thinking level while the worker tracks the session model via `sessionFallback` (default `true`). With `sessionFallback: false` the stage is skipped. Thinking-only entries in `*FallbackModels` arrays are likewise skipped as candidates. An entry with exactly one of `provider`/`id` is rejected entirely (so a forgotten `id` cannot silently become a modifier).
 
 **Example:**
 
@@ -591,6 +593,16 @@ Each model config supports the following fields:
   "observerFallbackModels": [
     { "provider": "openai", "id": "gpt-4o", "thinking": "minimal" }
   ]
+}
+```
+
+**Thinking-only (track the session model, e.g. single-model llama.cpp setups):**
+
+```jsonc
+{
+  "observerModel": { "thinking": "low" },
+  "reflectorModel": { "thinking": "medium" },
+  "dropperModel": { "thinking": "off" }
 }
 ```
 

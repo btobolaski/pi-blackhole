@@ -607,6 +607,7 @@ describe("Consolidation trigger — guards with new config keys", () => {
       startSession: vi.fn((identity: string | undefined) => {
         mockSessionIdentity = identity;
       }),
+      resetNoticeGate: vi.fn(),
       dispose: vi.fn(() => {
         mockGeneration += 1;
         mockController.abort();
@@ -1058,10 +1059,15 @@ describe("Runtime — sessionFallback notification", () => {
 
     expect(result.ok).toBe(false);
     expect(result.reason).toContain("sessionFallback disabled");
-    // The first info notification fires ("failed this cycle"), the
-    // second ("sessionFallback disabled") is gated by tryEmitInfo
-    expect(notify).toHaveBeenCalledTimes(1);
+    // Both fire: the resolve-time skip ("failed this cycle") has its own
+    // per-run dedupe and never consumes the progress gate, so the terminal
+    // "sessionFallback disabled" info still goes out via tryEmitInfo.
+    expect(notify).toHaveBeenCalledTimes(2);
     expect(notify.mock.calls[0]).toEqual([expect.stringContaining("failed this cycle"), "info"]);
+    expect(notify.mock.calls[1]).toEqual([
+      expect.stringContaining("sessionFallback disabled"),
+      "info",
+    ]);
   });
 });
 
@@ -1432,4 +1438,347 @@ it("handles missing pending file gracefully", async () => {
   const runtime = new Runtime();
   expect(() => runtime.loadCursorsFromPending("nonexistent-session")).not.toThrow();
   expect(runtime.getCursor("observer")).toBeUndefined();
+});
+
+describe("Runtime — per-run notice collection (warning spam gate)", () => {
+  it("caps each summary label so one long notice cannot blow up the toast", async () => {
+    const { Runtime } = await import("../src/om/runtime.js");
+    const runtime = new Runtime();
+    const notify = vi.fn();
+    const longText = `Observational memory: ${"y".repeat(200)}`;
+
+    runtime.emitNotice(true, { notify }, "k-long", longText, "info");
+    runtime.emitNotice(true, { notify }, "k-long", longText, "info");
+    runtime.flushNoticeSummary(true, { notify });
+
+    const [summary] = notify.mock.calls.at(-1)!;
+    // The full 200-char text stays in the debug log; the toast carries at
+    // most 120 chars of it plus the repeat count.
+    expect(summary).not.toContain("y".repeat(200));
+    expect(summary).toContain(`${"y".repeat(117)}... (×2)`);
+  });
+
+  it("announces a turn-cap skip distinctly from a failed model", async () => {
+    const { Runtime } = await import("../src/om/runtime.js");
+    const runtime = new Runtime();
+    runtime.consolidationPhase = "observer";
+    const notify = vi.fn();
+    const candidate = { provider: "openrouter", id: "big:free" };
+    const registry = makeRegistry([makeModel("big:free")]);
+
+    // A turn cap is an input-size limit, not a broken model: the skip must say
+    // so instead of reusing the generic failed-this-cycle text.
+    runtime.skipFailedForCycle(candidate, "turn_cap");
+    await runtime.resolveModel({
+      model: undefined,
+      modelRegistry: registry,
+      hasUI: true,
+      ui: { notify },
+      stageModel: candidate,
+    });
+
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify.mock.calls[0][0]).toContain("turn cap");
+    expect(notify.mock.calls[0][1]).toBe("info");
+  });
+
+  it("emits the first occurrence immediately, suppresses repeats, and summarizes at flush", async () => {
+    const { Runtime } = await import("../src/om/runtime.js");
+    const runtime = new Runtime();
+    const notify = vi.fn();
+    const message = "Observational memory: observer model openrouter/missing not found";
+
+    expect(
+      runtime.emitNotice(true, { notify }, "notfound:openrouter/missing", message, "warning"),
+    ).toBe(true);
+    expect(
+      runtime.emitNotice(true, { notify }, "notfound:openrouter/missing", message, "warning"),
+    ).toBe(false);
+    runtime.emitNotice(
+      true,
+      { notify },
+      "cooldown:observer:stepfun/s",
+      "Observational memory: observer skipping stepfun/s (cooldown — details in cooldown log)",
+      "info",
+    );
+
+    // Two immediate emissions: the first occurrence of each distinct key.
+    expect(notify).toHaveBeenCalledTimes(2);
+    expect(notify.mock.calls[0]).toEqual([message, "warning"]);
+
+    runtime.flushNoticeSummary(true, { notify });
+
+    // One summary emission, deduped to one line per distinct key.
+    expect(notify).toHaveBeenCalledTimes(3);
+    const [summary, level] = notify.mock.calls[2];
+    expect(level).toBe("warning");
+    expect(summary).toContain("model openrouter/missing not found");
+    expect(summary).toContain("(×2)");
+    expect(summary).toContain("cooldown — details in cooldown log");
+    expect(summary.split(";")).toHaveLength(2);
+  });
+
+  it("caps the number of distinct entries in the end-of-run summary", async () => {
+    const { Runtime } = await import("../src/om/runtime.js");
+    const runtime = new Runtime();
+    const notify = vi.fn();
+    for (let i = 0; i < 8; i += 1) {
+      runtime.emitNotice(true, { notify }, `k${i}`, `Observational memory: issue ${i}`, "warning");
+    }
+
+    runtime.flushNoticeSummary(true, { notify });
+
+    const [summary] = notify.mock.calls.at(-1)!;
+    expect(summary).toContain("more");
+    // 5 named entries plus the "+N more" tail — never one line per occurrence.
+    expect(summary.split(";").length).toBeLessThanOrEqual(6);
+  });
+
+  it("never notifies in headless (RPC) mode and clears without emitting", async () => {
+    const { Runtime } = await import("../src/om/runtime.js");
+    const runtime = new Runtime();
+    const notify = vi.fn();
+
+    expect(runtime.emitNotice(false, { notify }, "k", "m", "warning")).toBe(false);
+    runtime.flushNoticeSummary(false, { notify });
+
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("resets the collection so the next run announces again", async () => {
+    const { Runtime } = await import("../src/om/runtime.js");
+    const runtime = new Runtime();
+    const notify = vi.fn();
+
+    runtime.emitNotice(true, { notify }, "k", "Observational memory: x", "warning");
+    runtime.resetNoticeGate();
+
+    expect(runtime.emitNotice(true, { notify }, "k", "Observational memory: x", "warning")).toBe(
+      true,
+    );
+    expect(notify).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not let an info-level notice spend the info-toast gate", async () => {
+    const { Runtime } = await import("../src/om/runtime.js");
+    const runtime = new Runtime();
+    const notify = vi.fn();
+
+    runtime.emitNotice(
+      true,
+      { notify },
+      "cooldown:observer:stepfun/s",
+      "Observational memory: observer skipping stepfun/s (cooldown)",
+      "info",
+    );
+
+    // Resolve-time notices have their own per-run dedupe + end-of-run summary,
+    // so they must not consume the progress-toast slot: the observer turn-cap
+    // checkpoint (via tryEmitWorkerInfo) has to stay visible even when a
+    // cooldown/skip notice fired first in the same run.
+    expect(runtime.tryEmitInfo(true, { notify }, "Observational memory: progress")).toBe(true);
+  });
+
+  it("does not let a warning-level notice spend the info-toast gate", async () => {
+    const { Runtime } = await import("../src/om/runtime.js");
+    const runtime = new Runtime();
+    const notify = vi.fn();
+
+    runtime.emitNotice(
+      true,
+      { notify },
+      "notfound:openrouter/missing",
+      "Observational memory: observer model openrouter/missing not found",
+      "warning",
+    );
+
+    // The warning stays visible, but the routine progress toast (e.g. the
+    // observer turn-cap checkpoint) must still be allowed through.
+    expect(runtime.tryEmitInfo(true, { notify }, "Observational memory: progress")).toBe(true);
+  });
+
+  it("does not spend the info-toast gate on a suppressed repeat", async () => {
+    const { Runtime } = await import("../src/om/runtime.js");
+    const runtime = new Runtime();
+    const notify = vi.fn();
+
+    runtime.emitNotice(true, { notify }, "k", "Observational memory: x", "info");
+    runtime.resetInfoGate();
+    expect(runtime.emitNotice(true, { notify }, "k", "Observational memory: x", "info")).toBe(
+      false,
+    );
+
+    expect(runtime.tryEmitInfo(true, { notify }, "Observational memory: progress")).toBe(true);
+  });
+
+  it("flush drains only the summary and keeps per-run dedupe until reset", async () => {
+    const { Runtime } = await import("../src/om/runtime.js");
+    const runtime = new Runtime();
+    const notify = vi.fn();
+
+    runtime.emitNotice(true, { notify }, "k", "Observational memory: x", "info");
+    runtime.flushNoticeSummary(true, { notify });
+    expect(notify).toHaveBeenCalledTimes(2);
+
+    // A pipeline straddling agent_end must not re-announce the same key.
+    expect(runtime.emitNotice(true, { notify }, "k", "Observational memory: x", "info")).toBe(
+      false,
+    );
+    expect(notify).toHaveBeenCalledTimes(2);
+
+    // agent_start re-opens the window for the next run.
+    runtime.resetNoticeGate();
+    expect(runtime.emitNotice(true, { notify }, "k", "Observational memory: x", "info")).toBe(true);
+    expect(notify).toHaveBeenCalledTimes(3);
+  });
+
+  it("dedupes a not-found warning across resolve attempts in one run", async () => {
+    writeConfig({
+      observerModel: { provider: "openrouter", id: "nonexistent:free" },
+      sessionFallback: false,
+    });
+    const { Runtime } = await import("../src/om/runtime.js");
+    const runtime = new Runtime();
+    runtime.ensureConfig(testDir);
+    const notify = vi.fn();
+    const ctx = {
+      model: undefined,
+      modelRegistry: makeRegistry([]),
+      hasUI: true,
+      ui: { notify },
+      stageModel: { provider: "openrouter", id: "nonexistent:free" },
+    };
+
+    await runtime.resolveModel(ctx as any);
+    await runtime.resolveModel(ctx as any);
+
+    const notFound = notify.mock.calls.filter((call) => String(call[0]).includes("not found"));
+    expect(notFound).toHaveLength(1);
+  });
+
+  it("emits a not-found warning once per stage, not once per run", async () => {
+    writeConfig({
+      observerModel: { provider: "openrouter", id: "nonexistent:free" },
+      sessionFallback: false,
+    });
+    const { Runtime } = await import("../src/om/runtime.js");
+    const runtime = new Runtime();
+    runtime.ensureConfig(testDir);
+    const notify = vi.fn();
+    const base = {
+      model: undefined,
+      modelRegistry: makeRegistry([]),
+      hasUI: true,
+      ui: { notify },
+      stageModel: { provider: "openrouter", id: "nonexistent:free" },
+    };
+
+    runtime.consolidationPhase = "observer";
+    await runtime.resolveModel(base as any);
+    runtime.consolidationPhase = "reflector";
+    await runtime.resolveModel(base as any);
+
+    const notFound = notify.mock.calls.filter((call) => String(call[0]).includes("not found"));
+    expect(notFound).toHaveLength(2);
+  });
+
+  it("emits a no-auth warning once per stage, not once per run", async () => {
+    writeConfig({
+      observerModel: { provider: "openrouter", id: "m" },
+      sessionFallback: false,
+    });
+    const { Runtime } = await import("../src/om/runtime.js");
+    const runtime = new Runtime();
+    runtime.ensureConfig(testDir);
+    const notify = vi.fn();
+    const registry: any = makeRegistry([makeModel("m")]);
+    registry.hasConfiguredAuth = vi.fn(() => false);
+    const base = {
+      model: undefined,
+      modelRegistry: registry,
+      hasUI: true,
+      ui: { notify },
+      stageModel: { provider: "openrouter", id: "m" },
+    };
+
+    runtime.consolidationPhase = "observer";
+    await runtime.resolveModel(base as any);
+    runtime.consolidationPhase = "reflector";
+    await runtime.resolveModel(base as any);
+
+    const noAuth = notify.mock.calls.filter((call) => String(call[0]).includes("no auth"));
+    expect(noAuth).toHaveLength(2);
+  });
+
+  it("says repeated only when a key actually repeated", async () => {
+    const { Runtime } = await import("../src/om/runtime.js");
+    const runtime = new Runtime();
+    const notify = vi.fn();
+    try {
+      runtime.emitNotice(true, { notify }, "a", "Observational memory: alpha", "info");
+      runtime.emitNotice(true, { notify }, "b", "Observational memory: beta", "info");
+      runtime.flushNoticeSummary(true, { notify });
+      const [summary] = notify.mock.calls.at(-1)!;
+      expect(String(summary)).toContain("2 notices this run");
+      expect(String(summary)).not.toContain("repeated");
+    } finally {
+      notify.mockClear();
+    }
+  });
+
+  it("says repeated when a key was seen more than once", async () => {
+    const { Runtime } = await import("../src/om/runtime.js");
+    const runtime = new Runtime();
+    const notify = vi.fn();
+    try {
+      runtime.emitNotice(true, { notify }, "a", "Observational memory: alpha", "info");
+      runtime.emitNotice(true, { notify }, "a", "Observational memory: alpha", "info");
+      runtime.emitNotice(true, { notify }, "b", "Observational memory: beta", "info");
+      runtime.flushNoticeSummary(true, { notify });
+      const [summary] = notify.mock.calls.at(-1)!;
+      expect(String(summary)).toContain("repeated notices");
+      expect(String(summary)).toContain("(×2)");
+    } finally {
+      notify.mockClear();
+    }
+  });
+
+  it("re-opens notice dedupe on session change", async () => {
+    const { Runtime } = await import("../src/om/runtime.js");
+    const runtime = new Runtime();
+    const notify = vi.fn();
+    try {
+      runtime.startSession("session-a");
+      expect(runtime.emitNotice(true, { notify }, "k", "Observational memory: x", "info")).toBe(
+        true,
+      );
+      runtime.startSession("session-b");
+      expect(runtime.emitNotice(true, { notify }, "k", "Observational memory: x", "info")).toBe(
+        true,
+      );
+    } finally {
+      notify.mockClear();
+    }
+  });
+
+  it("keeps notice dedupe when the same session re-announces", async () => {
+    const { Runtime } = await import("../src/om/runtime.js");
+    const runtime = new Runtime();
+    const notify = vi.fn();
+    try {
+      runtime.startSession("session-a");
+      expect(runtime.emitNotice(true, { notify }, "k", "Observational memory: x", "info")).toBe(
+        true,
+      );
+      // Same id — e.g. a looped or nested launch re-announcing its session:
+      // the collection must survive, so the repeat stays suppressed. An
+      // unconditional resetNoticeGate() in startSession would re-emit here.
+      runtime.startSession("session-a");
+      expect(runtime.emitNotice(true, { notify }, "k", "Observational memory: x", "info")).toBe(
+        false,
+      );
+    } finally {
+      notify.mockClear();
+    }
+  });
 });

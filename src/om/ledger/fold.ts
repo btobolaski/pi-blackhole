@@ -7,9 +7,11 @@
 import {
   isObservationsDroppedData,
   isObservationsRecordedData,
+  isObservationsUnanchoredData,
   isReflectionsRecordedData,
   OM_OBSERVATIONS_DROPPED,
   OM_OBSERVATIONS_RECORDED,
+  OM_OBSERVATIONS_UNANCHORED,
   OM_REFLECTIONS_RECORDED,
   type Entry,
   type Observation,
@@ -58,6 +60,7 @@ export function foldLedger(entries: Entry[], options: FoldLedgerOptions = {}): F
   const observationsById = new Map<string, Observation>();
   const reflectionsById = new Map<string, Reflection>();
   const droppedObservationIds = new Set<string>();
+  const unknownCustomTypeCounts = new Map<string, number>();
   const endIdx = foldEndIndex(entries, options.upToEntryId);
 
   for (let i = 0; i <= endIdx; i++) {
@@ -66,6 +69,19 @@ export function foldLedger(entries: Entry[], options: FoldLedgerOptions = {}): F
 
     if (isCustomEntry(entry, OM_OBSERVATIONS_RECORDED)) {
       if (!isObservationsRecordedData(entry.data)) continue;
+      for (const observation of entry.data.observations) {
+        if (!observationsById.has(observation.id)) {
+          observationsById.set(observation.id, observation);
+        }
+      }
+      continue;
+    }
+
+    // Coverage-inert kept facts: they join the pool (and its first-wins
+    // dedup) but carry no coverage claim, so no cursor or marker scan reads
+    // them — only this pool does.
+    if (isCustomEntry(entry, OM_OBSERVATIONS_UNANCHORED)) {
+      if (!isObservationsUnanchoredData(entry.data)) continue;
       for (const observation of entry.data.observations) {
         if (!observationsById.has(observation.id)) {
           observationsById.set(observation.id, observation);
@@ -92,14 +108,21 @@ export function foldLedger(entries: Entry[], options: FoldLedgerOptions = {}): F
       continue;
     }
 
-    // Log unknown custom entry types — they are silently skipped, but
-    // should be visible when debugging extension compatibility issues.
+    // Unknown custom entries (other extensions sharing the session jsonl)
+    // are silently skipped — counted here and reported as one aggregated
+    // debug line per fold instead of one line per entry.
     if (entry.type === "custom" && entry.customType) {
-      debugLog("fold.unknown_custom_type", {
-        customType: entry.customType,
-        entryId: entry.id,
-      });
+      unknownCustomTypeCounts.set(
+        entry.customType,
+        (unknownCustomTypeCounts.get(entry.customType) ?? 0) + 1,
+      );
     }
+  }
+
+  if (unknownCustomTypeCounts.size > 0) {
+    debugLog("fold.unknown_custom_types", {
+      counts: Object.fromEntries(unknownCustomTypeCounts),
+    });
   }
 
   const observations = Array.from(observationsById.values());
