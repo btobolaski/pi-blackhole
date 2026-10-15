@@ -122,7 +122,7 @@ test.each(["auto", "manual"] as const)(
     }
   },
 );
-test.each(["error", "errorAfterClose", "generation abort", "host disposal"])(
+test.each(["error", "generation abort", "host disposal"])(
   "%s cannot save manual batch or old cursor",
   async (failure) => {
     runtime.config.compaction = "manual";
@@ -137,12 +137,7 @@ test.each(["error", "errorAfterClose", "generation abort", "host disposal"])(
       if (failure === "error") throw new Error("observer failed");
       if (failure === "generation abort") runtime.startSession("new-session");
       if (failure === "host disposal") invalidate();
-      return {
-        ...result(),
-        ...(failure === "errorAfterClose"
-          ? { errorAfterClose: "provider failed after close" }
-          : {}),
-      };
+      return result();
     });
     await expect(run()).resolves.toBeUndefined();
     expect(observer).toHaveBeenCalledTimes(1);
@@ -151,6 +146,27 @@ test.each(["error", "errorAfterClose", "generation abort", "host disposal"])(
     expect(runtime.dispose).toHaveBeenCalledTimes(1);
   },
 );
+test("errorAfterClose keeps its completed chunk on shutdown", async () => {
+  runtime.config.compaction = "manual";
+  runtime.startSession("shutdown-test");
+  runtime.cursorsLoadedSessionId = "shutdown-test";
+  runtime.advanceCursor("observer", "earlier", "recorded");
+  ctx.sessionManager.getBranch = () => [
+    rawMessage("earlier", "covered"),
+    rawMessage("tail", "words ".repeat(250)),
+  ];
+  observer.mockImplementation(async () => ({
+    ...result(),
+    errorAfterClose: "provider failed after close",
+  }));
+  await expect(run()).resolves.toBeUndefined();
+  expect(observer).toHaveBeenCalledTimes(1);
+  const pending = readPendingState("shutdown-test");
+  expect(pending.observation?.coversUpToId).toBe("tail");
+  expect(pending.cursors?.observer).toEqual({ entryId: "tail", state: "recorded" });
+  expect(appended).not.toHaveBeenCalled();
+  expect(runtime.dispose).toHaveBeenCalledTimes(1);
+});
 test("shutdown errors reach enabled debug logging", async () => {
   runtime.config.debugLog = true;
   observer.mockRejectedValue(new Error("shutdown test failure"));
