@@ -9,6 +9,7 @@ import type { runObserver } from "../src/om/agents/observer/agent.js";
 import { createExtensionApiDouble } from "./fixtures/pi-extension-api.js";
 import { observation, rawMessage } from "./fixtures/session.js";
 import { readPendingState } from "../src/om/pending.js";
+import { SHUTDOWN_OBSERVE_TIMEOUT_MS } from "../src/om/shutdown-observe.js";
 import { flushDebugLog, DEBUG_LOG_RELATIVE_PATH } from "../src/om/debug-log.js";
 const scratch = vi.hoisted(() => ({ dir: "" }));
 vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => ({
@@ -184,7 +185,7 @@ test.each(["auto", "manual"] as const)(
       });
     });
     const work = run();
-    await vi.advanceTimersByTimeAsync(20_000);
+    await vi.advanceTimersByTimeAsync(SHUTDOWN_OBSERVE_TIMEOUT_MS);
     await work;
     expect(observer.mock.calls[0]?.[0].signal?.aborted).toBe(true);
     complete(result());
@@ -215,7 +216,7 @@ test.each(["covered", "timeout", "remaining deadline"])(
       if (state === "covered") runtime.advanceCursor("observer", "tail", "recorded");
       complete();
     }
-    await vi.advanceTimersByTimeAsync(state === "timeout" ? 20_000 : 5_000);
+    await vi.advanceTimersByTimeAsync(state === "timeout" ? SHUTDOWN_OBSERVE_TIMEOUT_MS : 5_000);
     await work;
     if (state === "remaining deadline")
       expect(observer.mock.calls[0]?.[0].signal?.aborted).toBe(true);

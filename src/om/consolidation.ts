@@ -1380,12 +1380,12 @@ export async function runObserverStage(
 
       // The run closed the chunk and then a later turn failed (a host that
       // ignores `terminate`). Shared with the reflector stage: same framing,
-      // same cooldown, same toast shape.
+      // same cooldown, same toast shape. On shutdown the kept facts are still
+      // saved below (no extra request), but without cooldown or toast — the
+      // runtime is disposed immediately and post-close writes stay minimal.
       if (options && result.errorAfterClose) {
         debugLog("observer.shutdown_error", { error: result.errorAfterClose });
-        return "abort";
-      }
-      if (result.errorAfterClose) {
+      } else if (result.errorAfterClose) {
         handleWorkerErrorAfterClose({
           runtime,
           ctx,

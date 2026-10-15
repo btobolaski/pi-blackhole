@@ -1,5 +1,5 @@
 /** Best-effort observer-only flush, bounded across waiting and model work. */
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, SessionShutdownEvent } from "@earendil-works/pi-coding-agent";
 import { matchesSkippedProvider } from "../core/provider-skip.js";
 import { makeModelResolver, runObserverStage, type ConsolidationCtx } from "./consolidation.js";
 import { debugLog, withDebugLogContext } from "./debug-log.js";
@@ -13,7 +13,7 @@ export async function observeTailOnShutdown(
   pi: ExtensionAPI,
   runtime: Runtime,
   ctx: ConsolidationCtx,
-  reason: string,
+  reason: SessionShutdownEvent["reason"],
 ): Promise<void> {
   try {
     const config = runtime.config;
@@ -39,7 +39,10 @@ export async function observeTailOnShutdown(
         signal.throwIfAborted();
         if (!runtime.isGenerationActive(initial) || runtime.isConsolidationRetryGated()) return;
         const generation = { ...runtime.captureGeneration(sessionId), signal };
-        if (runtime.cursorsLoadedSessionId !== sessionId) runtime.loadCursorsFromPending(sessionId);
+        if (runtime.cursorsLoadedSessionId !== sessionId) {
+          runtime.loadCursorsFromPending(sessionId);
+          runtime.cursorsLoadedSessionId = sessionId;
+        }
         // This is a new observer cycle, not a continuation of the last
         // reflector/dropper cycle (whose size and transient skips may linger).
         runtime.consolidationPhase = "observer";
@@ -48,6 +51,8 @@ export async function observeTailOnShutdown(
         runtime.sizeSkippedInCycle.clear();
         runtime.resolveFailureNotified = false;
         const previousCursor = runtime.getCursor("observer");
+        const previousEntryId = previousCursor?.entryId;
+        const previousState = previousCursor?.state;
         const resolve = makeModelResolver(runtime, ctx, generation);
         // Resolution may walk unavailable candidates, but shutdown never retries
         // a request or drains another chunk after this one attempt.
@@ -61,8 +66,8 @@ export async function observeTailOnShutdown(
         if (
           outcome !== "abort" &&
           runtime.isGenerationActive(generation) &&
-          cursor !== previousCursor &&
-          cursor?.state === "recorded"
+          (cursor?.entryId !== previousEntryId || cursor?.state !== previousState) &&
+          (cursor?.state === "recorded" || cursor?.state === "empty")
         ) {
           if (ctx.sessionManager.getSessionId() === sessionId)
             runtime.saveCursorsToPending(sessionId);

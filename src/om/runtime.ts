@@ -296,9 +296,20 @@ export class Runtime {
    * lifecycle signal when the session identity changes.  Cancels any pending
    * deferred compaction timer.  The old extension's deferred work is thereby
    * invalidated.
+   *
+   * Revives after a shutdown dispose: new/resume/fork tear down the old
+   * session and start a new one in the same process with the same Runtime
+   * object, so a permanent dispose would wedge every later session. The
+   * shutdown guard is scoped to the session that installed it and is cleared
+   * here (dispose intentionally keeps it so queued cursor flushes from the
+   * torn-down session stay blocked).
    */
   startSession(sessionIdentity: string | undefined): void {
-    if (this.disposed) return;
+    if (this.disposed) {
+      this.disposed = false;
+      this.lifecycleController = new AbortController();
+    }
+    this.shutdownContextIsActive = undefined;
     // A new session gets a fresh notice collection so the previous session's
     // dedupe cannot suppress the new session's first announcements. Same-id
     // repeats keep the collection (per-run reset stays on agent_start).
@@ -371,6 +382,11 @@ export class Runtime {
    * Called on session_shutdown.  Aborts the lifecycle signal, increments
    * the generation counter, and clears the compaction timer.  All deferred
    * work is thereby invalidated.
+   *
+   * The shutdown guard is intentionally kept (cleared by the next
+   * startSession): queued cursor flushes from the torn-down session must
+   * still see it after disposal. A later startSession revives the runtime
+   * for new/resume/fork in the same process.
    */
   dispose(): void {
     if (this.disposed) return;
