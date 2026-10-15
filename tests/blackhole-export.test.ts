@@ -567,6 +567,9 @@ describe("reflection export timestamps", () => {
     ["2026-04-31T12:00:00.000Z", "2026-10-04T00:00:00.000Z"],
     ["2026-10-03 24:00", "2026-10-04T00:00:00.000Z"],
     ["2024-02-29T14:05:00.000Z", "2024-02-29T14:05:00.000Z"],
+    ["2026-05-02 10:00 PST", "2026-10-04T00:00:00.000Z"],
+    ["2026-10-03 14:05 junk", "2026-10-04T00:00:00.000Z"],
+    ["2026-10-03 14:05 +02:00", "2026-10-04T00:00:00.000Z"],
   ])("uses evidence time or entry fallback: %s", async (timestamp, expected) => {
     const { buildProjectMemoryCorpus, buildProjectMemoryCorpusAsync } =
       await import("../src/project-recall/corpus.js");
@@ -588,4 +591,43 @@ describe("reflection export timestamps", () => {
       expected,
     ]);
   });
+});
+
+describe("pending reflection timestamps", () => {
+  afterEach(() => rmSync(testRoot, { recursive: true, force: true }));
+  it.each(["2026-10-03 14:05", undefined, "invalid", "2026-10-03 14:05 PST"])(
+    "prefers own timestamp or legacy fallback %s",
+    async (timestamp) => {
+      const { buildProjectMemoryCorpus } = await import("../src/project-recall/corpus.js");
+      writeSession(encodeScopeDir(projectCwd), "pending-time.jsonl", [
+        sessionHeader("pending-time"),
+      ]);
+      const dir = join(agentDir, "pi-blackhole");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        join(dir, "pending-time-pending.json"),
+        JSON.stringify({
+          observationBatches: [
+            {
+              data: {
+                observations: [{ content: "Evidence", timestamp: "2026-10-04T00:00:00.000Z" }],
+              },
+            },
+          ],
+          reflectionBatches: [
+            {
+              data: {
+                reflections: [
+                  { content: "Pending durable fact", timestamp, supersedes: ["aaaaaaaaaaaa"] },
+                ],
+              },
+            },
+          ],
+        }),
+      );
+      expect(
+        buildProjectMemoryCorpus({ cwd: projectCwd, agentDir }).reflections[0]?.timestamp,
+      ).toBe(timestamp === "2026-10-03 14:05" ? timestamp : "2026-10-04T00:00:00.000Z");
+    },
+  );
 });

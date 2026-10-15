@@ -485,3 +485,38 @@ describe("/blackhole-memory command", () => {
     expect(msg).toContain("75% of 200,000-token window (preset: default)");
   });
 });
+
+describe("memory reflection display toggles", () => {
+  it.each([true, false])("full view timestamps=%s", async (enabled) => {
+    const { pi, runtime, handlerMap } = createMockEnvironment();
+    registerMemoryCommand(pi as any, runtime as any);
+    runtime.config.reflectionTimestamps = enabled;
+    runtime.config.reflectionSupersedes = enabled;
+    const ui = { notify: vi.fn() };
+    await handlerMap.get("blackhole-memory")!(["full"], {
+      cwd: "/tmp/test",
+      sessionManager: {
+        getBranch: () => [
+          textCustomMessage("source", "evidence"),
+          reflectionsRecordedEntry("ref", {
+            reflections: [
+              reflection("aaaaaaaaaaaa", ["cccccccccccc"], {
+                content: "C",
+                timestamp: "2026-10-03 14:05",
+                supersedes: ["bbbbbbbbbbbb"],
+              }),
+            ],
+            coversUpToId: "source",
+          }),
+        ],
+        getSessionId: () => "reflection-display-test",
+      },
+      ui,
+    });
+    expect((ui.notify as any).mock.calls[0]?.[0]).toContain(
+      enabled
+        ? "[aaaaaaaaaaaa] 2026-10-03 14:05 C (supersedes bbbbbbbbbbbb)"
+        : "[aaaaaaaaaaaa] C\n",
+    );
+  });
+});

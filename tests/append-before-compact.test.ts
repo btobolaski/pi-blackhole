@@ -1072,6 +1072,20 @@ describe("append reflection annotations", () => {
       newer: "[bbbbbbbbbbbb] 2026-10-03 14:20 tests pass (supersedes aaaaaaaaaaaa)",
     });
   });
+  it("preserves original immutable segment after superseding reflection", () => {
+    const { first, second } = twoCompactions();
+    const fallback = (summary: string) => ({
+      role: "compactionSummary",
+      summary,
+      tokensBefore: 1000,
+      timestamp: 100,
+    });
+    const c1 = { id: "c1", type: "compaction", timestamp: 10, ...first.compaction };
+    const c2 = { id: "c2", type: "compaction", timestamp: 20, ...second.compaction };
+    const firstContext = projectAppendOnlyContext([fallback(first.compaction.summary)], [c1]);
+    const secondContext = projectAppendOnlyContext([fallback(second.compaction.summary)], [c1, c2]);
+    expect(secondContext[0]).toEqual(firstContext[0]);
+  });
 });
 
 describe("annotated compaction cap", () => {

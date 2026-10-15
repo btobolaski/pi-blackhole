@@ -344,11 +344,7 @@ What blackhole adds and reworks on top:
 - **OM-recall coupling** — when expanding session entries via `recall`, related observations and reflections are automatically shown.
 - **Thinking level support** — per-model `thinking` field for reasoning effort control, including `max` where supported by the provider.
 
-## License
-
-MIT
-
-### Reflection evidence time
+## Reflection evidence time
 
 Reflection lines show their latest supporting observation timestamp by default
 (`reflectionTimestamps: true`). Legacy reflections remain unchanged. Optional
@@ -356,3 +352,7 @@ Reflection lines show their latest supporting observation timestamp by default
 reflections; no earlier reflection is hidden or removed. Both keys add no model calls.
 Use `PI_BLACKHOLE_REFLECTION_TIMESTAMPS` and `PI_BLACKHOLE_REFLECTION_SUPERSEDES`
 for environment overrides. Export prefers reflection evidence time but omits notes.
+
+## License
+
+MIT

@@ -58,7 +58,6 @@ import {
   OM_OBSERVATIONS_UNANCHORED,
   OM_REFLECTIONS_RECORDED,
   buildExistingObservationsSummary,
-  buildExistingReflectionsSummary,
   buildObservationsDroppedData,
   buildObservationsRecordedData,
   buildObservationsUnanchoredData,
@@ -1798,11 +1797,8 @@ function computeReflectorInput(
     Math.floor(runtime.config.reflectorInputMaxTokens * 0.15),
     renderReflection,
   );
-  const existingReflectionsSummary = buildExistingReflectionsSummary(
-    shownReflections,
-    Math.floor(runtime.config.reflectorInputMaxTokens * 0.15),
-    renderReflection,
-  );
+  // Already prefix-selected above; render without re-running the cap.
+  const existingReflectionsSummary = shownReflections.map(renderReflection).join("\n");
   const existingObservationsSummary = buildExistingObservationsSummary(
     sourceObservations.filter((o: any) => !newObservations.some((no: any) => no.id === o.id)),
     Math.floor(runtime.config.reflectorInputMaxTokens * 0.15),

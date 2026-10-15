@@ -240,4 +240,30 @@ describe("reflection annotations", () => {
       ),
     }).toEqual({ timestamp: enabled, supersedes: enabled, legacy: !enabled });
   });
+  it("strips both-on OM without changing markers", async () => {
+    const { renderSummary } = await import("../src/om/ledger/index.js");
+    const { stripOMContent } = await import("../src/core/summarize.js");
+    const text = renderSummary(
+      [
+        makeReflection("aaaaaaaaaaaa", {
+          content: "C",
+          timestamp: "2026-10-03 14:05",
+          supersedes: ["bbbbbbbbbbbb"],
+        }),
+      ],
+      [],
+      { timestamps: true, supersedes: true },
+    );
+    const stripped = stripOMContent(`before\n\n${text}`);
+    expect(stripped).toBe("before");
+  });
+  it("charges CJK reflection lines with the CJK-aware estimator", async () => {
+    const { selectExistingReflections } = await import("../src/om/ledger/index.js");
+    const first = makeReflection("aaaaaaaaaaaa", { content: "C" });
+    const second = makeReflection("bbbbbbbbbbbb", { content: "漢".repeat(40) });
+    // Flat chars/4 would price the second line near 14 tokens and keep it;
+    // estimateStringTokens prices each CJK char near one token, so the line
+    // exceeds the remaining budget and is cut.
+    expect(selectExistingReflections([first, second], 20)).toEqual([first]);
+  });
 });

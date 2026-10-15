@@ -49,6 +49,8 @@ interface ObserverAgentInput {
 }
 
 interface DropperAgentInput {
+  reflections: import("../src/om/ledger/types.js").Reflection[];
+  renderReflection?: (r: import("../src/om/ledger/types.js").Reflection) => string;
   model: { provider: string; id: string };
   observations: Array<{ id: string }>;
   budgetTokens: number;
@@ -2549,6 +2551,73 @@ describe("showWorkerNotifications", () => {
 
     expect(agents.runDropper).toHaveBeenCalledOnce();
     expect(infoCalls(notify)).toEqual([]);
+  });
+});
+
+describe("reflection timestamp preamble", () => {
+  test.each([true, false])("observer honors timestamps=%s", async (enabled) => {
+    const fixture = makePipelineFixture({ observeAfterTokens: 100 });
+    fixture.runtime.config.reflectionTimestamps = enabled;
+    fixture.runtime.config.reflectionSupersedes = false;
+    fixture.entries.push(rawMessage("src-1", "Source " + "y".repeat(10000)));
+    fixture.entries.push(
+      reflectionsRecordedEntry("ref-marker", {
+        reflections: [
+          reflection("aaaaaaaaaaaa", ["bbbbbbbbbbbb"], {
+            content: "C",
+            timestamp: "2026-10-03 14:05",
+          }),
+        ],
+        coversUpToId: "src-1",
+      }),
+    );
+    fixture.entries.push(rawMessage("src-2", "More " + "z".repeat(10000)));
+    await fixture.run();
+    expect(observerChunkArg().priorReflections).toContain(
+      enabled ? "[aaaaaaaaaaaa] 2026-10-03 14:05 C" : "[aaaaaaaaaaaa] C",
+    );
+  });
+});
+
+describe("superseded reflections in pipeline", () => {
+  test.each([true, false])("dropper retains old support with supersedes=%s", async (enabled) => {
+    const first = reflection("aaaaaaaaaaaa", ["cccccccccccc"], {
+      content: "tests failing",
+      timestamp: "2026-10-03 10:00",
+    });
+    const second = reflection("bbbbbbbbbbbb", ["dddddddddddd"], {
+      content: "tests pass",
+      timestamp: "2026-10-03 14:20",
+      supersedes: [first.id],
+    });
+    const fixture = makePipelineFixture({
+      observeAfterTokens: 100000,
+      entries: [
+        rawMessage("source-1", "x".repeat(1000)),
+        observationsRecordedEntry("obs1", {
+          observations: [observation("cccccccccccc")],
+          coversUpToId: "source-1",
+        }),
+        reflectionsRecordedEntry("ref1", { reflections: [first], coversUpToId: "source-1" }),
+        rawMessage("source-2", "y".repeat(1000)),
+        observationsRecordedEntry("obs2", {
+          observations: [observation("dddddddddddd")],
+          coversUpToId: "source-2",
+        }),
+      ],
+    });
+    fixture.runtime.config.reflectAfterTokens = 100;
+    fixture.runtime.config.reflectionTimestamps = true;
+    fixture.runtime.config.reflectionSupersedes = enabled;
+    fixture.runtime.config.dropperPoolFullnessThreshold = 0;
+    agents.runReflector.mockResolvedValue({ reflections: [second] });
+    await fixture.run();
+    const input = dropperCallArg();
+    const { reflectionSupportCounts } = await import("../src/om/agents/dropper/coverage.js");
+    expect({
+      ids: input.reflections.map((r) => r.id),
+      coverage: reflectionSupportCounts(input.reflections).get("cccccccccccc"),
+    }).toEqual({ ids: [first.id, second.id], coverage: 1 });
   });
 });
 

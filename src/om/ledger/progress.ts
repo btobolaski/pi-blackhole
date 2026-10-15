@@ -1,5 +1,5 @@
 import { reflectionToSummaryLine } from "./render-summary.js";
-import { estimateEntryTokens, getUsageTokens } from "../tokens.js";
+import { estimateEntryTokens, estimateStringTokens, getUsageTokens } from "../tokens.js";
 import type { PendingOMState } from "../pending.js";
 import { foldLedger } from "./fold.js";
 import {
@@ -384,7 +384,7 @@ export function selectExistingReflections(
   const selected: Reflection[] = [];
   let tokens = 0;
   for (const ref of reflections) {
-    const lineTokens = Math.ceil(render(ref).length / 4);
+    const lineTokens = estimateStringTokens(render(ref));
     if (tokens + lineTokens > maxTokens && selected.length > 0) break;
     selected.push(ref);
     tokens += lineTokens;

@@ -718,6 +718,60 @@ describe("reflection annotation contract", () => {
     });
   });
 
+  it("explains evidence timestamps only when timestamps enabled", async () => {
+    const { buildReflectorSystem } = await import("../src/om/agents/reflector/prompts.js");
+    expect(buildReflectorSystem({ timestamps: true, supersedes: false })).toContain(
+      "Reflection lines may start with YYYY-MM-DD HH:MM evidence timestamps",
+    );
+    expect(buildReflectorSystem({ timestamps: false, supersedes: false })).not.toContain(
+      "YYYY-MM-DD HH:MM evidence timestamps",
+    );
+  });
+
+  it("replaces the patch prohibition only when supersedes enabled", async () => {
+    const { buildReflectorSystem } = await import("../src/om/agents/reflector/prompts.js");
+    const enabled = buildReflectorSystem({ timestamps: false, supersedes: true });
+    expect(enabled).toContain("Never list a reflection that is still true.");
+    expect(enabled).toContain("(supersedes <id>), a display-only replacement note.");
+    const { REFLECTOR_SYSTEM } = await import("./fixtures/reflector-prompt-golden.js");
+    expect(REFLECTOR_SYSTEM).toContain("Do not emit update-style records or provenance metadata.");
+    expect(buildReflectorSystem({ timestamps: false, supersedes: false })).toBe(REFLECTOR_SYSTEM);
+  });
+
+  it("rejects earlier same-run ids without dropping the new record", async () => {
+    const loop = fakeAgentLoop(async (_prompts, context) => {
+      await context.tools[0].execute("first", {
+        reflections: [{ content: "first", supportingObservationIds: ["bbbbbbbbbbbb"] }],
+        complete: false,
+      });
+      await context.tools[0].execute("second", {
+        reflections: [
+          {
+            content: "second",
+            supportingObservationIds: ["bbbbbbbbbbbb"],
+            supersedes: [hashId("first")],
+          },
+        ],
+        complete: true,
+      });
+    });
+    const result = await runReflector({
+      model: reflectionTestModel,
+      apiKey: "test",
+      observations: [observation("bbbbbbbbbbbb")],
+      reflections: [],
+      agentLoop: loop,
+      supersedesEnabled: true,
+      supersedableReflectionIds: [],
+    });
+    expect(
+      result.reflections?.map((r) => ({ content: r.content, supersedes: r.supersedes })),
+    ).toEqual([
+      { content: "first", supersedes: undefined },
+      { content: "second", supersedes: undefined },
+    ]);
+  });
+
   it("keeps both-off render, dispatched prompt and schema byte-identical", async () => {
     const { REFLECTOR_SYSTEM } = await import("./fixtures/reflector-prompt-golden.js");
     const { RecordReflectionsSchema } = await import("./fixtures/reflector-schema-golden.js");

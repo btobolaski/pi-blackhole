@@ -86,18 +86,29 @@ Examples:
 - ZERO REFLECTIONS: The only new observations are routine command outputs, transient debugging attempts, or partial work with no durable conclusion yet.`;
 
 export function buildReflectorSystem(opts: { timestamps: boolean; supersedes: boolean }): string {
+  // Fail loudly when a base-prompt rewording orphans an anchor: String.replace
+  // is a silent no-op on miss, which would drop guidance the tool schema still
+  // advertises (notably the supersedes contract).
+  const replaceAnchor = (prompt: string, anchor: string, replacement: string): string => {
+    const next = prompt.replace(anchor, replacement);
+    if (next === prompt) throw new Error(`reflector prompt anchor missing: ${anchor}`);
+    return next;
+  };
   let prompt = REFLECTOR_SYSTEM;
   if (opts.timestamps)
-    prompt = prompt.replace(
+    prompt = replaceAnchor(
+      prompt,
       "You receive:",
       "You receive:\n- Reflection lines may start with YYYY-MM-DD HH:MM evidence timestamps; reflection content still carries no timestamp.",
     );
   if (opts.supersedes) {
-    prompt = prompt.replace(
+    prompt = replaceAnchor(
+      prompt,
       "Do not emit update-style records or provenance metadata. Reflections are plain durable facts, not patches.",
       "Reflection content is a plain durable fact, not a patch: state the current fact in full. When it replaces an existing reflection whose status changed (a failing check now passes, a blocker resolved, a decision reversed), list that reflection's id in supersedes. Never list a reflection that is still true.",
     );
-    prompt = prompt.replace(
+    prompt = replaceAnchor(
+      prompt,
       "You receive:",
       "You receive:\n- Reflection lines may end with (supersedes <id>), a display-only replacement note.",
     );

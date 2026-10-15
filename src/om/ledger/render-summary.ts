@@ -5,6 +5,7 @@
  * Modified: separator-aware whole-record caps and configurable reflection annotations.
  */
 import type { Observation, Reflection } from "./types.js";
+import { MEMORY_ID_PATTERN } from "./types.js";
 import { estimateStringTokens } from "../tokens.js";
 
 const OM_INSTRUCTIONS_FULL = `Bracketed ids in reflections and observations connect to their source session entries. These are condensed memories from earlier in this session.
@@ -100,7 +101,7 @@ export function makeReflectionRenderer(opts: ReflectionRenderOptions): (r: Refle
     const ids =
       opts.supersedes && Array.isArray(r.supersedes)
         ? r.supersedes.filter(
-            (id): id is string => typeof id === "string" && /^[a-f0-9]{12}$/i.test(id),
+            (id): id is string => typeof id === "string" && MEMORY_ID_PATTERN.test(id),
           )
         : [];
     return `[${r.id}] ${time}${r.content}${ids.length ? ` (supersedes ${ids.join(", ")})` : ""}`;

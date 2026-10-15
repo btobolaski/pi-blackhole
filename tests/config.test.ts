@@ -1092,3 +1092,19 @@ describe("reflection config", () => {
     expect([config.reflectionTimestamps, config.reflectionSupersedes]).toEqual([false, true]);
   });
 });
+
+describe.each([
+  ["reflectionTimestamps", true],
+  ["reflectionSupersedes", false],
+])("%s file loading", (key, defaultValue) => {
+  it.each([true, false])("loads JSON boolean %s", async (value) => {
+    const { loadUnifiedConfig } = await import("../src/core/unified-config.js");
+    writeConfig({ [key]: value });
+    expect(Reflect.get(loadUnifiedConfig(testDir), key)).toBe(value);
+  });
+  it("ignores nonboolean JSON", async () => {
+    const { loadUnifiedConfig } = await import("../src/core/unified-config.js");
+    writeConfig({ [key]: "invalid" });
+    expect(Reflect.get(loadUnifiedConfig(testDir), key)).toBe(defaultValue);
+  });
+});

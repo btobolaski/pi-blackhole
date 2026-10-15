@@ -119,6 +119,10 @@ function parseReflectionTimestamp(value: unknown): string | null {
   // Keep support for parseable ISO timestamps, but validate their literal calendar
   // fields before Date.parse can normalize an impossible date into another day.
   if (!isReflectionTimestamp(value.slice(0, 16).replace("T", " "))) return null;
+  // The minute prefix is valid, but the remainder must be an ISO time tail
+  // (seconds, fractional seconds, zone) or nothing. Date.parse accepts trailing
+  // text such as " PST" or " junk" and silently shifts the date, so reject it.
+  if (!/^(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?$/.test(value.slice(16))) return null;
   return parseTimestamp(value);
 }
 
