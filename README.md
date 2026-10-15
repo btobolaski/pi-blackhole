@@ -262,7 +262,7 @@ Use `recall` to search the session history. Do not redo work already completed.
 ----
 Bracketed ids in reflections and observations connect to their source session entries.
 These are condensed memories from earlier in this session.
-When entries conflict, the most recent observation reflects the latest known state.
+When entries conflict, the entry with the latest timestamp reflects the latest known state.
 Use `recall` with an id to retrieve original context.
 ----
 ```
@@ -343,6 +343,15 @@ What blackhole adds and reworks on top:
 - **Improved observer/reflector/dropper prompts** — each heavily customized with detailed extraction rules, relevance guidance, and error handling.
 - **OM-recall coupling** — when expanding session entries via `recall`, related observations and reflections are automatically shown.
 - **Thinking level support** — per-model `thinking` field for reasoning effort control, including `max` where supported by the provider.
+
+## Reflection evidence time
+
+Reflection lines show their latest supporting observation timestamp by default
+(`reflectionTimestamps: true`). Legacy reflections remain unchanged. Optional
+`reflectionSupersedes: true` adds display-only `(supersedes <id>)` notes on new
+reflections; no earlier reflection is hidden or removed. Both keys add no model calls.
+Use `PI_BLACKHOLE_REFLECTION_TIMESTAMPS` and `PI_BLACKHOLE_REFLECTION_SUPERSEDES`
+for environment overrides. Export prefers reflection evidence time but omits notes.
 
 ## License
 

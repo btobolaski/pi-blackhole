@@ -995,3 +995,127 @@ describe("bounded memory and useful rebase provider simulation", () => {
     }
   });
 });
+
+describe("append reflection annotations", () => {
+  function twoCompactions() {
+    const { invoke } = createHarness({
+      memory: true,
+      reflectionTimestamps: true,
+      reflectionSupersedes: true,
+    });
+    const firstRecord = {
+      id: "aaaaaaaaaaaa",
+      content: "tests failing",
+      timestamp: "2026-10-03 10:00",
+      supportingObservationIds: ["cccccccccccc"],
+      tokenCount: 4,
+    };
+    const firstEntry = {
+      id: "r1",
+      type: "custom",
+      customType: "om.reflections.recorded",
+      data: { reflections: [firstRecord], coversUpToId: "m1" },
+    };
+    const first = invoke(
+      event([
+        msg("m1", "user", "fix tests"),
+        firstEntry,
+        msg("m2", "assistant", "working"),
+        msg("m3", "user", "keep one"),
+        msg("m4", "assistant", "tail"),
+      ]),
+    );
+    const secondRecord = {
+      id: "bbbbbbbbbbbb",
+      content: "tests pass",
+      timestamp: "2026-10-03 14:20",
+      supersedes: [firstRecord.id],
+      supportingObservationIds: ["cccccccccccc"],
+      tokenCount: 4,
+    };
+    const second = invoke(
+      event(
+        [
+          msg("m1", "user", "fix tests"),
+          firstEntry,
+          msg("m2", "assistant", "working"),
+          { id: "c1", type: "compaction", timestamp: 10, ...first.compaction },
+          msg("m3", "user", "keep one"),
+          msg("m4", "assistant", "tail"),
+          {
+            id: "r2",
+            type: "custom",
+            customType: "om.reflections.recorded",
+            data: { reflections: [secondRecord], coversUpToId: "m4" },
+          },
+          msg("m5", "user", "keep two"),
+          msg("m6", "assistant", "tail two"),
+        ],
+        first.compaction.summary,
+      ),
+    );
+    return { first, second };
+  }
+  it("keeps older reflection line byte-identical after supersession", () => {
+    const { first, second } = twoCompactions();
+    const line = (summary: string) =>
+      summary.split("\n").find((text) => text.startsWith("[aaaaaaaaaaaa]"));
+    expect({
+      before: line(first.compaction.details.trailingSummary),
+      after: line(second.compaction.details.trailingSummary),
+      newer: second.compaction.details.trailingSummary
+        .split("\n")
+        .find((text: string) => text.startsWith("[bbbbbbbbbbbb]")),
+    }).toEqual({
+      before: "[aaaaaaaaaaaa] 2026-10-03 10:00 tests failing",
+      after: "[aaaaaaaaaaaa] 2026-10-03 10:00 tests failing",
+      newer: "[bbbbbbbbbbbb] 2026-10-03 14:20 tests pass (supersedes aaaaaaaaaaaa)",
+    });
+  });
+  it("preserves original immutable segment after superseding reflection", () => {
+    const { first, second } = twoCompactions();
+    const fallback = (summary: string) => ({
+      role: "compactionSummary",
+      summary,
+      tokensBefore: 1000,
+      timestamp: 100,
+    });
+    const c1 = { id: "c1", type: "compaction", timestamp: 10, ...first.compaction };
+    const c2 = { id: "c2", type: "compaction", timestamp: 20, ...second.compaction };
+    const firstContext = projectAppendOnlyContext([fallback(first.compaction.summary)], [c1]);
+    const secondContext = projectAppendOnlyContext([fallback(second.compaction.summary)], [c1, c2]);
+    expect(secondContext[0]).toEqual(firstContext[0]);
+  });
+});
+
+describe("annotated compaction cap", () => {
+  it("prices timestamps in actual hook projection", () => {
+    const { invoke } = createHarness({
+      memory: true,
+      reflectionTimestamps: true,
+      reflectionsPoolMaxTokens: 11,
+    });
+    const records = ["aaaaaaaaaaaa", "bbbbbbbbbbbb"].map((id) => ({
+      id,
+      content: "C",
+      timestamp: "2026-10-03 14:05",
+      supportingObservationIds: ["cccccccccccc"],
+      tokenCount: 1,
+    }));
+    const result = invoke(
+      event([
+        msg("m1", "user", "source"),
+        {
+          type: "custom",
+          id: "refs",
+          customType: "om.reflections.recorded",
+          data: { reflections: records, coversUpToId: "m1" },
+        },
+        msg("m2", "assistant", "done"),
+        msg("m3", "user", "keep"),
+        msg("m4", "assistant", "tail"),
+      ]),
+    );
+    expect(result.compaction.details["om.folded"].reflections).toHaveLength(1);
+  });
+});

@@ -366,3 +366,28 @@ If any stage fails (model error, rate limit, timeout), remaining stages are skip
 - **30-second retry gate**: After any stage fails completely, `markConsolidationError()` sets a timestamp. `isConsolidationRetryGated()` returns true for 30 seconds.
 - **Per-model cooldown**: Failed models are cooled down and skipped in subsequent attempts.
 - **Stale context handling**: `agent_end` handlers catch "extension ctx is stale" errors gracefully.
+
+## Reflection timestamps and supersede notes
+
+New reflection records carry optional `timestamp` and `supersedes` fields. Timestamp
+is derived in code from the latest usable supporting observation timestamp, never from
+model output. It is stored regardless of display settings; no legacy backfill occurs.
+
+`reflectionTimestamps` defaults to `true`: lines render as `[id] YYYY-MM-DD HH:MM content`.
+The full footer says: "When entries conflict, the entry with the latest timestamp
+reflects the latest known state." Legacy records without a timestamp render as before.
+Observation timestamps remain unconditional. Export prefers a reflection's own time,
+falling back to entry time or pending observation time for legacy records.
+
+`reflectionSupersedes` defaults to `false`. When enabled, the reflector may list ids
+of earlier reflections shown in its input. Unknown, self and same-run ids are ignored.
+The new record alone stores the annotation, displayed as `(supersedes <id>[, <id>])`.
+This is display-only: fold, projections, worker input, dropper coverage, memory views,
+export and recall keep the same reflections. Export and recall omit the suffix.
+Nothing edits an earlier record or append segment. Toggling changes display at the
+next compaction only. Both keys off preserve legacy rendering, prompt and tool schema.
+No additional model calls are introduced. Rendered lines count against existing caps.
+
+The observer's normal threshold still defines session-tail coverage: messages below
+that threshold may remain unobserved at session end. This reflection feature adds no
+shutdown model call and does not make export observe missing raw messages.

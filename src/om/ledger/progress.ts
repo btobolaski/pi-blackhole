@@ -1,4 +1,5 @@
-import { estimateEntryTokens, getUsageTokens } from "../tokens.js";
+import { reflectionToSummaryLine } from "./render-summary.js";
+import { estimateEntryTokens, estimateStringTokens, getUsageTokens } from "../tokens.js";
 import type { PendingOMState } from "../pending.js";
 import { foldLedger } from "./fold.js";
 import {
@@ -372,20 +373,29 @@ export function buildExistingObservationsSummary(
 
 /**
  * Build a compact one-line summary of existing reflections for context.
- * Capped at maxTokens.
+ * Preserves legacy prefix selection, including its first-record allowance.
+ * Charges the supplied rendering, so annotations consume the same budget.
  */
+export function selectExistingReflections(
+  reflections: Reflection[],
+  maxTokens: number,
+  render = reflectionToSummaryLine,
+): Reflection[] {
+  const selected: Reflection[] = [];
+  let tokens = 0;
+  for (const ref of reflections) {
+    const lineTokens = estimateStringTokens(render(ref));
+    if (tokens + lineTokens > maxTokens && selected.length > 0) break;
+    selected.push(ref);
+    tokens += lineTokens;
+  }
+  return selected;
+}
+
 export function buildExistingReflectionsSummary(
   reflections: Reflection[],
   maxTokens: number,
+  render = reflectionToSummaryLine,
 ): string {
-  const lines: string[] = [];
-  let tokens = 0;
-  for (const ref of reflections) {
-    const line = `[${ref.id}] ${ref.content}`;
-    const lineTokens = Math.ceil(line.length / 4);
-    if (tokens + lineTokens > maxTokens && lines.length > 0) break;
-    lines.push(line);
-    tokens += lineTokens;
-  }
-  return lines.join("\n");
+  return selectExistingReflections(reflections, maxTokens, render).map(render).join("\n");
 }

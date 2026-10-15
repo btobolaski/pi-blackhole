@@ -32,3 +32,5 @@ Candidates use identical bounded current memory and kept tail. Rendered chain si
 Explicit `/blackhole` forces rebase; `/compact` does not. Overflow recovery and known capacity pressure (`appendTotal > W - reserveTokens`) choose the smaller valid candidate without the ordinary minimum saving. Diagnostics report insufficient recovery when estimated output still exceeds capacity. Estimates do not prove a future request will fit; Pi's overflow retry/error control remains active.
 
 Observation output defaults to 20,000 rendered-line tokens; reflection output (`reflectionsPoolMaxTokens`) defaults to 8,000. Whole records only, including IDs and newline separators. Headings, recall note and footer add separate trailing cost. Compact-all retains eligible bounded memory. Omitted source records remain recallable; worker reflection prompts stay unchanged. Cadence, summary model calls and persistent details schema are unchanged.
+
+Reflection timestamps and optional supersede notes live only in the current trailing OM message; immutable VCC segments remain byte-identical. An annotation is stored only on the new reflection and never hides an earlier reflection.

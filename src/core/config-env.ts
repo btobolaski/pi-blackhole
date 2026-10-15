@@ -113,6 +113,8 @@ export const DECLARATIVE_ENV_OVERRIDES: Record<string, EnvOverride> = {
   debug: "PI_BLACKHOLE_DEBUG",
   debugLog: "PI_BLACKHOLE_DEBUG_LOG",
   sessionFallback: "PI_BLACKHOLE_SESSION_FALLBACK",
+  reflectionTimestamps: "PI_BLACKHOLE_REFLECTION_TIMESTAMPS",
+  reflectionSupersedes: "PI_BLACKHOLE_REFLECTION_SUPERSEDES",
   fullFoldAlways: "PI_BLACKHOLE_FULL_FOLD_ALWAYS",
   showPreCompactionMessage: "PI_BLACKHOLE_SHOW_PRE_COMPACTION_MESSAGE",
   statusBar: "PI_BLACKHOLE_STATUSBAR",

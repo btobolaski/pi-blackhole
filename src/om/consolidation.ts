@@ -58,7 +58,6 @@ import {
   OM_OBSERVATIONS_UNANCHORED,
   OM_REFLECTIONS_RECORDED,
   buildExistingObservationsSummary,
-  buildExistingReflectionsSummary,
   buildObservationsDroppedData,
   buildObservationsRecordedData,
   buildObservationsUnanchoredData,
@@ -79,7 +78,9 @@ import {
   rawTokensSinceDropCoverage,
   rawTokensSinceObservationCoverage,
   rawTokensSinceReflectionCoverage,
-  reflectionToSummaryLine,
+  makeReflectionRenderer,
+  renderOptionsFromConfig,
+  selectExistingReflections,
   reflectionsCreatedAfterIndex,
   selectPriorObservations,
   selectPriorReflections,
@@ -1011,6 +1012,7 @@ export async function runObserverStage(
   // the cap bug in a running install.
   let capTokens = chunkEntries.reduce((s: number, e) => s + estimateEntryTokens(e), 0);
 
+  const renderReflection = makeReflectionRenderer(renderOptionsFromConfig(runtime.config));
   const memory = fullProjection(entries);
 
   // The preamble is capped via observerPreambleMaxTokens so accumulated
@@ -1023,9 +1025,11 @@ export async function runObserverStage(
     runtime.config.observerPreambleMaxTokens > 0
       ? runtime.config.observerPreambleMaxTokens
       : Math.round(runtime.config.observerChunkMaxTokens * 0.3);
-  let priorReflections = selectPriorReflections(memory.reflections, preambleMaxTokens).map(
-    reflectionToSummaryLine,
-  );
+  let priorReflections = selectPriorReflections(
+    memory.reflections,
+    preambleMaxTokens,
+    renderReflection,
+  ).map(renderReflection);
   let priorObservations = selectPriorObservations(memory.observations, preambleMaxTokens).map(
     observationToSummaryLine,
   );
@@ -1042,9 +1046,11 @@ export async function runObserverStage(
     );
 
     const allReflections = [...memory.reflections, ...accumulatedReflections];
-    priorReflections = selectPriorReflections(allReflections, preambleMaxTokens).map(
-      reflectionToSummaryLine,
-    );
+    priorReflections = selectPriorReflections(
+      allReflections,
+      preambleMaxTokens,
+      renderReflection,
+    ).map(renderReflection);
   }
 
   // Attempt-invariant prompt overhead, measured once: the rendered preamble
@@ -1742,6 +1748,7 @@ function computeReflectorInput(
   sessionId: string,
   reflectionTokens: number,
 ) {
+  const renderReflection = makeReflectionRenderer(renderOptionsFromConfig(runtime.config));
   const folded = foldLedger(entries);
   const pending = isManualMode(runtime.config) ? readPendingState(sessionId) : undefined;
   const lastReflectionIdx = pending ? -1 : latestCoverageIndex(entries, OM_REFLECTIONS_RECORDED);
@@ -1757,10 +1764,7 @@ function computeReflectorInput(
       (s: number, o: any) => s + estimateStringTokens(observationToSummaryLine(o)),
       0,
     ) +
-    newReflections.reduce(
-      (s: number, r: any) => s + estimateStringTokens(reflectionToSummaryLine(r)),
-      0,
-    );
+    newReflections.reduce((s: number, r: any) => s + estimateStringTokens(renderReflection(r)), 0);
   const summaryBudget = Math.floor(runtime.config.reflectorInputMaxTokens * 0.15) * 2;
   const reflectorInputTokens = Math.min(
     newItemsTokens + summaryBudget,
@@ -1788,10 +1792,13 @@ function computeReflectorInput(
   const sourceObservations = pending
     ? [...folded.activeObservations, ...pendingBufferedObservations(pending)]
     : folded.activeObservations;
-  const existingReflectionsSummary = buildExistingReflectionsSummary(
+  const shownReflections = selectExistingReflections(
     sourceReflections,
     Math.floor(runtime.config.reflectorInputMaxTokens * 0.15),
+    renderReflection,
   );
+  // Already prefix-selected above; render without re-running the cap.
+  const existingReflectionsSummary = shownReflections.map(renderReflection).join("\n");
   const existingObservationsSummary = buildExistingObservationsSummary(
     sourceObservations.filter((o: any) => !newObservations.some((no: any) => no.id === o.id)),
     Math.floor(runtime.config.reflectorInputMaxTokens * 0.15),
@@ -1808,6 +1815,7 @@ function computeReflectorInput(
     reflectorInputTokens,
     effectiveReflectionTokens,
     existingReflectionsSummary,
+    supersedableReflectionIds: shownReflections.map((r) => r.id),
     existingObservationsSummary,
     summaryTokens,
   };
@@ -1888,7 +1896,11 @@ export async function runReflectorStage(
   // Snapshot the run input once: entries are fixed for this invocation, and
   // both the attempt loop and the shrink-to-fit batch pass share it.
   const input = computeReflectorInput(runtime, entries, sessionId, reflectionTokens);
-  const reflectorStaticTokens = workerStaticPromptTokens("reflector");
+  // Keep schema, system prompt and renderer tied to the budgeted snapshot even
+  // if settings change while model resolution or a prior batch is awaited.
+  const renderOptions = renderOptionsFromConfig(runtime.config);
+  const renderReflection = makeReflectionRenderer(renderOptions);
+  const reflectorStaticTokens = workerStaticPromptTokens("reflector", renderOptions);
 
   // Shared commit tail: normal and batched runs both advance the cursor at
   // most once, after all work for this invocation is done.
@@ -1966,7 +1978,7 @@ export async function runReflectorStage(
     // per-batch overhead alongside the summaries (mirroring the normal-path
     // fit-check, which prices them inside newItemsTokens).
     const newReflectionsTokens = input.newReflections.reduce(
-      (s: number, r: any) => s + estimateStringTokens(reflectionToSummaryLine(r)),
+      (s: number, r: any) => s + estimateStringTokens(renderReflection(r)),
       0,
     );
     const batchFixedOverhead =
@@ -2090,6 +2102,10 @@ export async function runReflectorStage(
           generation.signal,
           (signal) =>
             runReflector({
+              renderReflection,
+              timestampsEnabled: renderOptions.timestamps,
+              supersedesEnabled: renderOptions.supersedes,
+              supersedableReflectionIds: input.supersedableReflectionIds,
               model: bestModel,
               apiKey: best.resolved.apiKey,
               headers: withProviderAttributionHeaders(bestModel, best.resolved.headers, sessionId),
@@ -2238,6 +2254,10 @@ export async function runReflectorStage(
         generation.signal,
         (signal) =>
           runReflector({
+            renderReflection,
+            timestampsEnabled: renderOptions.timestamps,
+            supersedesEnabled: renderOptions.supersedes,
+            supersedableReflectionIds: input.supersedableReflectionIds,
             model: resolved.model as any,
             apiKey: resolved.apiKey,
             headers: withProviderAttributionHeaders(
@@ -2539,13 +2559,14 @@ export async function runDropperStage(
     pressureRun,
     pressurePending,
   );
+  const renderReflection = makeReflectionRenderer(renderOptionsFromConfig(runtime.config));
   const dropperStaticTokens = workerStaticPromptTokens("dropper");
   // Reflections travel whole in every prompt (normal and batched), so they
   // ride in the estimated input alongside the candidates — mirroring the
   // reflector's newItemsTokens, which prices both. All terms price the
   // dispatched rendering with the same CJK-aware estimator as the static side.
   const dropperReflectionsTokens = input.reflectionsForDropper.reduce(
-    (s: number, r: any) => s + estimateStringTokens(reflectionToSummaryLine(r)),
+    (s: number, r: any) => s + estimateStringTokens(renderReflection(r)),
     0,
   );
 
@@ -2745,6 +2766,7 @@ export async function runDropperStage(
           generation.signal,
           (signal) =>
             runDropper({
+              renderReflection,
               model: bestModel,
               apiKey: best.resolved.apiKey,
               headers: withProviderAttributionHeaders(bestModel, best.resolved.headers, sessionId),
@@ -2897,6 +2919,7 @@ export async function runDropperStage(
         generation.signal,
         (signal) =>
           runDropper({
+            renderReflection,
             model: resolved.model as any,
             apiKey: resolved.apiKey,
             headers: withProviderAttributionHeaders(

@@ -20,7 +20,11 @@ import {
 import { buildAppendOnlyDetails, coverageForMessages } from "../core/compaction-chain.js";
 import { getModelProvider, matchesSkippedProvider } from "../core/provider-skip.js";
 import type { PiVccCompactionDetails } from "../details";
-import { buildCompactionProjection, renderSummary } from "../om/ledger/index.js";
+import {
+  buildCompactionProjection,
+  renderSummary,
+  renderOptionsFromConfig,
+} from "../om/ledger/index.js";
 import type { Runtime } from "../om/runtime.js";
 import { debugLog } from "../om/debug-log.js";
 import { effectiveContextWindow } from "../om/model-budget.js";
@@ -716,8 +720,14 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI, omRuntime: Runtime) 
         reflectionsPoolMaxTokens:
           omRuntime.config.reflectionsPoolMaxTokens ?? DEFAULTS.reflectionsPoolMaxTokens,
         fullFoldAlways: omRuntime.config.fullFoldAlways,
+        reflectionTimestamps: omRuntime.config.reflectionTimestamps,
+        reflectionSupersedes: omRuntime.config.reflectionSupersedes,
       });
-      omContent = renderSummary(projection.reflections, projection.observations);
+      omContent = renderSummary(
+        projection.reflections,
+        projection.observations,
+        renderOptionsFromConfig(omRuntime.config),
+      );
       omDetails = projection.details;
       omHasContent = projection.reflections.length > 0 || projection.observations.length > 0;
     } else {

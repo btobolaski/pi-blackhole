@@ -2,7 +2,7 @@
  * Observational memory ledger types — validated Entry, Observation, Reflection.
  *
  * Upstream: https://github.com/elpapi42/pi-observational-memory (src/session-ledger/types.ts)
- * Unmodified.
+ * Modified: optional evidence timestamps and display-only supersede annotations.
  */
 export const OM_OBSERVATIONS_RECORDED = "om.observations.recorded";
 export const OM_OBSERVATIONS_UNANCHORED = "om.observations.unanchored";
@@ -39,6 +39,8 @@ export type Observation = {
 };
 
 export type Reflection = {
+  timestamp?: string;
+  supersedes?: string[];
   id: string;
   content: string;
   supportingObservationIds: string[];

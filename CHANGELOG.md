@@ -1,5 +1,15 @@
 ## [Unreleased]
 
+### Added
+
+- **Reflection timestamps.** New reflections store evidence time from their latest supporting observation. `reflectionTimestamps` (default `true`, env `PI_BLACKHOLE_REFLECTION_TIMESTAMPS`) displays it in compacted memory, worker prompts and `/blackhole-memory`; export prefers that time. Legacy records remain unchanged.
+- **Display-only supersede notes.** `reflectionSupersedes` (default `false`, env `PI_BLACKHOLE_REFLECTION_SUPERSEDES`) lets new reflections annotate earlier shown ids with `(supersedes <id>)`. No reflection is hidden, removed or rewritten; append segments remain unchanged. Both reflection keys off preserve legacy rendering, reflector prompt and schema. No new model calls.
+
+### Fixed
+
+- **Reflection metadata validation.** Ignore impossible evidence dates and malformed supersede ids; reflection export falls back to legacy dates without changing observation parsing.
+- **Reflection prompt budget consistency.** Snapshot annotation settings for each reflector stage so settings reloads cannot change its dispatched prompt/schema after budget measurement.
+
 ---
 
 ## [0.5.13] - 2026-10-13

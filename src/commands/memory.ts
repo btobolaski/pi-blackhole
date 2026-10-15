@@ -28,6 +28,8 @@ import {
   rawTokensSinceObservationCoverage,
   rawTokensSinceReflectionCoverage,
   reflectionToSummaryLine,
+  makeReflectionRenderer,
+  renderOptionsFromConfig,
   visibleProjection,
   type Entry,
   type Projection,
@@ -111,10 +113,11 @@ function renderList<T>(items: T[], render: (item: T) => string, empty: string): 
 function renderContentOnlyProjection(
   projection: Projection,
   emptyScope: "visible" | "recorded",
+  renderReflection = reflectionToSummaryLine,
 ): string {
   return [
     "── Reflections ──",
-    renderList(projection.reflections, reflectionToSummaryLine, `No ${emptyScope} reflections.`),
+    renderList(projection.reflections, renderReflection, `No ${emptyScope} reflections.`),
     "",
     "── Observations ──",
     renderList(projection.observations, observationToSummaryLine, `No ${emptyScope} observations.`),
@@ -134,7 +137,11 @@ export function registerMemoryCommand(pi: ExtensionAPI, runtime: Runtime): void 
       // /blackhole-memory full — show full recorded memory + copy to clipboard
       if (mode === "full") {
         const projection = fullProjection(entries);
-        const output = renderContentOnlyProjection(projection, "recorded");
+        const output = renderContentOnlyProjection(
+          projection,
+          "recorded",
+          makeReflectionRenderer(renderOptionsFromConfig(runtime.config)),
+        );
         const copied = await copyTextToClipboard(output).catch(() => false);
         ctx.ui.notify(
           copied
@@ -148,7 +155,11 @@ export function registerMemoryCommand(pi: ExtensionAPI, runtime: Runtime): void 
       // /blackhole-memory view — show visible memory + copy to clipboard
       if (mode === "view") {
         const projection = visibleProjection(entries);
-        const output = renderContentOnlyProjection(projection, "visible");
+        const output = renderContentOnlyProjection(
+          projection,
+          "visible",
+          makeReflectionRenderer(renderOptionsFromConfig(runtime.config)),
+        );
         const copied = await copyTextToClipboard(output).catch(() => false);
         ctx.ui.notify(
           copied
