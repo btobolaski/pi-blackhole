@@ -377,6 +377,13 @@ export const config = new ConfigManager<UnifiedConfig>({
       step: 1000,
     },
     {
+      key: "observeOnShutdown",
+      type: "boolean",
+      label: "Observe on shutdown",
+      description: "Observe unprocessed session tail once before exit (up to 20 seconds)",
+      value: cfg.observeOnShutdown,
+    },
+    {
       key: "fullFoldAlways",
       type: "boolean",
       label: "Preserve OM on first compaction",

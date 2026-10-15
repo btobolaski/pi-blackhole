@@ -7,6 +7,7 @@
  * - All errors record cooldown (so the failed model is skipped next iteration).
  * - 30s retry gate prevents repeated failed runs (isConsolidationRetryGated).
  */
+import { observeTailOnShutdown } from "./shutdown-observe.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { matchesSkippedProvider } from "../core/provider-skip.js";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
@@ -119,7 +120,11 @@ export type ConsolidationCtx = {
   };
   model: unknown;
   modelRegistry: any;
-  sessionManager: { getBranch: () => unknown; getSessionId: () => string };
+  sessionManager: {
+    getBranch: () => unknown;
+    getSessionId: () => string;
+    isPersisted?: () => boolean;
+  };
 };
 
 type StageOutcome = "continue" | "abort";
@@ -591,9 +596,7 @@ export function registerConsolidationTrigger(pi: ExtensionAPI, runtime: Runtime)
   pi.on("session_start", (_event, ctx) => {
     runtime.startSession(currentSessionIdentity(ctx as ConsolidationCtx));
   });
-  pi.on("session_shutdown", () => {
-    runtime.dispose();
-  });
+  pi.on("session_shutdown", (event, ctx) => observeTailOnShutdown(pi, runtime, ctx, event.reason));
   const launch = (_event: unknown, ctx: ConsolidationCtx) => {
     maybeLaunchConsolidation(pi, runtime, ctx);
   };
@@ -913,7 +916,10 @@ export async function runObserverStage(
   resolveModel: (stage: "observer") => Promise<ResolvedModel | undefined>,
   drain = false,
   drainRemaining: number = OBSERVER_DRAIN_MAX_BATCHES,
+  options?: { dueAfterTokens: number; maxAttempts: number; maxTurns: number; signal: AbortSignal },
 ): Promise<StageOutcome> {
+  if (options)
+    generation = { ...generation, signal: AbortSignal.any([generation.signal, options.signal]) };
   if (!runtime.isGenerationActive(generation)) return "abort";
   let entries: Entry[];
   let sessionId: string;
@@ -955,7 +961,7 @@ export async function runObserverStage(
   // already fired, and the remainder of its backlog is often below the
   // threshold. Holding it back until more content arrives would re-cap the
   // same backlog instead of finishing what the first batch started.
-  if (tokens < runtime.config.observeAfterTokens && !drain) {
+  if (tokens < (options?.dueAfterTokens ?? runtime.config.observeAfterTokens) && !drain) {
     // Not due. Keep the anchor at the measured coverage point rather than the
     // newest entry: below-threshold content is still unobserved, so moving the
     // cursor past it would drop it permanently instead of letting it accumulate.
@@ -999,7 +1005,7 @@ export async function runObserverStage(
   // over entries never sent.
   const lastSourceEntryId = entries.filter(isSourceEntry).at(-1)?.id;
   const continueSources = (): StageOutcome | Promise<StageOutcome> => {
-    if (drainRemaining <= 0) return "continue";
+    if (options || drainRemaining <= 0) return "continue";
     if (!coversUpToId || coversUpToId === lastSourceEntryId) return "continue";
     return runObserverStage(pi, runtime, ctx, generation, resolveModel, true, drainRemaining - 1);
   };
@@ -1237,7 +1243,7 @@ export async function runObserverStage(
   };
   let attempt = 0;
   let sizeSkips = 0;
-  while (attempt < MAX_STAGE_ATTEMPTS) {
+  while (attempt < (options?.maxAttempts ?? MAX_STAGE_ATTEMPTS)) {
     const resolved = await resolveModel("observer");
     if (!runtime.isGenerationActive(generation)) return "abort";
     if (!resolved) {
@@ -1318,6 +1324,7 @@ export async function runObserverStage(
         ctx.ui,
         `Observational memory: observer skipping ${(resolved.model as any).provider}/${(resolved.model as any).id} (context window ${effectiveObsCtx.toLocaleString()} too small for ~${observerEstimatedInput.toLocaleString()}-token input)`,
       );
+      if (options) return "abort";
       sizeSkips += 1;
       if (sizeSkips > MAX_SIZE_SKIP_CONTINUATIONS) {
         // Skip budget spent: every candidate refused the full chunk. Settle
@@ -1356,7 +1363,7 @@ export async function runObserverStage(
             chunk,
             allowedSourceEntryIds: sourceEntryIds,
             sourceEntryTimestamps,
-            maxTurns: runtime.config.agentMaxTurns,
+            maxTurns: options?.maxTurns ?? runtime.config.agentMaxTurns,
             thinkingLevel: stageThinkingLevel(runtime, "observer", stageModelForThinking),
             providerIdleTimeoutMs: runtime.config.providerIdleTimeoutMs,
             signal,
@@ -1367,9 +1374,17 @@ export async function runObserverStage(
       );
       if (!runtime.isGenerationActive(generation)) return "abort";
 
+      // Pending-file writes do not touch the host. Validate its context first
+      // so an SDK host disposing early cannot accept a late shutdown batch.
+      if (options && ctx.sessionManager.getSessionId() !== sessionId) return "abort";
+
       // The run closed the chunk and then a later turn failed (a host that
       // ignores `terminate`). Shared with the reflector stage: same framing,
       // same cooldown, same toast shape.
+      if (options && result.errorAfterClose) {
+        debugLog("observer.shutdown_error", { error: result.errorAfterClose });
+        return "abort";
+      }
       if (result.errorAfterClose) {
         handleWorkerErrorAfterClose({
           runtime,
@@ -1585,6 +1600,10 @@ export async function runObserverStage(
       // point, so the rest of the backlog can drain in this same run.
       return continueSources();
     } catch (error) {
+      if (options) {
+        debugLog("observer.shutdown_error", { error: String(error) });
+        return "abort";
+      }
       if (!runtime.isGenerationActive(generation)) return "abort";
       if (isStaleExtensionContextError(error)) {
         debugLog("observer.stale_ctx", { error: String(error) });

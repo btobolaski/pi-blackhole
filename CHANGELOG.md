@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+### Added
+
+- Opt-in `observeOnShutdown` (`PI_BLACKHOLE_OBSERVE_ON_SHUTDOWN`, default `false`): persisted sessions can observe their unprocessed tail before quit, new, resume or fork. One observer request at most, a shared 20-second deadline, and a 200-token minimum. Reload and non-persisted sessions are skipped; no reflector or dropper runs.
+
 ---
 
 ## [0.5.13] - 2026-10-13

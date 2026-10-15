@@ -204,6 +204,7 @@ export interface UnifiedConfig {
   reflectionsPoolMaxTokens: number;
   /** Treat every compaction as a full-fold boundary so early reflections/drops
    *  survive the first compaction in a fresh session. Default true. */
+  observeOnShutdown: boolean;
   fullFoldAlways: boolean;
   /** Target token budget for the observation pool (dropper aims here).
    *  Optional; defaults to half of observationsPoolMaxTokens when unset.
@@ -321,6 +322,7 @@ export const DEFAULTS: UnifiedConfig = {
   compactAfterPreset: "default",
   observationsPoolMaxTokens: 20_000,
   reflectionsPoolMaxTokens: 8_000,
+  observeOnShutdown: false,
   fullFoldAlways: true,
   observationsPoolTargetTokens: 10_000,
   reflectorInputMaxTokens: 80_000,
@@ -619,6 +621,7 @@ function parseConfig(raw: Record<string, unknown>): Partial<UnifiedConfig> {
   if (typeof raw.noAutoCompact === "boolean") c.noAutoCompact = raw.noAutoCompact;
   if (typeof raw.passive === "boolean") c.passive = raw.passive;
   if (typeof raw.memory === "boolean") c.memory = raw.memory;
+  if (typeof raw.observeOnShutdown === "boolean") c.observeOnShutdown = raw.observeOnShutdown;
   if (typeof raw.fullFoldAlways === "boolean") c.fullFoldAlways = raw.fullFoldAlways;
   if (typeof raw.debugLog === "boolean") c.debugLog = raw.debugLog;
   if (typeof raw.statusBar === "boolean") c.statusBar = raw.statusBar;

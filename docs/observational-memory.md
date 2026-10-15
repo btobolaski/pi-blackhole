@@ -366,3 +366,11 @@ If any stage fails (model error, rate limit, timeout), remaining stages are skip
 - **30-second retry gate**: After any stage fails completely, `markConsolidationError()` sets a timestamp. `isConsolidationRetryGated()` returns true for 30 seconds.
 - **Per-model cooldown**: Failed models are cooled down and skipped in subsequent attempts.
 - **Stale context handling**: `agent_end` handlers catch "extension ctx is stale" errors gracefully.
+
+## Session shutdown observation
+
+`observeOnShutdown` is opt-in (default `false`, env `PI_BLACKHOLE_OBSERVE_ON_SHUTDOWN`). On quit, new, resume or fork of a persisted session, it waits for in-flight consolidation then makes at most one observer request for an unobserved tail of at least 200 raw tokens. The shared deadline is 20 seconds, including the wait, and the observer gets one turn. No request retry, reflector, dropper or multi-chunk drain runs. The normal observer resolver supplies the model; observations and cursors use normal branch or manual-mode pending storage. Errors and timeout are debug-logged, and disposal always runs.
+
+Reload, non-persisted sessions, memory-off, skipped providers, legacy passive mode and retry gates skip this work. Forced termination and SDK hosts calling `AgentSession.dispose()` without emitting shutdown are not covered. Persisted child CLI sessions can incur the same exit delay. A capped chunk or partial checkpoint may leave a remainder. Export/project recall can use recorded tail observations, subject to their viability filters. With the setting off, a below-threshold tail remains raw history: `recall` and resumed observation can still see it, but export and project recall cannot until it is observed.
+
+Host limit: the locally inspected `pi-subagents` SDK host emits child shutdown events but disposes after a 3-second host deadline. Its persisted children therefore have no guarantee of completing this 20-second flush; in-memory children are skipped.
