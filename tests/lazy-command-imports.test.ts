@@ -51,6 +51,10 @@ beforeEach(() => {
       buildProjectMemoryCorpusAsync: vi.fn(async () => ({
         projectRoot: "/project",
         sessionsConsidered: 0,
+        sessionsDiscovered: 0,
+        sessionsSkippedByWindow: 0,
+        entriesOutsideWindow: 0,
+        entriesWithoutTimestamp: 0,
         observations: [],
         reflections: [],
         droppedIds: new Set(),
