@@ -202,6 +202,8 @@ export interface UnifiedConfig {
    *  keep). Reflections otherwise accumulate without bound across compactions.
    *  0 disables the cap. Default 8000. */
   reflectionsPoolMaxTokens: number;
+  /** Observe an eligible session tail once before shutdown. Default false. */
+  observeOnShutdown: boolean;
   /** Treat every compaction as a full-fold boundary so early reflections/drops
    *  survive the first compaction in a fresh session. Default true. */
   fullFoldAlways: boolean;
@@ -323,6 +325,7 @@ export const DEFAULTS: UnifiedConfig = {
   compactAfterPreset: "default",
   observationsPoolMaxTokens: 20_000,
   reflectionsPoolMaxTokens: 8_000,
+  observeOnShutdown: false,
   fullFoldAlways: true,
   reflectionTimestamps: true,
   reflectionSupersedes: false,
@@ -627,6 +630,7 @@ function parseConfig(raw: Record<string, unknown>): Partial<UnifiedConfig> {
     c.reflectionTimestamps = raw.reflectionTimestamps;
   if (typeof raw.reflectionSupersedes === "boolean")
     c.reflectionSupersedes = raw.reflectionSupersedes;
+  if (typeof raw.observeOnShutdown === "boolean") c.observeOnShutdown = raw.observeOnShutdown;
   if (typeof raw.fullFoldAlways === "boolean") c.fullFoldAlways = raw.fullFoldAlways;
   if (typeof raw.debugLog === "boolean") c.debugLog = raw.debugLog;
   if (typeof raw.statusBar === "boolean") c.statusBar = raw.statusBar;

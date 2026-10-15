@@ -48,6 +48,7 @@ The config file must contain **valid JSON**. A trailing comma, partial write, or
   "sessionFallback": true,        // Fall back to session model when OM models fail
   "reflectionTimestamps": true,  // Show reflection evidence time
   "reflectionSupersedes": false, // Display-only replacement notes
+  "observeOnShutdown": false,    // One bounded observer attempt before session exit
   "fullFoldAlways": true,         // Treat first compaction as full-fold boundary
   "statusBar": true,              // Footer token gauges (O/P/X) + worker events
   "showWorkerNotifications": true, // Routine observer/reflector/dropper progress toasts
@@ -412,6 +413,14 @@ recall. Only the new reflection stores the annotation. Export and recall do not 
 the suffix. With both reflection keys off, rendering, reflector prompt and tool schema
 match the legacy output. Toggle changes affect the next compaction, not stored segments.
 
+### `observeOnShutdown`
+
+Default: `false`. Env: `PI_BLACKHOLE_OBSERVE_ON_SHUTDOWN`.
+
+When enabled, persisted sessions get at most one observer request on quit, new, resume or fork. The unobserved tail must contain at least 200 raw tokens. A shared 20-second deadline covers waiting for in-flight consolidation and the observer request (`maxTurns: 1`). These bounds are code constants, not settings. The first model returned by normal observer resolution is used; request errors do not trigger a fallback or retry. No new reflector or dropper is launched. Reload, memory-off, skipped providers, legacy passive mode and retry-gated sessions are skipped. Cursors and observations use normal branch or manual-mode pending persistence. If the host session is closed before the flush completes, nothing is written for it (no observation, pending batch or cursor): the tail stays unobserved until a later session observes it. Shutdown always disposes the runtime, including on error or timeout.
+
+Exit can be delayed up to 20 seconds. Forced termination, direct SDK disposal without a shutdown event and non-persisted sessions are not covered. A large tail is limited to one normal observer chunk; turn-cap checkpoints may cover only its cited prefix. This is best-effort, not a guarantee that the whole tail appears in export (export viability filters still apply).
+
 ### `fullFoldAlways`
 
 Treat every compaction as a full-fold boundary so early reflections/drops survive the first compaction in a fresh session.
@@ -701,6 +710,7 @@ Boolean fields:
 | `PI_BLACKHOLE_SESSION_FALLBACK` | `sessionFallback` |
 | `PI_BLACKHOLE_REFLECTION_TIMESTAMPS` | `reflectionTimestamps` |
 | `PI_BLACKHOLE_REFLECTION_SUPERSEDES` | `reflectionSupersedes` |
+| `PI_BLACKHOLE_OBSERVE_ON_SHUTDOWN` | `observeOnShutdown` |
 | `PI_BLACKHOLE_FULL_FOLD_ALWAYS` | `fullFoldAlways` |
 | `PI_BLACKHOLE_STATUSBAR` | `statusBar` |
 | `PI_BLACKHOLE_SHOW_WORKER_NOTIFICATIONS` | `showWorkerNotifications` |
