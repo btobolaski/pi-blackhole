@@ -202,9 +202,10 @@ export interface UnifiedConfig {
    *  keep). Reflections otherwise accumulate without bound across compactions.
    *  0 disables the cap. Default 8000. */
   reflectionsPoolMaxTokens: number;
+  /** Observe an eligible session tail once before shutdown. Default false. */
+  observeOnShutdown: boolean;
   /** Treat every compaction as a full-fold boundary so early reflections/drops
    *  survive the first compaction in a fresh session. Default true. */
-  observeOnShutdown: boolean;
   fullFoldAlways: boolean;
   /** Target token budget for the observation pool (dropper aims here).
    *  Optional; defaults to half of observationsPoolMaxTokens when unset.

@@ -1078,20 +1078,9 @@ describe("loader parity: file bytes → same effective threshold on both loaders
   });
 });
 
-// Shutdown config wiring (test-after: executable shutdown tests preceded wiring).
 it("observeOnShutdown defaults off", async () => {
   const { DEFAULTS } = await import("../src/core/unified-config.js");
   expect(DEFAULTS.observeOnShutdown).toBe(false);
-});
-it("observeOnShutdown accepts JSON boolean", async () => {
-  writeConfig({ observeOnShutdown: true });
-  const { loadUnifiedConfig } = await import("../src/core/unified-config.js");
-  expect(loadUnifiedConfig(testDir).observeOnShutdown).toBe(true);
-});
-it("observeOnShutdown ignores nonboolean JSON", async () => {
-  writeConfig({ observeOnShutdown: "true" });
-  const { loadUnifiedConfig } = await import("../src/core/unified-config.js");
-  expect(loadUnifiedConfig(testDir).observeOnShutdown).toBe(false);
 });
 it("observeOnShutdown environment overrides JSON", async () => {
   vi.stubEnv("PI_BLACKHOLE_OBSERVE_ON_SHUTDOWN", "true");

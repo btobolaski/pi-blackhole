@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Runtime } from "../src/om/runtime.js";
@@ -9,6 +9,7 @@ import type { runObserver } from "../src/om/agents/observer/agent.js";
 import { createExtensionApiDouble } from "./fixtures/pi-extension-api.js";
 import { observation, rawMessage } from "./fixtures/session.js";
 import { readPendingState } from "../src/om/pending.js";
+import { flushDebugLog, DEBUG_LOG_RELATIVE_PATH } from "../src/om/debug-log.js";
 const scratch = vi.hoisted(() => ({ dir: "" }));
 vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@earendil-works/pi-coding-agent")>()),
@@ -18,6 +19,8 @@ const observer = vi.hoisted(() => vi.fn<typeof runObserver>());
 vi.mock("../src/om/agents/observer/agent.js", () => ({ runObserver: observer }));
 let runtime: Runtime;
 let ctx: ConsolidationCtx;
+// Deferred work released in afterEach, so a failed assertion cannot leave it pending.
+const releases: Array<() => void> = [];
 const appended = vi.fn();
 const pi = createExtensionApiDouble({ appendEntry: appended });
 beforeEach(() => {
@@ -41,204 +44,182 @@ beforeEach(() => {
       isPersisted: () => true,
     },
   };
-  observer.mockResolvedValue({
-    observations: [observation("aaaaaaaaaaaa", "Final fact", { sourceEntryIds: ["tail"] })],
-  });
+  observer.mockResolvedValue(result());
   vi.spyOn(runtime, "dispose");
 });
-afterEach(() => {
+afterEach(async () => {
+  for (const release of releases.splice(0)) release();
+  vi.useRealTimers();
+  await new Promise((resolve) => setTimeout(resolve, 0));
   runtime.dispose();
+  flushDebugLog();
   vi.restoreAllMocks();
-  vi.clearAllMocks();
+  vi.resetAllMocks();
   vi.useRealTimers();
   rmSync(scratch.dir, { recursive: true, force: true });
 });
 const run = () => observeTailOnShutdown(pi, runtime, ctx, "quit");
-test("off disposes without observer", async () => {
-  runtime.config.observeOnShutdown = false;
-  await run();
-  expect(observer).not.toHaveBeenCalled();
-  expect(runtime.dispose).toHaveBeenCalled();
+const result = () => ({
+  observations: [observation("aaaaaaaaaaaa", { content: "Fact", sourceEntryIds: ["tail"] })],
 });
-test("eligible calls once with one turn", async () => {
-  await run();
-  expect(observer).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ maxTurns: 1 }));
-});
-test("records coverage at tail", async () => {
-  await run();
-  expect(appended).toHaveBeenCalledWith(
-    "om.observations.recorded",
-    expect.objectContaining({ coversUpToId: "tail" }),
-  );
-});
-test("saves recorded cursor", async () => {
-  await run();
-  expect(readPendingState("shutdown-test").cursors?.observer).toEqual({
-    entryId: "tail",
-    state: "recorded",
-  });
-});
-test("short tail skipped", async () => {
-  ctx.sessionManager.getBranch = () => [rawMessage("tail", "short")];
-  await run();
-  expect(observer).not.toHaveBeenCalled();
-});
-test("covered tail skipped", async () => {
-  runtime.advanceCursor("observer", "tail", "recorded");
-  await run();
-  expect(observer).not.toHaveBeenCalled();
-});
-test("empty branch skipped", async () => {
-  ctx.sessionManager.getBranch = () => [];
-  await run();
-  expect(observer).not.toHaveBeenCalled();
-});
-test("reload skipped", async () => {
-  await observeTailOnShutdown(pi, runtime, ctx, "reload");
-  expect(observer).not.toHaveBeenCalled();
-});
-test("non persisted skipped", async () => {
-  ctx.sessionManager.isPersisted = () => false;
-  await run();
-  expect(observer).not.toHaveBeenCalled();
-});
-test("memory off skipped", async () => {
-  runtime.config.memory = false;
-  await run();
-  expect(observer).not.toHaveBeenCalled();
-});
-test("legacy passive skipped", async () => {
-  runtime.config.passive = true;
-  runtime.config.compaction = undefined;
-  runtime.config.compactionEngine = undefined;
-  await run();
-  expect(observer).not.toHaveBeenCalled();
-});
-test("retry gated skipped", async () => {
-  vi.spyOn(runtime, "isConsolidationRetryGated").mockReturnValue(true);
-  await run();
-  expect(observer).not.toHaveBeenCalled();
-});
-test("observer error disposes without fallback", async () => {
-  observer.mockRejectedValue(new Error("observer failed"));
-  await run();
-  expect(observer).toHaveBeenCalledTimes(1);
-  expect(appended).not.toHaveBeenCalled();
-  expect(runtime.dispose).toHaveBeenCalled();
-});
-test("deadline aborts observer and disposes", async () => {
-  vi.useFakeTimers();
-  observer.mockImplementation(() => new Promise(() => {}));
-  const work = run();
-  await vi.advanceTimersByTimeAsync(20000);
-  await work;
-  expect(observer.mock.calls[0]?.[0].signal?.aborted).toBe(true);
-  expect(runtime.dispose).toHaveBeenCalled();
-  expect(appended).not.toHaveBeenCalled();
-});
-test("awaits inflight coverage before checking tail", async () => {
-  let complete: () => void = () => {};
-  runtime.consolidationPromise = new Promise<void>((resolve) => {
-    complete = () => {
-      runtime.advanceCursor("observer", "tail", "recorded");
-      resolve();
-    };
-  });
-  const work = run();
-  expect(runtime.dispose).not.toHaveBeenCalled();
-  complete();
-  await work;
-  expect(observer).not.toHaveBeenCalled();
-});
-test("inflight consumes shared deadline", async () => {
-  vi.useFakeTimers();
-  runtime.consolidationPromise = new Promise(() => {});
-  const work = run();
-  await vi.advanceTimersByTimeAsync(20000);
-  await work;
-  expect(observer).not.toHaveBeenCalled();
-  expect(runtime.dispose).toHaveBeenCalled();
-});
-test("manual mode saves pending observation", async () => {
-  runtime.config.compaction = "manual";
-  await run();
-  expect(readPendingState("shutdown-test").observation?.coversUpToId).toBe("tail");
-  expect(appended).not.toHaveBeenCalled();
-});
-
-test("skipped provider skips observer", async () => {
-  runtime.config.skipForProviders = ["test"];
-  await run();
-  expect(observer).not.toHaveBeenCalled();
-});
-
-test("late observer completion after timeout cannot persist", async () => {
-  vi.useFakeTimers();
-  let complete: (value: Awaited<ReturnType<typeof runObserver>>) => void = () => {};
-  observer.mockImplementation(
-    () =>
-      new Promise((resolve) => {
-        complete = resolve;
-      }),
-  );
-  const work = run();
-  await vi.advanceTimersByTimeAsync(20000);
-  await work;
-  complete({
-    observations: [observation("aaaaaaaaaaaa", "Late fact", { sourceEntryIds: ["tail"] })],
-  });
-  await vi.advanceTimersByTimeAsync(0);
-  expect(appended).not.toHaveBeenCalled();
-});
-test("large tail never drains another chunk", async () => {
-  runtime.config.observerChunkMaxTokens = 300;
-  ctx.sessionManager.getBranch = () => [
-    rawMessage("first", "words ".repeat(250)),
-    rawMessage("tail", "words ".repeat(250)),
-  ];
-  await run();
-  expect(observer).toHaveBeenCalledTimes(1);
-});
-test("unavailable resolution makes no request", async () => {
-  ctx.model = undefined;
-  await run();
-  expect(observer).not.toHaveBeenCalled();
-});
-
-test("host disposal during observer fails quietly and disposes once", async () => {
-  let complete: (value: Awaited<ReturnType<typeof runObserver>>) => void = () => {};
-  let started: () => void = () => {};
-  const running = new Promise<void>((resolve) => {
-    started = resolve;
-  });
-  observer.mockImplementation(() => {
-    started();
-    return new Promise((resolve) => {
-      complete = resolve;
-    });
-  });
-  const work = run();
-  await running;
-  appended.mockImplementationOnce(() => {
-    throw new Error("Extension context is no longer active");
-  });
+const invalidate = () => {
   ctx.sessionManager.getSessionId = () => {
     throw new Error("Extension context is no longer active");
   };
-  complete({ observations: [observation("aaaaaaaaaaaa", "Fact", { sourceEntryIds: ["tail"] })] });
-  await expect(work).resolves.toBeUndefined();
+};
+test.each([
+  "off",
+  "short tail",
+  "covered tail",
+  "empty branch",
+  "non persisted",
+  "memory off",
+  "legacy passive",
+  "retry gated",
+  "skipped provider",
+  "unavailable model",
+  "reload",
+])("%s skips observer and disposes once", async (name) => {
+  if (name === "off") runtime.config.observeOnShutdown = false;
+  if (name === "short tail") ctx.sessionManager.getBranch = () => [rawMessage("tail", "short")];
+  if (name === "covered tail") runtime.advanceCursor("observer", "tail", "recorded");
+  if (name === "empty branch") ctx.sessionManager.getBranch = () => [];
+  if (name === "non persisted") ctx.sessionManager.isPersisted = () => false;
+  if (name === "memory off") runtime.config.memory = false;
+  if (name === "legacy passive") {
+    runtime.config.passive = true;
+    Reflect.deleteProperty(runtime.config, "compaction");
+    Reflect.deleteProperty(runtime.config, "compactionEngine");
+  }
+  if (name === "retry gated") vi.spyOn(runtime, "isConsolidationRetryGated").mockReturnValue(true);
+  if (name === "skipped provider") runtime.config.skipForProviders = ["test"];
+  if (name === "unavailable model") ctx.model = undefined;
+  await observeTailOnShutdown(pi, runtime, ctx, name === "reload" ? "reload" : "quit");
+  expect(observer).not.toHaveBeenCalled();
   expect(runtime.dispose).toHaveBeenCalledTimes(1);
+});
+test.each(["auto", "manual"] as const)(
+  "%s flush records once with fresh cycle",
+  async (compaction) => {
+    runtime.config.compaction = compaction;
+    runtime.config.passive = true; // Modern config must override legacy passive.
+    runtime.sizeSkippedInCycle.add("test/primary");
+    runtime.failedInCycle.add("test/primary");
+    runtime.turnCapSkippedInCycle.add("test/primary");
+    await run();
+    expect(observer).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ maxTurns: 1 }));
+    const pending = readPendingState("shutdown-test");
+    expect(pending.cursors?.observer).toEqual({ entryId: "tail", state: "recorded" });
+    if (compaction === "manual") {
+      expect(pending.observation?.coversUpToId).toBe("tail");
+      expect(appended).not.toHaveBeenCalled();
+    } else {
+      expect(appended).toHaveBeenCalledWith(
+        "om.observations.recorded",
+        expect.objectContaining({ coversUpToId: "tail" }),
+      );
+    }
+  },
+);
+test.each(["error", "errorAfterClose", "generation abort", "host disposal"])(
+  "%s cannot save manual batch or old cursor",
+  async (failure) => {
+    runtime.config.compaction = "manual";
+    runtime.startSession("shutdown-test");
+    runtime.cursorsLoadedSessionId = "shutdown-test";
+    runtime.advanceCursor("observer", "earlier", "recorded");
+    ctx.sessionManager.getBranch = () => [
+      rawMessage("earlier", "covered"),
+      rawMessage("tail", "words ".repeat(250)),
+    ];
+    observer.mockImplementation(async () => {
+      if (failure === "error") throw new Error("observer failed");
+      if (failure === "generation abort") runtime.startSession("new-session");
+      if (failure === "host disposal") invalidate();
+      return {
+        ...result(),
+        ...(failure === "errorAfterClose"
+          ? { errorAfterClose: "provider failed after close" }
+          : {}),
+      };
+    });
+    await expect(run()).resolves.toBeUndefined();
+    expect(observer).toHaveBeenCalledTimes(1);
+    expect(readPendingState("shutdown-test")).toEqual({});
+    expect(appended).not.toHaveBeenCalled();
+    expect(runtime.dispose).toHaveBeenCalledTimes(1);
+  },
+);
+test("shutdown errors reach enabled debug logging", async () => {
+  runtime.config.debugLog = true;
+  observer.mockRejectedValue(new Error("shutdown test failure"));
+  await run();
+  flushDebugLog();
+  expect(readFileSync(join(scratch.dir, DEBUG_LOG_RELATIVE_PATH), "utf8")).toContain(
+    '"event":"observer.shutdown_error"',
+  );
+});
+test("queued cursor flush cannot write after host disposal", async () => {
+  runtime.advanceCursor("observer", "tail", "recorded");
+  runtime.scheduleCursorFlush("shutdown-test");
+  const work = run();
+  invalidate();
+  await work;
   expect(readPendingState("shutdown-test").cursors).toBeUndefined();
 });
-
-test("manual mode does not persist after host context becomes stale", async () => {
-  runtime.config.compaction = "manual";
-  observer.mockImplementation(async () => {
-    ctx.sessionManager.getSessionId = () => {
-      throw new Error("Extension context is no longer active");
-    };
-    return { observations: [observation("aaaaaaaaaaaa", "Fact", { sourceEntryIds: ["tail"] })] };
-  });
-  await run();
-  expect(readPendingState("shutdown-test").observation).toBeUndefined();
-});
+test.each(["auto", "manual"] as const)(
+  "%s deadline blocks late writes and abort-listener cursor flush",
+  async (compaction) => {
+    vi.useFakeTimers();
+    runtime.config.compaction = compaction;
+    let complete: (value: Awaited<ReturnType<typeof runObserver>>) => void = () => {};
+    observer.mockImplementation(({ signal }) => {
+      signal?.addEventListener("abort", () => {
+        runtime.advanceCursor("observer", "tail", "recorded");
+        runtime.scheduleCursorFlush("shutdown-test");
+      });
+      return new Promise((resolve) => {
+        complete = resolve;
+        releases.push(() => resolve(result()));
+      });
+    });
+    const work = run();
+    await vi.advanceTimersByTimeAsync(20_000);
+    await work;
+    expect(observer.mock.calls[0]?.[0].signal?.aborted).toBe(true);
+    complete(result());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(readPendingState("shutdown-test")).toEqual({});
+    expect(appended).not.toHaveBeenCalled();
+    expect(runtime.dispose).toHaveBeenCalledTimes(1);
+  },
+);
+test.each(["covered", "timeout", "remaining deadline"])(
+  "inflight %s shares shutdown budget",
+  async (state) => {
+    vi.useFakeTimers();
+    let complete = () => {};
+    runtime.consolidationPromise = new Promise<void>((resolve) => {
+      complete = resolve;
+      releases.push(resolve);
+    });
+    observer.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          releases.push(() => resolve(result()));
+        }),
+    );
+    const work = run();
+    if (state !== "timeout") {
+      await vi.advanceTimersByTimeAsync(15_000);
+      if (state === "covered") runtime.advanceCursor("observer", "tail", "recorded");
+      complete();
+    }
+    await vi.advanceTimersByTimeAsync(state === "timeout" ? 20_000 : 5_000);
+    await work;
+    if (state === "remaining deadline")
+      expect(observer.mock.calls[0]?.[0].signal?.aborted).toBe(true);
+    else expect(observer).not.toHaveBeenCalled();
+    expect(runtime.dispose).toHaveBeenCalledTimes(1);
+  },
+);

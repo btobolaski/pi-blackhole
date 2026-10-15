@@ -271,8 +271,25 @@ export class Runtime {
   private generation = 0;
   private sessionIdentity: string | undefined;
   private disposed = false;
+  // Shutdown may outlive the host's own deadline. Its live-context check must
+  // also guard already-running stages, which captured a detached context.
+  // The predicate includes the deadline signal, before disposal can run.
+  private shutdownContextIsActive: (() => boolean) | undefined;
   private lifecycleController = new AbortController();
   private compactionTimer: ReturnType<typeof setTimeout> | undefined;
+
+  guardShutdownContext(isActive: () => boolean): void {
+    this.shutdownContextIsActive = isActive;
+  }
+
+  private isShutdownContextActive(): boolean {
+    if (!this.shutdownContextIsActive) return true;
+    try {
+      return this.shutdownContextIsActive();
+    } catch {
+      return false;
+    }
+  }
 
   /**
    * Called on session_start. Increments the generation counter and aborts the
@@ -321,6 +338,7 @@ export class Runtime {
   isGenerationActive(captured: RuntimeGeneration): boolean {
     return (
       !this.disposed &&
+      this.isShutdownContextActive() &&
       !captured.signal.aborted &&
       captured.generation === this.generation &&
       (this.sessionIdentity === undefined || captured.sessionIdentity === this.sessionIdentity)
@@ -1061,6 +1079,10 @@ export class Runtime {
   scheduleCursorFlush(sessionId: string): void {
     const cursors = { ...this.cursors };
     queueMicrotask(() => {
+      // Only the opted-in shutdown path adds this gate. A queued flush from
+      // its in-flight pipeline must not outlive host invalidation or disposal.
+      if (this.shutdownContextIsActive && (this.disposed || !this.isShutdownContextActive()))
+        return;
       try {
         writePendingCursors(sessionId, cursors as PendingOMState["cursors"]);
       } catch {
