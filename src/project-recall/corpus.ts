@@ -112,6 +112,12 @@ function parseTimestamp(value: unknown): string | null {
   return value;
 }
 
+/** Reflection annotations must be usable dates, not permissive Date.parse fragments. */
+function parseReflectionTimestamp(value: unknown): string | null {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}(?:[ T])/.test(value)) return null;
+  return parseTimestamp(value);
+}
+
 /** Read just the first line of a file (the session header). */
 function readFirstLine(filePath: string): string | null {
   let fd: number;
@@ -174,6 +180,7 @@ interface RawMarkerData {
     timestamp?: unknown;
   }>;
   reflections?: Array<{
+    timestamp?: unknown;
     content?: unknown;
     supportingObservationIds?: unknown;
   }>;
@@ -221,7 +228,7 @@ function extractFromEntries(
           supportingObservationIds: Array.isArray(r.supportingObservationIds)
             ? (r.supportingObservationIds as string[])
             : [],
-          timestamp: entryTs,
+          timestamp: parseReflectionTimestamp(r.timestamp) ?? entryTs,
           sessionId,
           source: "branch",
         });
@@ -259,7 +266,7 @@ function extractFromPendingState(
   reflections: CorpusReflection[],
   droppedIds: Set<string>,
 ): void {
-  // Reflections in pending files have no individual timestamp; fall back
+  // Legacy reflections in pending files have no individual timestamp; fall back
   // to the newest observation timestamp in the same file so they render
   // with a useful (N ago) suffix in the export.
   // Consider both batched and singular observation forms for timestamp fallback.
@@ -324,7 +331,7 @@ function extractFromPendingState(
         supportingObservationIds: Array.isArray(r.supportingObservationIds)
           ? (r.supportingObservationIds as string[])
           : [],
-        timestamp: reflectionTimestamp,
+        timestamp: parseReflectionTimestamp(r.timestamp) ?? reflectionTimestamp,
         sessionId,
         source,
       });

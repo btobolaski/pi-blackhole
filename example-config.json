@@ -129,6 +129,8 @@
   "memory": true,
   "sessionFallback": true,
   "fullFoldAlways": true,
+  "reflectionTimestamps": true,
+  "reflectionSupersedes": false,
   "statusBar": true,
   "showWorkerNotifications": true,
   "debug": false,

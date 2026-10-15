@@ -25,8 +25,11 @@ import { DROPPER_SYSTEM } from "./agents/dropper/prompts.js";
 import { DropObservationsSchema } from "./agents/dropper/tool-schema.js";
 import { OBSERVER_SYSTEM } from "./agents/observer/prompts.js";
 import { RecordObservationsSchema } from "./agents/observer/tool-schema.js";
-import { REFLECTOR_SYSTEM } from "./agents/reflector/prompts.js";
-import { RecordReflectionsSchema } from "./agents/reflector/tool-schema.js";
+import { buildReflectorSystem, REFLECTOR_SYSTEM } from "./agents/reflector/prompts.js";
+import {
+  RecordReflectionsWithSupersedesSchema,
+  RecordReflectionsSchema,
+} from "./agents/reflector/tool-schema.js";
 import { AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "./model-budget.js";
 import { estimateStringTokens } from "./tokens.js";
 
@@ -67,7 +70,15 @@ const STATIC_PROMPT_TOKENS: Record<WorkerPromptStage, number> = {
 };
 
 /** Measured static first-turn overhead (system + tool schema + framing). */
-export function workerStaticPromptTokens(stage: WorkerPromptStage): number {
+export function workerStaticPromptTokens(
+  stage: WorkerPromptStage,
+  options?: { timestamps: boolean; supersedes: boolean },
+): number {
+  if (stage === "reflector" && options)
+    return measureStatic(
+      buildReflectorSystem(options),
+      options.supersedes ? RecordReflectionsWithSupersedesSchema : RecordReflectionsSchema,
+    );
   return STATIC_PROMPT_TOKENS[stage];
 }
 

@@ -1077,3 +1077,29 @@ describe("loader parity: file bytes → same effective threshold on both loaders
     expect(t.viaModalLoader).toBe(t.viaFileLoader);
   });
 });
+
+describe.each([
+  ["reflectionTimestamps", true, "PI_BLACKHOLE_REFLECTION_TIMESTAMPS"],
+  ["reflectionSupersedes", false, "PI_BLACKHOLE_REFLECTION_SUPERSEDES"],
+])("%s reflection config", (key, defaultValue, envKey) => {
+  afterEach(() => vi.unstubAllEnvs());
+  it("uses approved default", async () => {
+    const { DEFAULTS } = await import("../src/core/unified-config.js");
+    expect(Reflect.get(DEFAULTS, key)).toBe(defaultValue);
+  });
+  it.each([true, false])("loads JSON boolean %s", async (value) => {
+    const { loadUnifiedConfig } = await import("../src/core/unified-config.js");
+    writeConfig({ [key]: value });
+    expect(Reflect.get(loadUnifiedConfig(testDir), key)).toBe(value);
+  });
+  it("ignores nonboolean JSON", async () => {
+    const { loadUnifiedConfig } = await import("../src/core/unified-config.js");
+    writeConfig({ [key]: "invalid" });
+    expect(Reflect.get(loadUnifiedConfig(testDir), key)).toBe(defaultValue);
+  });
+  it.each([true, false])("loads env boolean %s", async (value) => {
+    const { loadUnifiedConfig } = await import("../src/core/unified-config.js");
+    vi.stubEnv(envKey, String(value));
+    expect(Reflect.get(loadUnifiedConfig(testDir), key)).toBe(value);
+  });
+});

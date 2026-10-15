@@ -46,6 +46,8 @@ The config file must contain **valid JSON**. A trailing comma, partial write, or
   // ── Observational Memory ──
   "memory": true,                 // Enable OM workers + content injection
   "sessionFallback": true,        // Fall back to session model when OM models fail
+  "reflectionTimestamps": true,  // Show reflection evidence time
+  "reflectionSupersedes": false, // Display-only replacement notes
   "fullFoldAlways": true,         // Treat first compaction as full-fold boundary
   "statusBar": true,              // Footer token gauges (O/P/X) + worker events
   "showWorkerNotifications": true, // Routine observer/reflector/dropper progress toasts
@@ -394,6 +396,22 @@ Defaults to `true`: when all OM model candidates are exhausted, the stage falls 
 |------|---------|
 | boolean | `true` |
 
+### `reflectionTimestamps`
+
+Boolean, default `true`. Show evidence time on reflection lines in compaction memory,
+worker prompts, and `/blackhole-memory`. New reflections always store the latest usable
+supporting observation timestamp, derived in code, even when display is off. Legacy
+reflections without timestamps remain unchanged. Export prefers stored evidence time.
+
+### `reflectionSupersedes`
+
+Boolean, default `false`. Allow the reflector to cite earlier shown reflection ids
+that a new fact replaces. The new line displays `(supersedes <id>)`; this is display-only.
+Earlier reflections stay available in summaries, worker inputs, coverage, export and
+recall. Only the new reflection stores the annotation. Export and recall do not display
+the suffix. With both reflection keys off, rendering, reflector prompt and tool schema
+match the legacy output. Toggle changes affect the next compaction, not stored segments.
+
 ### `fullFoldAlways`
 
 Treat every compaction as a full-fold boundary so early reflections/drops survive the first compaction in a fresh session.
@@ -681,6 +699,8 @@ Boolean fields:
 | `PI_BLACKHOLE_DEBUG` | `debug` (debug snapshots) |
 | `PI_BLACKHOLE_DEBUG_LOG` | `debugLog` (JSONL logging) |
 | `PI_BLACKHOLE_SESSION_FALLBACK` | `sessionFallback` |
+| `PI_BLACKHOLE_REFLECTION_TIMESTAMPS` | `reflectionTimestamps` |
+| `PI_BLACKHOLE_REFLECTION_SUPERSEDES` | `reflectionSupersedes` |
 | `PI_BLACKHOLE_FULL_FOLD_ALWAYS` | `fullFoldAlways` |
 | `PI_BLACKHOLE_STATUSBAR` | `statusBar` |
 | `PI_BLACKHOLE_SHOW_WORKER_NOTIFICATIONS` | `showWorkerNotifications` |

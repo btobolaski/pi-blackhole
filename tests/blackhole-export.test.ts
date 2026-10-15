@@ -556,3 +556,115 @@ describe("/blackhole-export", () => {
     expect(corpus.orphanedSessions).toBe(2);
   });
 });
+
+describe("reflection evidence time", () => {
+  afterEach(() => rmSync(testRoot, { recursive: true, force: true }));
+  it.each([false, true])("prefers own branch timestamp async=%s", async (asyncMode) => {
+    const { buildProjectMemoryCorpus, buildProjectMemoryCorpusAsync } =
+      await import("../src/project-recall/corpus.js");
+    writeSession(encodeScopeDir(projectCwd), "reflection-time.jsonl", [
+      sessionHeader("reflection-time"),
+      customEntry(
+        "om.reflections.recorded",
+        {
+          reflections: [
+            {
+              content: "Evidence time test",
+              timestamp: "2026-10-03 14:05",
+              supportingObservationIds: [],
+            },
+          ],
+          coversUpToId: "source",
+        },
+        "2026-10-04T00:00:00.000Z",
+      ),
+    ]);
+    const options = { cwd: projectCwd, agentDir };
+    const corpus = asyncMode
+      ? await buildProjectMemoryCorpusAsync(options)
+      : buildProjectMemoryCorpus(options);
+    expect(corpus.reflections.find((r) => r.content === "Evidence time test")?.timestamp).toBe(
+      "2026-10-03 14:05",
+    );
+  });
+});
+
+describe("pending reflection timestamps", () => {
+  afterEach(() => rmSync(testRoot, { recursive: true, force: true }));
+  it.each(["2026-10-03 14:05", undefined, "invalid"])(
+    "prefers own timestamp or legacy fallback %s",
+    async (timestamp) => {
+      const { buildProjectMemoryCorpus } = await import("../src/project-recall/corpus.js");
+      writeSession(encodeScopeDir(projectCwd), "pending-time.jsonl", [
+        sessionHeader("pending-time"),
+      ]);
+      const dir = join(agentDir, "pi-blackhole");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        join(dir, "pending-time-pending.json"),
+        JSON.stringify({
+          observationBatches: [
+            {
+              data: {
+                observations: [{ content: "Evidence", timestamp: "2026-10-04T00:00:00.000Z" }],
+              },
+            },
+          ],
+          reflectionBatches: [
+            {
+              data: {
+                reflections: [
+                  { content: "Pending durable fact", timestamp, supersedes: ["aaaaaaaaaaaa"] },
+                ],
+              },
+            },
+          ],
+        }),
+      );
+      expect(
+        buildProjectMemoryCorpus({ cwd: projectCwd, agentDir }).reflections[0]?.timestamp,
+      ).toBe(timestamp === "2026-10-03 14:05" ? timestamp : "2026-10-04T00:00:00.000Z");
+    },
+  );
+  it("keeps legacy branch timestamp fallback", async () => {
+    const { buildProjectMemoryCorpus } = await import("../src/project-recall/corpus.js");
+    writeSession(encodeScopeDir(projectCwd), "legacy-time.jsonl", [
+      sessionHeader("legacy-time"),
+      customEntry(
+        "om.reflections.recorded",
+        { reflections: [{ content: "Legacy fact" }] },
+        "2026-10-04T00:00:00.000Z",
+      ),
+    ]);
+    expect(buildProjectMemoryCorpus({ cwd: projectCwd, agentDir }).reflections[0]?.timestamp).toBe(
+      "2026-10-04T00:00:00.000Z",
+    );
+  });
+});
+
+describe("export supersede inclusion", () => {
+  afterEach(() => rmSync(testRoot, { recursive: true, force: true }));
+  it("retains unrelated old and annotated new facts without displaying annotation", async () => {
+    const { buildProjectMemoryCorpus } = await import("../src/project-recall/corpus.js");
+    writeSession(encodeScopeDir(projectCwd), "inclusion.jsonl", [
+      sessionHeader("inclusion"),
+      customEntry(
+        "om.reflections.recorded",
+        {
+          reflections: [
+            { id: "aaaaaaaaaaaa", content: "Use PostgreSQL for transactional storage" },
+            {
+              id: "bbbbbbbbbbbb",
+              content: "Production release is approved",
+              supersedes: ["aaaaaaaaaaaa"],
+            },
+          ],
+        },
+        "2026-10-04T00:00:00.000Z",
+      ),
+    ]);
+    expect(
+      buildProjectMemoryCorpus({ cwd: projectCwd, agentDir }).reflections.map((r) => r.content),
+    ).toEqual(["Use PostgreSQL for transactional storage", "Production release is approved"]);
+  });
+});

@@ -4,7 +4,12 @@
  * Upstream: https://github.com/elpapi42/pi-observational-memory (src/session-ledger/projection.ts)
  * Modified: nested snapshots, bounded output, and compact-all coverage.
  */
-import { selectPriorObservations, selectPriorReflections } from "./render-summary.js";
+import {
+  makeReflectionRenderer,
+  renderOptionsFromConfig,
+  selectPriorObservations,
+  selectPriorReflections,
+} from "./render-summary.js";
 import {
   OM_FOLDED,
   isMemoryDetails,
@@ -30,6 +35,8 @@ export type ProjectionDiff = {
 };
 
 export type CompactionProjectionConfig = {
+  reflectionTimestamps?: boolean;
+  reflectionSupersedes?: boolean;
   observationsPoolMaxTokens: number;
   reflectionsPoolMaxTokens?: number;
   fullFoldAlways?: boolean;
@@ -272,7 +279,11 @@ export function buildCompactionProjection(
   ) {
     projection = {
       ...projection,
-      reflections: selectPriorReflections(projection.reflections, config.reflectionsPoolMaxTokens),
+      reflections: selectPriorReflections(
+        projection.reflections,
+        config.reflectionsPoolMaxTokens,
+        makeReflectionRenderer(renderOptionsFromConfig(config)),
+      ),
     };
   }
 

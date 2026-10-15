@@ -485,3 +485,49 @@ describe("/blackhole-memory command", () => {
     expect(msg).toContain("75% of 200,000-token window (preset: default)");
   });
 });
+
+describe("memory reflection display toggles", () => {
+  it.each([true, false])("full view timestamps=%s", async (enabled) => {
+    const { createExtensionApiDouble } = await import("./fixtures/pi-extension-api.js");
+    const { Runtime } = await import("../src/om/runtime.js");
+    let handler: ((args: string, ctx: unknown) => Promise<void>) | undefined;
+    const pi = createExtensionApiDouble();
+    pi.registerCommand = (_name, definition) => {
+      handler = async (args, ctx) => {
+        await Reflect.apply(definition.handler, undefined, [args, ctx]);
+      };
+    };
+    const runtime = new Runtime();
+    runtime.ensureConfig = () => {};
+    runtime.config.reflectionTimestamps = enabled;
+    runtime.config.reflectionSupersedes = enabled;
+    const ui = { notify: vi.fn() };
+    registerMemoryCommand(pi, runtime);
+    if (!handler) throw new Error("memory command not registered");
+    await handler("full", {
+      cwd: "/tmp/test",
+      sessionManager: {
+        getBranch: () => [
+          textCustomMessage("source", "evidence"),
+          reflectionsRecordedEntry("ref", {
+            reflections: [
+              reflection("aaaaaaaaaaaa", ["cccccccccccc"], {
+                content: "C",
+                timestamp: "2026-10-03 14:05",
+                supersedes: ["bbbbbbbbbbbb"],
+              }),
+            ],
+            coversUpToId: "source",
+          }),
+        ],
+        getSessionId: () => "reflection-display-test",
+      },
+      ui,
+    });
+    expect(ui.notify.mock.calls[0]?.[0]).toContain(
+      enabled
+        ? "[aaaaaaaaaaaa] 2026-10-03 14:05 C (supersedes bbbbbbbbbbbb)"
+        : "[aaaaaaaaaaaa] C\n",
+    );
+  });
+});

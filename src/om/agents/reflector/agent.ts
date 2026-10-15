@@ -26,12 +26,17 @@ import { streamSimple } from "@earendil-works/pi-ai/compat";
 import { hashId } from "../../ids.js";
 import { AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "../../model-budget.js";
 import { truncateRecordContent } from "../../serialize.js";
-import { REFLECTOR_SYSTEM } from "./prompts.js";
-import { RecordReflectionsSchema, type RecordReflectionsArgs } from "./tool-schema.js";
+import { buildReflectorSystem } from "./prompts.js";
+import {
+  RecordReflectionsWithSupersedesSchema,
+  RecordReflectionsSchema,
+  type RecordReflectionsArgs,
+} from "./tool-schema.js";
 import { estimateStringTokens } from "../../tokens.js";
 import {
   observationToSummaryLine,
   reflectionToSummaryLine,
+  isReflectionTimestamp,
   type Observation,
   type Reflection,
 } from "../../ledger/index.js";
@@ -44,6 +49,10 @@ import {
 } from "../../retryable-error.js";
 
 interface RunReflectorArgs {
+  supersedesEnabled?: boolean;
+  timestampsEnabled?: boolean;
+  supersedableReflectionIds?: readonly string[];
+  renderReflection?: (r: Reflection) => string;
   model: Model<any>;
   apiKey: string;
   headers?: Record<string, string>;
@@ -133,6 +142,7 @@ export async function runReflector(args: RunReflectorArgs): Promise<ReflectorRes
 
   const allowedObservationIds = observations.map((observation) => observation.id);
   const existingReflectionIds = new Set(reflections.map((reflection) => reflection.id));
+  const shownIds = new Set([...existingReflectionIds, ...(args.supersedableReflectionIds ?? [])]);
   const accumulated = new Map<string, Reflection>();
   // Cumulative counts for this run, including reflections the model corrected
   // or re-proposed in a later batch. Reported so the model can reconcile what
@@ -149,7 +159,9 @@ export async function runReflector(args: RunReflectorArgs): Promise<ReflectorRes
   // throws, so a failing provider cannot turn each review into a silent skip.
   let closedByCompleteBatch = false;
 
-  const recordReflections: AgentTool<typeof RecordReflectionsSchema> = {
+  const recordReflections: AgentTool<
+    typeof RecordReflectionsWithSupersedesSchema | typeof RecordReflectionsSchema
+  > = {
     name: "record_reflections",
     label: "Record reflections",
     description:
@@ -160,11 +172,14 @@ export async function runReflector(args: RunReflectorArgs): Promise<ReflectorRes
       // no empty close — say so, or a model mirroring the observer's protocol
       // emits a batch the host rejects and burns turns on it.
       "May not be empty: when nothing is stable enough, do not call the tool and reply briefly instead.",
-    parameters: RecordReflectionsSchema,
+    parameters: args.supersedesEnabled
+      ? RecordReflectionsWithSupersedesSchema
+      : RecordReflectionsSchema,
     execute: async (_id, params: RecordReflectionsArgs) => {
       let added = 0;
       let duplicates = 0;
       let rejected = 0;
+      let ignoredSupersedeIds = 0;
       for (const proposal of params.reflections) {
         const content = normalizeReflectionContent(proposal.content);
         const supportingObservationIds = normalizeSupportingObservationIds(
@@ -180,7 +195,23 @@ export async function runReflector(args: RunReflectorArgs): Promise<ReflectorRes
           duplicates++;
           continue;
         }
+        const timestamp = observations
+          .filter((o) => supportingObservationIds.includes(o.id))
+          .map((o) => o.timestamp)
+          .filter(isReflectionTimestamp)
+          .sort()
+          .at(-1);
+        const supersedes: string[] = [];
+        if (args.supersedesEnabled && Array.isArray(proposal.supersedes)) {
+          for (const target of proposal.supersedes) {
+            if (target === id || !shownIds.has(target) || accumulated.has(target)) {
+              ignoredSupersedeIds++;
+            } else if (!supersedes.includes(target)) supersedes.push(target);
+          }
+        }
         accumulated.set(id, {
+          ...(timestamp ? { timestamp } : {}),
+          ...(supersedes.length ? { supersedes } : {}),
           id,
           content,
           supportingObservationIds,
@@ -223,12 +254,19 @@ export async function runReflector(args: RunReflectorArgs): Promise<ReflectorRes
               `Recorded ${added} reflection${added === 1 ? "" : "s"}; ` +
               `${duplicates} duplicate${duplicates === 1 ? "" : "s"}; ` +
               `${rejected} rejected in this batch${rejectionReason}.` +
+              (args.supersedesEnabled ? ` ${ignoredSupersedeIds} ignored supersede ids.` : "") +
               totals +
               guidance +
               refusal,
           },
         ],
-        details: { added, duplicates, rejected, total: accumulated.size },
+        details: {
+          added,
+          duplicates,
+          rejected,
+          total: accumulated.size,
+          ...(args.supersedesEnabled ? { ignoredSupersedeIds } : {}),
+        },
         // Per-batch gate, deliberately not run-scoped: an earlier rejection was
         // reported in its own receipt and stays visible in the cumulative run
         // totals, and a corrected later batch must still be able to close the
@@ -246,7 +284,7 @@ export async function runReflector(args: RunReflectorArgs): Promise<ReflectorRes
     ? `EXISTING OBSERVATIONS (for context only — do NOT re-process these):\n${args.existingObservationsSummary}\n\n`
     : "";
 
-  const userText = `${existingReflectionsContext}${existingObservationsContext}NEW REFLECTIONS TO PROCESS:\n${joinOrEmpty(reflections.map(reflectionToSummaryLine))}\n\nNEW OBSERVATIONS TO PROCESS:\n${joinOrEmpty(observations.map(observationToSummaryLine))}\n\nCrystallize any missing durable facts or patterns into new reflections. Use complete=false for a partial batch or a correction, and use complete=true only on the final valid batch once every active observation has been reviewed. If nothing is stable enough, do not call the tool.`;
+  const userText = `${existingReflectionsContext}${existingObservationsContext}NEW REFLECTIONS TO PROCESS:\n${joinOrEmpty(reflections.map(args.renderReflection ?? reflectionToSummaryLine))}\n\nNEW OBSERVATIONS TO PROCESS:\n${joinOrEmpty(observations.map(observationToSummaryLine))}\n\nCrystallize any missing durable facts or patterns into new reflections. Use complete=false for a partial batch or a correction, and use complete=true only on the final valid batch once every active observation has been reviewed. If nothing is stable enough, do not call the tool.`;
   const prompts: Message[] = [
     {
       role: "user",
@@ -254,7 +292,13 @@ export async function runReflector(args: RunReflectorArgs): Promise<ReflectorRes
       timestamp: Date.now(),
     },
   ];
-  const context = buildAgentContext(REFLECTOR_SYSTEM, [recordReflections as AgentTool<any>]);
+  const context = buildAgentContext(
+    buildReflectorSystem({
+      timestamps: args.timestampsEnabled === true,
+      supersedes: args.supersedesEnabled === true,
+    }),
+    [recordReflections as AgentTool<any>],
+  );
   const reasoning = (model as { reasoning?: unknown }).reasoning;
   const thinkingLevel = args.thinkingLevel ?? "low";
   const effectiveMaxTurns = args.maxTurns && args.maxTurns > 0 ? args.maxTurns : undefined;

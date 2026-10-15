@@ -1,3 +1,4 @@
+import { reflectionTestModel } from "./fixtures/reflection-model.js";
 /**
  * Dropper agent tests — ported from upstream pi-observational-memory.
  *
@@ -412,5 +413,32 @@ describe("V3 dropper agent", () => {
       }),
     ).resolves.toBeUndefined();
     expect(called).toBe(true);
+  });
+});
+
+describe("dropper reflection annotation display", () => {
+  it.each([true, false])("renders timestamps=%s without changing coverage", async (enabled) => {
+    const { makeReflectionRenderer } = await import("../src/om/ledger/index.js");
+    let text = "";
+    const loop = fakeAgentLoop((prompts) => {
+      text = prompts[0].content[0].text;
+    });
+    await runDropper({
+      model: reflectionTestModel,
+      apiKey: "test",
+      observations: [observation("bbbbbbbbbbbb", { tokenCount: 100 })],
+      reflections: [
+        reflection("aaaaaaaaaaaa", ["bbbbbbbbbbbb"], {
+          content: "C",
+          timestamp: "2026-10-03 14:05",
+        }),
+      ],
+      budgetTokens: 20,
+      agentLoop: loop,
+      renderReflection: makeReflectionRenderer({ timestamps: enabled, supersedes: false }),
+    });
+    expect(text).toContain(
+      `CURRENT REFLECTIONS:\n[aaaaaaaaaaaa] ${enabled ? "2026-10-03 14:05 " : ""}C\n`,
+    );
   });
 });

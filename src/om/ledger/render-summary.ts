@@ -2,7 +2,7 @@
  * Summary rendering — formats observations/reflections for compaction output.
  *
  * Upstream: https://github.com/elpapi42/pi-observational-memory (src/session-ledger/render-summary.ts)
- * Modified: separator-aware whole-record output caps.
+ * Modified: separator-aware whole-record caps and configurable reflection annotations.
  */
 import type { Observation, Reflection } from "./types.js";
 import { estimateStringTokens } from "../tokens.js";
@@ -69,17 +69,54 @@ export function selectPriorObservations(
   return selected.sort((a, b) => a.index - b.index).map((item) => item.obs);
 }
 
+export interface ReflectionRenderOptions {
+  timestamps: boolean;
+  supersedes: boolean;
+}
+
+export function renderOptionsFromConfig(config: {
+  reflectionTimestamps?: boolean;
+  reflectionSupersedes?: boolean;
+}): ReflectionRenderOptions {
+  return {
+    timestamps: config.reflectionTimestamps === true,
+    supersedes: config.reflectionSupersedes === true,
+  };
+}
+
+/** Persisted annotations are optional and must never invalidate a legacy record. */
+export function isReflectionTimestamp(value: unknown): value is string {
+  return typeof value === "string" && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(value);
+}
+
+export function makeReflectionRenderer(opts: ReflectionRenderOptions): (r: Reflection) => string {
+  return (r) => {
+    const time = opts.timestamps && isReflectionTimestamp(r.timestamp) ? `${r.timestamp} ` : "";
+    const ids =
+      opts.supersedes && Array.isArray(r.supersedes)
+        ? r.supersedes.filter(
+            (id): id is string => typeof id === "string" && /^[a-f0-9]{12}$/i.test(id),
+          )
+        : [];
+    return `[${r.id}] ${time}${r.content}${ids.length ? ` (supersedes ${ids.join(", ")})` : ""}`;
+  };
+}
+
 export function reflectionToSummaryLine(reflection: Reflection): string {
   return `[${reflection.id}] ${reflection.content}`;
 }
 
 /** Bound compaction output only; worker reflection prompts stay unchanged. */
-export function selectPriorReflections(reflections: Reflection[], maxTokens: number): Reflection[] {
+export function selectPriorReflections(
+  reflections: Reflection[],
+  maxTokens: number,
+  render = reflectionToSummaryLine,
+): Reflection[] {
   const selected: Reflection[] = [];
   let rendered = "";
   for (let i = reflections.length - 1; i >= 0; i--) {
     const reflection = reflections[i]!;
-    const next = rendered + (selected.length ? "\n" : "") + reflectionToSummaryLine(reflection);
+    const next = rendered + (selected.length ? "\n" : "") + render(reflection);
     if (estimateStringTokens(next) > maxTokens) continue;
     selected.push(reflection);
     rendered = next;
@@ -87,18 +124,33 @@ export function selectPriorReflections(reflections: Reflection[], maxTokens: num
   return selected.reverse();
 }
 
-export function renderSummary(reflections: Reflection[], observations: Observation[]): string {
+export function renderSummary(
+  reflections: Reflection[],
+  observations: Observation[],
+  opts: ReflectionRenderOptions = { timestamps: false, supersedes: false },
+): string {
   const hasContent = reflections.length > 0 || observations.length > 0;
 
   const parts: string[] = [];
   if (reflections.length > 0) {
-    parts.push(`## Reflections\n${reflections.map(reflectionToSummaryLine).join("\n")}`);
+    parts.push(`## Reflections\n${reflections.map(makeReflectionRenderer(opts)).join("\n")}`);
   }
   if (observations.length > 0) {
     parts.push(`## Observations\n${observations.map(observationToSummaryLine).join("\n")}`);
   }
 
-  const footer = hasContent ? OM_FOOTER_FULL : OM_FOOTER_BASIC;
+  let fullFooter = OM_FOOTER_FULL;
+  if (opts.timestamps)
+    fullFooter = fullFooter.replace(
+      "When entries conflict, the most recent observation reflects the latest known state.",
+      "When entries conflict, the entry with the latest timestamp reflects the latest known state.",
+    );
+  if (opts.supersedes)
+    fullFooter = fullFooter.replace(
+      "\n----",
+      "\nSupersedes notes identify earlier reflections replaced by this entry; all reflections remain available.\n----",
+    );
+  const footer = hasContent ? fullFooter : OM_FOOTER_BASIC;
   if (parts.length > 0) {
     parts.push(footer);
     return parts.join("\n\n");

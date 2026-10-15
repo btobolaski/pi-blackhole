@@ -1,5 +1,6 @@
 /**
  * Blackhole settings — modal-based configuration via ConfigManager.
+ * Modified: register reflection timestamp and display-only supersede settings.
  *
  * The single config UI: pi-base's ConfigManager + openConfigFlow
  * (scope-selector → edit/display-all modal). `/blackhole configure` is a
@@ -383,6 +384,21 @@ export const config = new ConfigManager<UnifiedConfig>({
       description:
         "When true, early reflections/drops survive the first compaction in a fresh session",
       value: cfg.fullFoldAlways,
+    },
+
+    {
+      key: "reflectionTimestamps",
+      type: "boolean",
+      label: "Reflection timestamps",
+      description: "Show evidence timestamps on reflection lines",
+      value: cfg.reflectionTimestamps,
+    },
+    {
+      key: "reflectionSupersedes",
+      type: "boolean",
+      label: "Reflection supersedes notes",
+      description: "Allow display-only replacement notes; all reflections remain available",
+      value: cfg.reflectionSupersedes,
     },
 
     // ── UI ──

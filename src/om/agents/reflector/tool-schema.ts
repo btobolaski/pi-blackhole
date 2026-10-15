@@ -28,4 +28,15 @@ export const RecordReflectionsSchema = Type.Object({
   ),
 });
 
-export type RecordReflectionsArgs = Static<typeof RecordReflectionsSchema>;
+export const RecordReflectionsWithSupersedesSchema = Type.Object({
+  ...RecordReflectionsSchema.properties,
+  reflections: Type.Array(
+    Type.Object({
+      ...RecordReflectionsSchema.properties.reflections.items.properties,
+      supersedes: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+    }),
+    { minItems: 1 },
+  ),
+});
+
+export type RecordReflectionsArgs = Static<typeof RecordReflectionsWithSupersedesSchema>;
