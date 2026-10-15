@@ -38,12 +38,12 @@ export async function observeTailOnShutdown(
     const runId = `shutdown-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
     await withDebugLogContext({ enabled: config.debugLog === true, cwd: ctx.cwd, runId }, () =>
       runWorkerAttempt("observer", SHUTDOWN_OBSERVE_TIMEOUT_MS, initial.signal, async (signal) => {
-        // Capture the session manager only: the guard outlives the flush
-        // (cleared by the next startSession) and must not pin the whole
-        // host context graph.
-        const sessionManager = ctx.sessionManager;
+        // The host-context accessor must stay lazy inside the guard: pi
+        // reports invalidation by throwing on `ctx.sessionManager` access,
+        // so capturing the manager object up front would pin the
+        // pre-invalidation target and the guard would never trip.
         runtime.guardShutdownContext(
-          () => !signal.aborted && sessionManager.getSessionId() === sessionId,
+          () => !signal.aborted && ctx.sessionManager.getSessionId() === sessionId,
         );
         await runtime.consolidationPromise;
         signal.throwIfAborted();

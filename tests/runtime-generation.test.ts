@@ -83,11 +83,11 @@ describe("Runtime generation lifecycle", () => {
     expect(() => runtime.dispose()).not.toThrow();
   });
 
-  test("R8: startSession after dispose is a no-op", () => {
+  test("R8: startSession after dispose revives the runtime for the next session", () => {
     const runtime = new Runtime("/tmp");
     runtime.dispose();
     expect(() => runtime.startSession("session-b")).not.toThrow();
-    expect(runtime.isGenerationActive(runtime.captureGeneration("session-b"))).toBe(false);
+    expect(runtime.isGenerationActive(runtime.captureGeneration("session-b"))).toBe(true);
   });
 
   test("R9: multiple session changes each increment generation", () => {
