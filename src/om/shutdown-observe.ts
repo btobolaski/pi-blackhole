@@ -30,10 +30,20 @@ export async function observeTailOnShutdown(
     if (runtime.isConsolidationRetryGated()) return;
     const sessionId = ctx.sessionManager.getSessionId();
     const initial = runtime.captureGeneration(sessionId);
-    await withDebugLogContext({ enabled: config.debugLog === true, cwd: ctx.cwd }, () =>
+    // A shutdown arriving on an already-disposed runtime (second shutdown for
+    // the same session) has an aborted parent signal: runWorkerAttempt would
+    // reject immediately and the catch below would log a benign sequence as
+    // observer.shutdown_error. Return silently; finally still disposes.
+    if (initial.signal.aborted) return;
+    const runId = `shutdown-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
+    await withDebugLogContext({ enabled: config.debugLog === true, cwd: ctx.cwd, runId }, () =>
       runWorkerAttempt("observer", SHUTDOWN_OBSERVE_TIMEOUT_MS, initial.signal, async (signal) => {
+        // Capture the session manager only: the guard outlives the flush
+        // (cleared by the next startSession) and must not pin the whole
+        // host context graph.
+        const sessionManager = ctx.sessionManager;
         runtime.guardShutdownContext(
-          () => !signal.aborted && ctx.sessionManager.getSessionId() === sessionId,
+          () => !signal.aborted && sessionManager.getSessionId() === sessionId,
         );
         await runtime.consolidationPromise;
         signal.throwIfAborted();
