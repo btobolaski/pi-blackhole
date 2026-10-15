@@ -627,3 +627,89 @@ describe("pending reflection timestamps", () => {
     },
   );
 });
+
+describe("blackhole-export days/mode wiring (Phase 4)", () => {
+  beforeEach(() => {
+    rmSync(testRoot, { recursive: true, force: true });
+    mkdirSync(testRoot, { recursive: true });
+    createFixtures();
+  });
+
+  afterEach(() => {
+    rmSync(testRoot, { recursive: true, force: true });
+  });
+
+  it.each(["days:0", "days:-5", "days:wat", "mode:foo"])(
+    "rejects invalid args %s without writing",
+    async (args) => {
+      const env = createMockEnv();
+      registerBlackholeExportCommand(env.pi);
+      await env.handlerMap.get("blackhole-export")!(args, env.ctx);
+      expect(env.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Invalid"), "error");
+      expect(env.sentMessages).toHaveLength(0);
+      expect(readdirSync(projectCwd).filter((f) => f.endsWith(".md"))).toHaveLength(0);
+    },
+  );
+
+  it("days:7 distilled excludes out-of-window orphan memory but keeps recent facts", async () => {
+    const env = createMockEnv();
+    registerBlackholeExportCommand(env.pi);
+    await env.handlerMap.get("blackhole-export")!("days:7 out:windowed-distilled.md", env.ctx);
+    const md = readFileSync(join(projectCwd, "windowed-distilled.md"), "utf-8");
+    expect(md).toContain("# Project memory export");
+    expect(md).toContain("Ship releases only on Fridays");
+    expect(md).not.toContain("Orphan memory recovered from lost session");
+  });
+
+  it("mode:timeline writes a chronological timeline file", async () => {
+    const env = createMockEnv();
+    registerBlackholeExportCommand(env.pi);
+    await env.handlerMap.get("blackhole-export")!(
+      "days:7 mode:timeline out:timeline-weekly.md",
+      env.ctx,
+    );
+    const md = readFileSync(join(projectCwd, "timeline-weekly.md"), "utf-8");
+    expect(md).toContain("# Project memory timeline");
+    expect(md).toContain("exact duplicates only");
+    expect(md).toContain("Ship releases only on Fridays");
+    expect(md).not.toContain("Orphan memory recovered from lost session");
+  });
+
+  it("mode:timeline summary reports Window without ranking lines", async () => {
+    const env = createMockEnv();
+    registerBlackholeExportCommand(env.pi);
+    await env.handlerMap.get("blackhole-export")!(
+      "days:7 mode:timeline out:timeline-summary.md",
+      env.ctx,
+    );
+    expect(env.sentMessages).toHaveLength(1);
+    const content = env.sentMessages[0].content;
+    expect(content).toContain("Window:");
+    expect(content).toContain("Sessions:");
+    expect(content).toContain("Observations:");
+    expect(content).toContain("Reflections:");
+    expect(content).not.toContain("viability gate");
+    expect(content).not.toContain("topic groups");
+  });
+
+  it("days:7 with no memory notifies the windowed empty message and writes nothing", async () => {
+    rmSync(agentDir, { recursive: true, force: true });
+    mkdirSync(agentDir, { recursive: true });
+    const emptyScope = encodeScopeDir(projectCwd);
+    writeSession(emptyScope, "plain.jsonl", [
+      sessionHeader("ses-9"),
+      messageEntry("z1", "user", "nothing"),
+    ]);
+
+    const env = createMockEnv();
+    registerBlackholeExportCommand(env.pi);
+    await env.handlerMap.get("blackhole-export")!("days:7", env.ctx);
+
+    expect(env.sentMessages).toHaveLength(0);
+    expect(env.ctx.ui.notify).toHaveBeenCalledWith(
+      expect.stringContaining("in the last 7 days"),
+      "warning",
+    );
+    expect(readdirSync(projectCwd).filter((f) => f.endsWith(".md"))).toHaveLength(0);
+  });
+});

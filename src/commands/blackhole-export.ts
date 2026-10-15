@@ -7,6 +7,7 @@ import { writeFileSync } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { parseBlackholeExportArgs } from "../project-recall/export-options.js";
 
 function defaultOutPath(cwd: string, now: Date): string {
   const iso = now.toISOString();
@@ -17,8 +18,17 @@ function defaultOutPath(cwd: string, now: Date): string {
 export const registerBlackholeExportCommand = (pi: ExtensionAPI) => {
   pi.registerCommand("blackhole-export", {
     description:
-      "Export distilled project memory (observations/reflections from past sessions) to markdown. Usage: /blackhole-export [out:<path>]. If no out: is provided, writes to the project local cwd.",
+      "Export distilled project memory (observations/reflections from past sessions) to markdown. Usage: /blackhole-export [out:<path>.md] [days:<N>] [mode:distilled|timeline]. If no out: is provided, writes to the project local cwd.",
     handler: async (args: string, ctx) => {
+      const parsed = parseBlackholeExportArgs(args);
+      if (!parsed.ok) {
+        ctx.ui.notify(parsed.error, "error");
+        return;
+      }
+      const userOut = parsed.value.out;
+      const days = parsed.value.days;
+      const mode = parsed.value.mode;
+
       ctx.ui.notify(
         "Exporting project memory… this may take a few minutes depending on the number of session files for the project.",
         "info",
@@ -26,15 +36,16 @@ export const registerBlackholeExportCommand = (pi: ExtensionAPI) => {
       // Yield so the TUI can paint the warning before the heavy scan blocks.
       await new Promise<void>((resolve) => setImmediate(resolve));
 
-      const outMatch = args.match(/\bout:(\S+)/);
       const now = new Date();
-      const outPath = outMatch
-        ? isAbsolute(outMatch[1])
-          ? outMatch[1]
-          : join(ctx.cwd, outMatch[1])
+      const sinceMs = days !== undefined ? now.getTime() - days * 86400000 : undefined;
+      const untilMs = days !== undefined ? now.getTime() : undefined;
+      const outPath = userOut
+        ? isAbsolute(userOut)
+          ? userOut
+          : join(ctx.cwd, userOut)
         : defaultOutPath(ctx.cwd, now);
 
-      if (outMatch && !outPath.toLowerCase().endsWith(".md")) {
+      if (userOut && !outPath.toLowerCase().endsWith(".md")) {
         ctx.ui.notify(
           `Export path must be a markdown file: ${outPath}. Use out:<path-to-file>.md`,
           "error",
@@ -43,7 +54,6 @@ export const registerBlackholeExportCommand = (pi: ExtensionAPI) => {
       }
 
       const resolvedOut = resolve(outPath);
-      const userOut = outMatch?.[1];
       if (userOut && !isAbsolute(userOut)) {
         const rel = relative(resolve(ctx.cwd), resolvedOut);
         if (rel.startsWith("..") || isAbsolute(rel)) {
@@ -90,6 +100,8 @@ export const registerBlackholeExportCommand = (pi: ExtensionAPI) => {
           gitRoot,
           activeSessionFile,
           agentDir: getAgentDir(),
+          sinceMs,
+          untilMs,
         },
         onProgress,
       );
@@ -99,10 +111,75 @@ export const registerBlackholeExportCommand = (pi: ExtensionAPI) => {
         corpus.reflections.length === 0 &&
         corpus.droppedIds.size === 0
       ) {
-        ctx.ui.notify(
-          `No observational memory found for ${basename(corpus.projectRoot)} (${corpus.sessionsConsidered} sessions scanned).`,
-          "warning",
+        if (days !== undefined) {
+          ctx.ui.notify(
+            `No observational memory found for ${basename(corpus.projectRoot)} in the last ${days} days (${corpus.sessionsConsidered} sessions scanned).`,
+            "warning",
+          );
+        } else {
+          ctx.ui.notify(
+            `No observational memory found for ${basename(corpus.projectRoot)} (${corpus.sessionsConsidered} sessions scanned).`,
+            "warning",
+          );
+        }
+        return;
+      }
+
+      const title = basename(corpus.projectRoot);
+      if (mode === "timeline") {
+        const { buildTimelineExportMarkdownAsync } =
+          await import("../project-recall/format-timeline-export.js");
+        const { markdown: timelineMarkdown, stats: timelineStats } =
+          await buildTimelineExportMarkdownAsync(corpus, {
+            now: now.getTime(),
+            title,
+            sinceMs,
+            untilMs,
+          });
+
+        try {
+          writeFileSync(outPath, timelineMarkdown, "utf-8");
+        } catch (error) {
+          ctx.ui.notify(`Export failed to write ${outPath}: ${String(error)}`, "error");
+          return;
+        }
+
+        const timelineLines = [
+          `Project memory exported to ${outPath}`,
+          "",
+          `- Window: ${timelineStats.windowLabel}`,
+          `- Sessions: ${timelineStats.sessionsDiscovered} → ${timelineStats.sessionsScanned} (${timelineStats.filesWithMarkers} with memory)`,
+          `- Observations: ${timelineStats.observationsExported} exported`,
+          `- Reflections: ${timelineStats.reflectionsExported} exported`,
+        ];
+        if (timelineStats.entriesOutsideWindow > 0) {
+          timelineLines.push(
+            `- outside window: ${timelineStats.entriesOutsideWindow} entries excluded`,
+          );
+        }
+        if (timelineStats.entriesWithoutTimestamp > 0) {
+          timelineLines.push(
+            `- without timestamp: ${timelineStats.entriesWithoutTimestamp} entries retained`,
+          );
+        }
+        if (timelineStats.orphanedObservations > 0 || timelineStats.orphanedReflections > 0) {
+          timelineLines.push(
+            `- unattributed pending memory: ${timelineStats.orphanedObservations} obs / ${timelineStats.orphanedReflections} reflections from ${timelineStats.orphanedSessions} lost session(s)`,
+          );
+        }
+        if (timelineStats.droppedExcluded > 0) {
+          timelineLines.push(`- dropper-pruned ids excluded: ${timelineStats.droppedExcluded}`);
+        }
+        timelineLines.push(
+          "",
+          "The file is plain markdown — curate it, then import into any memory system.",
         );
+
+        pi.sendMessage({
+          customType: "blackhole-export",
+          content: timelineLines.join("\n"),
+          display: true,
+        });
         return;
       }
 
@@ -117,7 +194,7 @@ export const registerBlackholeExportCommand = (pi: ExtensionAPI) => {
       const { buildExportMarkdownAsync } = await import("../project-recall/format-export.js");
       const { markdown, stats } = await buildExportMarkdownAsync(corpus, {
         now: now.getTime(),
-        title: basename(corpus.projectRoot),
+        title,
       });
 
       try {
