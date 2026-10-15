@@ -772,6 +772,49 @@ describe("reflection annotation contract", () => {
     ]);
   });
 
+  it.each([true, false])("dispatches supersedes schema only when enabled=%s", async (enabled) => {
+    let properties: Record<string, unknown> | undefined;
+    await runReflector({
+      model: reflectionTestModel,
+      apiKey: "test",
+      observations: [observation("cccccccccccc")],
+      reflections: [],
+      timestampsEnabled: false,
+      supersedesEnabled: enabled,
+      agentLoop: fakeAgentLoop((_prompts, context) => {
+        properties = context.tools[0].parameters.properties.reflections.items.properties;
+      }),
+    });
+    expect(properties !== undefined && "supersedes" in properties).toBe(enabled);
+  });
+
+  it.each([undefined, ["aaaaaaaaaaaa"]])(
+    "on schema accepts optional supersedes %s",
+    async (supersedes) => {
+      const { Value } = await import("typebox/value");
+      const { RecordReflectionsWithSupersedesSchema } =
+        await import("../src/om/agents/reflector/tool-schema.js");
+      expect(
+        Value.Check(RecordReflectionsWithSupersedesSchema, {
+          reflections: [
+            {
+              content: "C",
+              supportingObservationIds: ["bbbbbbbbbbbb"],
+              ...(supersedes ? { supersedes } : {}),
+            },
+          ],
+        }),
+      ).toBe(true);
+    },
+  );
+
+  it("off schema excludes supersedes property", async () => {
+    const { RecordReflectionsSchema } = await import("../src/om/agents/reflector/tool-schema.js");
+    expect(RecordReflectionsSchema.properties.reflections.items.properties).not.toHaveProperty(
+      "supersedes",
+    );
+  });
+
   it("keeps both-off render, dispatched prompt and schema byte-identical", async () => {
     const { REFLECTOR_SYSTEM } = await import("./fixtures/reflector-prompt-golden.js");
     const { RecordReflectionsSchema } = await import("./fixtures/reflector-schema-golden.js");
