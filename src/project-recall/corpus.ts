@@ -26,6 +26,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { isReflectionTimestamp } from "../om/ledger/render-summary.js";
 import {
   OM_OBSERVATIONS_RECORDED,
   OM_OBSERVATIONS_UNANCHORED,
@@ -114,7 +115,10 @@ function parseTimestamp(value: unknown): string | null {
 
 /** Reflection annotations must be usable dates, not permissive Date.parse fragments. */
 function parseReflectionTimestamp(value: unknown): string | null {
-  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}(?:[ T])/.test(value)) return null;
+  if (typeof value !== "string") return null;
+  // Keep support for parseable ISO timestamps, but validate their literal calendar
+  // fields before Date.parse can normalize an impossible date into another day.
+  if (!isReflectionTimestamp(value.slice(0, 16).replace("T", " "))) return null;
   return parseTimestamp(value);
 }
 

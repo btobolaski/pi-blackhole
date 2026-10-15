@@ -37,6 +37,7 @@ import {
   observationToSummaryLine,
   reflectionToSummaryLine,
   isReflectionTimestamp,
+  isMemoryId,
   type Observation,
   type Reflection,
 } from "../../ledger/index.js";
@@ -204,7 +205,12 @@ export async function runReflector(args: RunReflectorArgs): Promise<ReflectorRes
         const supersedes: string[] = [];
         if (args.supersedesEnabled && Array.isArray(proposal.supersedes)) {
           for (const target of proposal.supersedes) {
-            if (target === id || !shownIds.has(target) || accumulated.has(target)) {
+            if (
+              !isMemoryId(target) ||
+              target === id ||
+              !shownIds.has(target) ||
+              accumulated.has(target)
+            ) {
               ignoredSupersedeIds++;
             } else if (!supersedes.includes(target)) supersedes.push(target);
           }

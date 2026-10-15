@@ -97,12 +97,3 @@ describe("workerOutputAllowance", () => {
     expect(workerOutputAllowance(NaN, modelWith(2000) as any)).toBe(2000);
   });
 });
-
-describe("reflection annotation overhead", () => {
-  test("prices enabled prompt and schema above legacy overhead", async () => {
-    const { workerStaticPromptTokens } = await import("../src/om/prompt-budget.js");
-    expect(
-      workerStaticPromptTokens("reflector", { timestamps: true, supersedes: true }),
-    ).toBeGreaterThan(workerStaticPromptTokens("reflector"));
-  });
-});

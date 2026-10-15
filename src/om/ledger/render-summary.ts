@@ -86,7 +86,12 @@ export function renderOptionsFromConfig(config: {
 
 /** Persisted annotations are optional and must never invalidate a legacy record. */
 export function isReflectionTimestamp(value: unknown): value is string {
-  return typeof value === "string" && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(value);
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(value)) return false;
+  // UTC is only a calendar-validation frame, not a timezone conversion. Round-trip
+  // to reject Date.parse rollover (February 30, 24:00) without consulting now.
+  const isoMinute = value.replace(" ", "T");
+  const date = new Date(`${isoMinute}:00Z`);
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 16) === isoMinute;
 }
 
 export function makeReflectionRenderer(opts: ReflectionRenderOptions): (r: Reflection) => string {

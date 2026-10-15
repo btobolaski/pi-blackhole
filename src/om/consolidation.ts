@@ -1900,11 +1900,11 @@ export async function runReflectorStage(
   // Snapshot the run input once: entries are fixed for this invocation, and
   // both the attempt loop and the shrink-to-fit batch pass share it.
   const input = computeReflectorInput(runtime, entries, sessionId, reflectionTokens);
-  const renderReflection = makeReflectionRenderer(renderOptionsFromConfig(runtime.config));
-  const reflectorStaticTokens = workerStaticPromptTokens(
-    "reflector",
-    renderOptionsFromConfig(runtime.config),
-  );
+  // Keep schema, system prompt and renderer tied to the budgeted snapshot even
+  // if settings change while model resolution or a prior batch is awaited.
+  const renderOptions = renderOptionsFromConfig(runtime.config);
+  const renderReflection = makeReflectionRenderer(renderOptions);
+  const reflectorStaticTokens = workerStaticPromptTokens("reflector", renderOptions);
 
   // Shared commit tail: normal and batched runs both advance the cursor at
   // most once, after all work for this invocation is done.
@@ -2107,8 +2107,8 @@ export async function runReflectorStage(
           (signal) =>
             runReflector({
               renderReflection,
-              timestampsEnabled: runtime.config.reflectionTimestamps,
-              supersedesEnabled: runtime.config.reflectionSupersedes,
+              timestampsEnabled: renderOptions.timestamps,
+              supersedesEnabled: renderOptions.supersedes,
               supersedableReflectionIds: input.supersedableReflectionIds,
               model: bestModel,
               apiKey: best.resolved.apiKey,
@@ -2259,8 +2259,8 @@ export async function runReflectorStage(
         (signal) =>
           runReflector({
             renderReflection,
-            timestampsEnabled: runtime.config.reflectionTimestamps,
-            supersedesEnabled: runtime.config.reflectionSupersedes,
+            timestampsEnabled: renderOptions.timestamps,
+            supersedesEnabled: renderOptions.supersedes,
             supersedableReflectionIds: input.supersedableReflectionIds,
             model: resolved.model as any,
             apiKey: resolved.apiKey,

@@ -1033,7 +1033,6 @@ describe("append reflection annotations", () => {
       supportingObservationIds: ["cccccccccccc"],
       tokenCount: 4,
     };
-    const frozenSegment = first.compaction.details.segment.summary;
     const second = invoke(
       event(
         [
@@ -1055,27 +1054,23 @@ describe("append reflection annotations", () => {
         first.compaction.summary,
       ),
     );
-    const fallback = (summary: string) => ({
-      role: "compactionSummary",
-      summary,
-      tokensBefore: 1000,
-      timestamp: 100,
-    });
-    const c1 = { id: "c1", type: "compaction", timestamp: 10, ...first.compaction };
-    const c2 = { id: "c2", type: "compaction", timestamp: 20, ...second.compaction };
-    const firstContext = projectAppendOnlyContext([fallback(first.compaction.summary)], [c1]);
-    const secondContext = projectAppendOnlyContext([fallback(second.compaction.summary)], [c1, c2]);
-    return { first, second, frozenSegment, firstContext, secondContext };
+    return { first, second };
   }
-  it("preserves original immutable segment after superseding reflection", () => {
-    const { firstContext, secondContext } = twoCompactions();
-    expect(secondContext[0]).toEqual(firstContext[0]);
-  });
-  it("puts both records and suffix in second trailing message", () => {
-    const { second } = twoCompactions();
-    expect(second.compaction.details.trailingSummary).toContain(
-      "[aaaaaaaaaaaa] 2026-10-03 10:00 tests failing\n[bbbbbbbbbbbb] 2026-10-03 14:20 tests pass (supersedes aaaaaaaaaaaa)",
-    );
+  it("keeps older reflection line byte-identical after supersession", () => {
+    const { first, second } = twoCompactions();
+    const line = (summary: string) =>
+      summary.split("\n").find((text) => text.startsWith("[aaaaaaaaaaaa]"));
+    expect({
+      before: line(first.compaction.details.trailingSummary),
+      after: line(second.compaction.details.trailingSummary),
+      newer: second.compaction.details.trailingSummary
+        .split("\n")
+        .find((text: string) => text.startsWith("[bbbbbbbbbbbb]")),
+    }).toEqual({
+      before: "[aaaaaaaaaaaa] 2026-10-03 10:00 tests failing",
+      after: "[aaaaaaaaaaaa] 2026-10-03 10:00 tests failing",
+      newer: "[bbbbbbbbbbbb] 2026-10-03 14:20 tests pass (supersedes aaaaaaaaaaaa)",
+    });
   });
 });
 

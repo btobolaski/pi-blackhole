@@ -353,8 +353,7 @@ export function reflectionsCreatedAfterIndex(entries: Entry[], sinceIndex: numbe
 
 /**
  * Build a compact one-line summary of existing observations for context.
- * Preserves legacy prefix selection, including its first-record allowance.
- * Charges the supplied rendering, so annotations consume the same budget.
+ * Capped at maxTokens.
  */
 export function buildExistingObservationsSummary(
   observations: Observation[],
