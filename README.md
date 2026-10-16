@@ -92,6 +92,8 @@ All commands work regardless of `compaction` mode — only _when_ auto-compactio
 
 > `days:N` is a rolling snapshot, not exactly-once replication: the still-active session stays excluded and its memory can age out of the window before it becomes eligible.
 
+Headless runs for cron/systemd timers reuse the same argument grammar: `pi --blackhole-export "days:7 mode:timeline out:memory/weekly.md" -p` (run from the project root). The summary prints to stdout, parse/IO failures exit non-zero, no session file is created, and the snapshot semantics above apply unchanged.
+
 <details>
 <summary>The `recall` tool (agent-facing)</summary>
 

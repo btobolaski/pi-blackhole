@@ -24,7 +24,10 @@ vi.mock("../src/hooks/cosmetic-output", () => ({
 vi.mock("../src/commands/pi-vcc", () => ({ registerPiVccCommand: vi.fn() }));
 vi.mock("../src/commands/memory", () => ({ registerMemoryCommand: vi.fn() }));
 vi.mock("../src/commands/vcc-recall", () => ({ registerVccRecallCommand: vi.fn() }));
-vi.mock("../src/commands/blackhole-export", () => ({ registerBlackholeExportCommand: vi.fn() }));
+vi.mock("../src/commands/blackhole-export", () => ({
+  registerBlackholeExportCommand: vi.fn(),
+  registerBlackholeExportFlag: vi.fn(),
+}));
 vi.mock("../src/om/consolidation", () => ({ registerConsolidationTrigger: vi.fn() }));
 vi.mock("../src/tools/recall", () => ({ registerRecallTool: vi.fn() }));
 vi.mock("../src/om/provider-stream", () => ({ captureRegisteredProviderStreams: vi.fn() }));
