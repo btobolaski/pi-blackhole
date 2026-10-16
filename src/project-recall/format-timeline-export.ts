@@ -236,15 +236,19 @@ export function buildTimelineExportMarkdown(
     sections.push(["## Unknown timestamp", "", ...unknown.map(renderBullet), ""].join("\n"));
   }
 
-  if (corpus.droppedIds.size > 0) {
-    sections.push(
-      [
-        "## Notes",
-        "",
-        `- ${corpus.droppedIds.size} observation ids were pruned by the dropper pipeline; entries carrying those ids are excluded from this export.`,
-        "",
-      ].join("\n"),
+  const notes: string[] = [];
+  if (opts?.sinceMs != null) {
+    notes.push(
+      "- This export is a rolling snapshot, not exactly-once replication: the still-active session stays excluded and its memory can age out of the window before it becomes eligible.",
     );
+  }
+  if (corpus.droppedIds.size > 0) {
+    notes.push(
+      `- ${corpus.droppedIds.size} observation ids were pruned by the dropper pipeline; entries carrying those ids are excluded from this export.`,
+    );
+  }
+  if (notes.length > 0) {
+    sections.push(["## Notes", "", ...notes, ""].join("\n"));
   }
 
   const countKind = (groups: TimelineGroup[], kind: TimelineKind): number =>

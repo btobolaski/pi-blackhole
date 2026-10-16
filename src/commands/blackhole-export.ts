@@ -280,8 +280,8 @@ export const BLACKHOLE_EXPORT_FLAG = "blackhole-export";
  * shut down. Never rejects — every failure path (stale ctx, parse/validation,
  * IO) ends in `console.error` + `process.exitCode = 1` so schedulers see it.
  *
- * Host behavior this relies on (verified against pi 0.87.0; see the probe
- * notes in the Phase 5 report):
+ * Host behavior this relies on (verified against pi 0.87.0; see
+ * work_docs/plan-extract-timeline.md §14):
  * - `session_start` handlers are awaited by `bindExtensions`, so returning
  *   this promise keeps the process alive until the write finishes.
  * - `ctx.ui.notify` is a host no-op without a TUI, hence the stdout summary.

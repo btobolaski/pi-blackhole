@@ -404,6 +404,29 @@ describe("timeline exact duplicates", () => {
     );
     expect(md).not.toContain("## Notes");
   });
+
+  it("notes rolling-snapshot semantics for windowed exports even without drops", () => {
+    const md = buildTimelineExportMarkdown(
+      makeCorpus({
+        observations: [makeObs("Ordinary surviving fact")],
+      }),
+      { now: NOW, title: TITLE, sinceMs: NOW - 7 * 86400000, untilMs: NOW },
+    ).markdown;
+    expect(md).toContain("## Notes");
+    expect(md).toContain("rolling snapshot");
+  });
+
+  it("combines snapshot and dropper notes for windowed exports with drops", () => {
+    const md = buildTimelineExportMarkdown(
+      makeCorpus({
+        observations: [makeObs("Surviving fact that must render", { id: "live-1" })],
+        droppedIds: ["dead-1"],
+      }),
+      { now: NOW, title: TITLE, sinceMs: NOW - 7 * 86400000, untilMs: NOW },
+    ).markdown;
+    expect(md).toContain("rolling snapshot");
+    expect(md).toContain("1 observation ids were pruned by the dropper pipeline");
+  });
 });
 
 describe("timeline unknown timestamps", () => {
