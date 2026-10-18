@@ -91,7 +91,7 @@ Extracts user preferences from user message blocks. Defined in [[src/extract/pre
 
 ### User decisions extraction
 
-Keeps the user's answers to `ask_user_question` prompts. Defined in [[src/extract/user-decisions.ts]].
+Keeps confirmed answers from the recognized question-tool result shapes. The built-in `ask_user_question` path retains structured details and its legacy text fallback; additional best-effort, shape-guarded recognition covers selected third-party result formats. Defined in [[src/extract/user-decisions.ts]].
 
 - **Source**: `ask_user_question` tool results. Structured `details` are used first; the tool's text format (`User answers:` …) is the fallback. Cancelled results, errors and validation failures yield nothing.
 - **Line format**: `User decided: <question> → <selected labels or custom answer>`. Notes are appended verbatim, flattened to one line, as `user note:`; a global note becomes `User note (global): …`. Option descriptions and previews are never emitted.

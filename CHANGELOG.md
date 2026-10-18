@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+### Changed
+
+- Best-effort deterministic decision capture now recognizes guarded result shapes from six selected question tools in compaction and observer source text; cancelled, failed, skipped, timeout-selected, and control outcomes remain excluded.
+
 ### Added
 
 - **`ask_user_question` answers survive VCC compaction.** The user's answers to a multiple-choice prompt were treated like any other tool output and could vanish from the summary. VCC now adds a deterministic `[User Decisions]` section (`User decided: <question> → <selected labels or custom answer>`, notes verbatim as `user note:`, newest 8 kept), using structured `details` when present and the tool's text format otherwise. No config key or model call.
