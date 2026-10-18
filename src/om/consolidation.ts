@@ -373,8 +373,13 @@ function observerStartIndex(entries: Entry[], runtime: Runtime): number {
   const preserve = preserveObserverSources(entries, runtime);
   const cursor = runtime.getCursor("observer");
   const cursorIndex = entryIndexForId(entries, cursor?.entryId);
-  if (cursorIndex >= 0 && (!preserve || isSourceEntry(entries[cursorIndex]))) return cursorIndex;
-  if (preserve) return observedPrefixIndex(entries);
+  if (preserve) {
+    return Math.max(
+      observedPrefixIndex(entries),
+      cursorIndex >= 0 && isSourceEntry(entries[cursorIndex]) ? cursorIndex : -1,
+    );
+  }
+  if (cursorIndex >= 0) return cursorIndex;
 
   const coverage = latestCoverageIndex(entries, OM_OBSERVATIONS_RECORDED);
   return coverage >= 0 ? coverage : findLastCompactionIndex(entries);
