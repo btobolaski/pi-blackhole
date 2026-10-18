@@ -24,12 +24,18 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { isObservationsUnanchoredData } from "./ledger/types.js";
+import {
+  OM_OBSERVATIONS_COVERAGE,
+  isObservationsCoverageData,
+  isObservationsUnanchoredData,
+} from "./ledger/types.js";
 // ── Types ───────────────────────────────────────────────────────────────────
 
 export interface PendingObservation {
   coversUpToId: string;
   data: unknown;
+  /** Coverage-only empty close, flushed with this custom type. */
+  customType?: typeof OM_OBSERVATIONS_COVERAGE;
 }
 
 export interface PendingReflection {
@@ -117,6 +123,14 @@ function ensureDir(): void {
 
 function defaultState(): PendingOMState {
   return {};
+}
+
+function isPendingObservationBatch(value: unknown): value is PendingObservation {
+  if (!value || typeof value !== "object") return false;
+  const batch = value as Record<string, unknown>;
+  if (typeof batch.coversUpToId !== "string" || batch.data === undefined) return false;
+  if (batch.customType === undefined) return true;
+  return batch.customType === OM_OBSERVATIONS_COVERAGE && isObservationsCoverageData(batch.data);
 }
 
 function isEmptyState(s: PendingOMState): boolean {
@@ -232,18 +246,14 @@ function isPendingOMState(value: unknown): value is PendingOMState {
 function sanitizePendingState(raw: PendingOMState): PendingOMState {
   const sanitized: PendingOMState = {
     ...raw,
-    observation: raw.observation ?? undefined,
+    observation: isPendingObservationBatch(raw.observation) ? raw.observation : undefined,
     reflection: raw.reflection ?? undefined,
     dropped: raw.dropped ?? undefined,
   };
   // Filter batch arrays to only include valid entries with the required shape
   if (Array.isArray(raw.observationBatches)) {
-    sanitized.observationBatches = raw.observationBatches.filter(
-      (b): b is PendingObservation =>
-        !!b &&
-        typeof b === "object" &&
-        typeof (b as any).coversUpToId === "string" &&
-        (b as any).data !== undefined,
+    sanitized.observationBatches = raw.observationBatches.filter((b): b is PendingObservation =>
+      isPendingObservationBatch(b),
     );
   }
   if (Array.isArray(raw.reflectionBatches)) {
@@ -296,6 +306,25 @@ export function savePendingObservation(sessionId: string, entry: PendingObservat
   // Each batch preserves per-run coverage (coversUpToId) matching the
   // normal branch-marker pattern.
   state.observationBatches = [...(state.observationBatches ?? []), entry];
+  writeSessionState(sessionId, state);
+}
+
+/** Save a completed empty observer range for ordered flush with fact batches. */
+export function savePendingObservationCoverage(
+  sessionId: string,
+  entry: { coversUpToId: string; data: unknown },
+): void {
+  const state = readSessionState(sessionId);
+  const coverage: PendingObservation = {
+    ...entry,
+    customType: OM_OBSERVATIONS_COVERAGE,
+  };
+  // Legacy pending files stored only the latest observation. Seed the ordered
+  // batch list from that value before replacing it, or an empty coverage save
+  // would silently discard facts that have not yet been flushed.
+  const priorBatches = state.observationBatches ?? (state.observation ? [state.observation] : []);
+  state.observation = coverage;
+  state.observationBatches = [...priorBatches, coverage];
   writeSessionState(sessionId, state);
 }
 

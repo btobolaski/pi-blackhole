@@ -674,6 +674,16 @@ describe("runObserver", () => {
     expect(result.emptyReason).toEqual({ kind: "no_new_content" });
   });
 
+  it("marks a clean complete empty batch as coverage complete", async () => {
+    const loop = fakeAgentLoop(async (_prompts, context) => {
+      await context.tools[0].execute("tool-1", { observations: [], complete: true });
+    });
+
+    const result = await runObserver({ ...baseArgs, agentLoop: loop });
+
+    expect(result.coverageComplete).toBe(true);
+  });
+
   it("reports empty_array for an unflagged empty batch", async () => {
     const loop = fakeAgentLoop(async (_prompts, context) => {
       await context.tools[0].execute("tool-1", { observations: [] });
@@ -683,6 +693,16 @@ describe("runObserver", () => {
 
     expect(result.observations).toBeUndefined();
     expect(result.emptyReason).toEqual({ kind: "empty_array", count: 0 });
+  });
+
+  it("does not mark an unflagged empty batch as coverage complete", async () => {
+    const loop = fakeAgentLoop(async (_prompts, context) => {
+      await context.tools[0].execute("tool-1", { observations: [] });
+    });
+
+    const result = await runObserver({ ...baseArgs, agentLoop: loop });
+
+    expect(result.coverageComplete).toBe(false);
   });
 
   it("keeps all_rejected when a complete empty batch follows a rejected one", async () => {
@@ -698,6 +718,20 @@ describe("runObserver", () => {
 
     // The closing flag must not erase the outstanding rejection from the label.
     expect(result.emptyReason).toEqual({ kind: "all_rejected", count: 1 });
+  });
+
+  it("does not mark rejected source coverage complete after an empty close", async () => {
+    const loop = fakeAgentLoop(async (_prompts, context) => {
+      await context.tools[0].execute("tool-1", {
+        observations: [{ content: "Bad source", relevance: "medium", sourceEntryIds: ["missing"] }],
+        complete: false,
+      });
+      await context.tools[0].execute("tool-2", { observations: [], complete: true });
+    });
+
+    const result = await runObserver({ ...baseArgs, agentLoop: loop });
+
+    expect(result.coverageComplete).toBe(false);
   });
 
   it("lets a complete empty batch end the run", async () => {

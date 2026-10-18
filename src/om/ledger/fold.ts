@@ -10,6 +10,7 @@ import {
   supersededIds,
   isObservationsUnanchoredData,
   isReflectionsRecordedData,
+  OM_OBSERVATIONS_COVERAGE,
   OM_OBSERVATIONS_DROPPED,
   OM_OBSERVATIONS_RECORDED,
   OM_OBSERVATIONS_UNANCHORED,
@@ -77,6 +78,9 @@ export function foldLedger(entries: Entry[], options: FoldLedgerOptions = {}): F
       }
       continue;
     }
+
+    // Delivered empty ranges are progress metadata only, never ledger facts.
+    if (isCustomEntry(entry, OM_OBSERVATIONS_COVERAGE)) continue;
 
     // Coverage-inert kept facts: they join the pool (and its first-wins
     // dedup) but carry no coverage claim, so no cursor or marker scan reads
