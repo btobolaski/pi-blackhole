@@ -80,3 +80,16 @@ Both [observed-prefix liveness](https://github.com/k0valik/pi-blackhole/pull/177
 - Final cumulative gates at `3d2f23a`: `pnpm build`, `pnpm verify` (161 files / 3,033 tests), and `pnpm format:check` passed with `PI_CODING_AGENT_DIR` unset. No dependency changes. Contributor ancestry remains intact.
 
 The maintainer subsequently authorized merging #177, #179, #178 and #158 into dev, followed by release preparation. The separate ask-tool follow-up is #179; timeline export remains #158.
+
+## Release 0.5.14 preparation
+
+Maintainer-authorized landing order: #177 → #179 → #178 → #158. The first two landed as normal GitHub merges (`d610000`, `5b5c184`); local normal merge commits `e91c2e3` (#178) and `76a0595` (#158) continue that order. All fifteen batch PR heads plus #179, #178 and #158 remain ancestors. Original author commits and merge ancestry are retained. #149 remains outside this work. #158 was excluded from the contributor batch and is intentionally included separately in this release.
+
+- #179: guarded recognition for six inspected question-tool families, shared VCC/observer projection, separate cancellation/default/control handling, and source-only provenance in `ask-tool-compatibility.md`. Before landing, build/typecheck and 251 adjacent observer/decision tests passed with the final #177 fixes. No native oh-my-pi execution or compatibility claim.
+- #178, pinned `52d371664beedc86fd65fcfd825fe2e2f2d72d0a`: reviewed callable-schema serialization, direct ordinary typebox behavior and fallback paths. Only the changelog required conflict reconciliation; both entries are preserved. Build/typecheck, 18 prompt-budget tests and formatting passed cumulatively.
+- #158, pinned `470c9ccebcbe2c8d4a1169ef1f41a39c5e1fc509`: static review checked time windows, timeless deletions, pending attribution, active-session exclusion, exact dedup and historical reflection handling. Reviewer regression reproduced an oversized days window accepted before date formatting could throw. Separate fix `3aba834` (reviewer source `de81921`) rejects unsafe/out-of-supported-range inputs; 89 focused tests passed. Numeric overflow and supported boundary cases remain separate tests.
+- Release preparation: `0.5.14`, dated 2026-10-18. README has exactly six feature highlights led by timeline/headless export, followed by new configuration and decision/memory behavior. Configuration docs, example config and llms guidance match source defaults. Detailed fixes stay in CHANGELOG. Existing stash is preserved.
+
+Final code/version revision `8efdc0b`: `pnpm build`, `pnpm verify` (167 files / 3,157 tests), and `pnpm format:check` passed with `PI_CODING_AGENT_DIR` unset, using the final lockfile and private dependencies (Node 26.1.0, pnpm 12.10.0, Pi 1.3.0, Vitest 5.0.5). `git diff --check`, all 18 original head ancestry checks, version/date and README entry-count checks passed. This final audit-only addition was formatted afterward.
+
+The release is prepared on dev; main and annotated tag publication are separate steps in the repository release workflow.

@@ -4,6 +4,8 @@
 
 ## [0.5.14] - 2026-10-18
 
+Integrates contributor PRs #159–#173 via #177, question-tool compatibility #179, callable-schema support #178, and timeline export #158. Original commits and authorship are preserved; focused reviewer corrections and validation are recorded in the [integration audit](work_docs/batch-pr-159-173-audit.md).
+
 ### Added
 
 - **`ask_user_question` answers survive VCC compaction.** The user's answers to a multiple-choice prompt were treated like any other tool output and could vanish from the summary. VCC now adds a deterministic `[User Decisions]` section (`User decided: <question> → <selected labels or custom answer>`, notes verbatim as `user note:`, newest 8 kept), using structured `details` when present and the tool's text format otherwise. No config key or model call.
