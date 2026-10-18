@@ -87,10 +87,10 @@ pi-blackhole
 │   └── recall.ts                     ← MODIFIED (unified: VCC recall + OM recall)
 ├── src/om/                           ← DERIVED FROM OM (renamed + modified)
 │   ├── config.ts                     ← REWRITTEN (re-exports unified-config)
-│   ├── runtime.ts                    ← MODIFIED (cooldown, fallbacks, retry gate)
-│   ├── consolidation.ts              ← REWRITTEN (fallback chains, pending, preambles)
+│   ├── runtime.ts                    ← MODIFIED (stage-local failures, fallbacks, retry gate)
+│   ├── consolidation.ts              ← REWRITTEN (stage-local skips, fallback chains, pending, preambles)
 │   ├── compaction-trigger.ts         ← MODIFIED (noAutoCompact, queueMicrotask, sessionId)
-│   ├── cooldown.ts                   ★ UNIQUE
+│   ├── usage-log.ts                  ★ UNIQUE
 │   ├── pending.ts                    ★ UNIQUE
 │   ├── reverse-recall.ts             ★ UNIQUE
 │   ├── clipboard.ts                  ← UNCHANGED
@@ -130,8 +130,8 @@ pi-blackhole
 | File | Upstream | Divergence | Risk |
 |---|---|---|---|
 | `src/hooks/before-compact.ts` | VCC | After VCC compile(), we call `buildCompactionProjection` + `renderSummary` to inject OM observations/reflections. Upstream has none of this. | HIGH — OM injection code would be lost |
-| `src/om/consolidation.ts` | OM | Each stage (observer→reflector→dropper) has a fallback loop for model retries with cooldown, noAutoCompact pending.json support, preamble capping, empty diagnosis. | HIGH — upstream is simpler, no fallback logic |
-| `src/om/runtime.ts` | OM | Has `buildCandidateList`, `findCandidateConfig`, `recordRetryableError`, `markConsolidationError`, `isConsolidationRetryGated`, `compactionStats`, `compactWasPiVcc`. | HIGH — fundamental architecture difference |
+| `src/om/consolidation.ts` | OM | Each stage (observer→reflector→dropper) has a fallback loop with stage-local in-memory failure skips (never persisted), noAutoCompact pending.json support, preamble capping, empty diagnosis. | HIGH — upstream is simpler, no fallback logic |
+| `src/om/runtime.ts` | OM | Has `buildCandidateList`, `recordStageFailure` / `failedInCycle` (stage-local only, never persisted), `markConsolidationError`, `isConsolidationRetryGated`, `compactionStats`, `compactWasPiVcc`. | HIGH — fundamental architecture difference |
 | `src/om/config.ts` | OM | Completely rewritten to re-export `UnifiedConfig` from `unified-config.ts`, which merges VCC settings + OM settings. | HIGH — different config structure |
 | `src/om/compaction-trigger.ts` | OM | `queueMicrotask` instead of `setTimeout`, session ID identity validation, `noAutoCompact` gate, `memory=false` gate. | MEDIUM — core logic same, safety guards added |
 | `src/om/agents/observer/agent.ts` | OM | Detects `stopReason="error"` on agent_end and throws to trigger fallback. Diagnoses empty results. | LOW — additive changes on top of same core |
@@ -161,8 +161,8 @@ pi-blackhole
 
 | File | Purpose |
 |---|---|
-| `src/core/unified-config.ts` | Single config schema that holds both VCC settings (overrideDefaultCompaction, debug) and OM settings (observeAfterTokens, etc.) plus blackhole-specific settings (noAutoCompact, memory, passive, fallback chains, cooldown) |
+| `src/core/unified-config.ts` | Single config schema that holds both VCC settings (overrideDefaultCompaction, debug) and OM settings (observeAfterTokens, etc.) plus blackhole-specific settings (noAutoCompact, memory, passive, fallback chains, usageLog) |
 | `src/commands/memory.ts` | `/blackhole-memory [status|view|full]` — pipeline status display with token metrics, pending queue inspection |
-| `src/om/cooldown.ts` | Model cooldown persistence — records failed models to disk so they're skipped on retry, survives Pi restarts |
+| `src/om/usage-log.ts` | Best-effort pi-format worker usage logs in `{sessionDir}/memory-logs/`, outside shallow session discovery |
 | `src/om/pending.ts` | Pending observation/reflection/dropper buffer for `noAutoCompact` mode — stores observations to disk instead of writing branch markers |
 | `src/om/reverse-recall.ts` | Bi-directional recall coupling: hex ID → transcript entry, `#N` index → OM observation/reflection |

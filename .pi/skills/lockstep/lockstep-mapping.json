@@ -1,6 +1,6 @@
 {
   "_description": "Bijection table mapping upstream files to blackhole's versions. Each entry describes how the file relates.",
-  "_note": "Keys use upstream path relative to repo root. Values describe the relationship.",
+  "_note": "Keys use upstream path relative to repo root. Values describe the relationship. Blackhole-only src/om/usage-log.ts has no upstream counterpart.",
   "upstreams": {
     "pi-vcc": {
       "git": "https://github.com/sting8k/pi-vcc.git",
@@ -245,14 +245,14 @@
       "path": "src/runtime.ts",
       "ours": "src/om/runtime.ts",
       "status": "MODIFIED",
-      "_note": "Extended with: buildCandidateList, findCandidateConfig, recordRetryableError, markConsolidationError, isConsolidationRetryGated, compactionStats, compactWasPiVcc, cooldown integration."
+      "_note": "Extended with: buildCandidateList, recordStageFailure and stage-local failedInCycle tracking (never persisted), markConsolidationError retry gate, isConsolidationRetryGated, compactionStats, compactWasPiVcc."
     },
     {
       "upstream": "pi-observational-memory",
       "path": "src/hooks/consolidation-trigger.ts",
       "ours": "src/om/consolidation.ts",
       "status": "REWRITTEN",
-      "_note": "Same pipeline (observer→reflector→dropper) but each stage has fallback model retry loops, cooldown recording, noAutoCompact pending.json support, observerPreambleMaxTokens capping, MAX_STAGE_ATTEMPTS per stage, and duplicate/empty observation diagnosis."
+      "_note": "Same pipeline (observer→reflector→dropper) but each stage has fallback model retry loops, stage-local in-memory failure skips (never persisted), noAutoCompact pending.json support, observerPreambleMaxTokens capping, MAX_STAGE_ATTEMPTS per stage, and duplicate/empty observation diagnosis."
     },
     {
       "upstream": "pi-observational-memory",

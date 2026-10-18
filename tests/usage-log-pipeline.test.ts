@@ -59,6 +59,7 @@ vi.mock("../src/om/agents/dropper/agent.js", () => ({
 import { Runtime } from "../src/om/runtime.js";
 import { runConsolidationPipeline, type ConsolidationCtx } from "../src/om/consolidation.js";
 import { createExtensionApiDouble } from "./fixtures/pi-extension-api.js";
+import { rawMessage } from "./fixtures/session.js";
 
 const SESSION_ID = "pipe-test-session";
 let sessionDir: string;
@@ -264,21 +265,17 @@ describe("runConsolidationPipeline usageLog wiring", () => {
   it("does not construct a logger and passes undefined when usageLog is false", async () => {
     const runtime = makeRuntime(false);
     const ctx = makeCtx();
+    ctx.sessionManager.getBranch = () => [rawMessage("msg-1", "x".repeat(50))];
 
     await runConsolidationPipeline(
-      { appendEntry: () => {} } as any,
+      createExtensionApiDouble(),
       runtime,
       ctx,
       runtime.captureGeneration(SESSION_ID),
     );
 
     expect(createUsageLoggerSpy).not.toHaveBeenCalled();
-    // Observer still ran (empty branch → no agent call expected), but if it
-    // had, it would receive undefined. Assert via the construction gate:
-    // no logger exists to forward.
-    // The reflector/dropper stages don't reach their agent calls on an empty
-    // branch, so only the construction assertion is meaningful here.
-    expect(observerCalls).toHaveLength(0);
+    expect(observerCalls).toEqual([expect.objectContaining({ onAssistantMessage: undefined })]);
   });
 
   it("forwards the same logger to reflector and dropper stages", async () => {

@@ -1163,10 +1163,9 @@ describe("worker attempt hard timeout", () => {
       },
     });
     fixture.runtime.config.workerAttemptTimeoutMs = 100;
-    // Configured candidate shares provider/id with the session model. Its
-    // timeout is tracked in-cycle (cooldownHours: 0); without the fix the
-    // resolver's session fallback returned the identical stalled model and
-    // findCandidateConfig matched the configured entry — ten retries.
+    // The candidate shares provider/id with the session model. Its timeout
+    // enters failedInCycle, so resolveModel must not retry that same identity
+    // through session fallback (which previously exhausted all ten attempts).
     fixture.runtime.config.observerModel = { provider: "test", id: "stalled", cooldownHours: 0 };
     fixture.runtime.config.observerFallbackModels = [];
     agents.runObserver.mockImplementation((input) => {

@@ -14,7 +14,12 @@ import { describe, expect, it, vi } from "vitest";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 
-import { createUsageLogger, sanitizeForLog, type UsageLogger } from "../src/om/usage-log.js";
+import {
+  createUsageLogger,
+  emitAssistantMessages,
+  sanitizeForLog,
+  type UsageLogger,
+} from "../src/om/usage-log.js";
 import { runObserver } from "../src/om/agents/observer/agent.js";
 import { runReflector } from "../src/om/agents/reflector/agent.js";
 import { runDropper } from "../src/om/agents/dropper/agent.js";
@@ -259,43 +264,48 @@ describe("createUsageLogger", () => {
     }
   });
 
-  it("does not write a duplicate header when the existing log is corrupt (nonempty but unparseable)", () => {
-    // A nonempty but corrupt log must not get a second session header appended.
-    // The logger skips the header and chains message lines from the session id.
-    const dir = makeTmpDir();
-    const path = join(dir, "memory-logs", `${SESSION_ID}_memory.jsonl`);
-    try {
-      mkdirSync(join(dir, "memory-logs"));
-      writeFileSync(path, "this is not valid json\n");
+  it.each(["this is not valid json\n", "{}\n", '{"id":42}\n'])(
+    "chains from the session ID without a new header when the existing log has no usable ID: %j",
+    (existingLog) => {
+      // A nonempty log without a usable parent ID must not get a new header.
+      // Cover invalid JSON and parseable JSON with a missing or non-string id.
+      const dir = makeTmpDir();
+      const path = join(dir, "memory-logs", `${SESSION_ID}_memory.jsonl`);
+      try {
+        mkdirSync(join(dir, "memory-logs"));
+        writeFileSync(path, existingLog);
 
-      const log = createUsageLogger({
-        sessionDir: dir,
-        sessionId: SESSION_ID,
-        cwd: "/proj",
-      });
-      log(makeAssistantMessage({ model: "after-corruption" }));
+        const log = createUsageLogger({
+          sessionDir: dir,
+          sessionId: SESSION_ID,
+          cwd: "/proj",
+        });
+        log(makeAssistantMessage({ model: "after-corruption" }));
 
-      // Read raw and parse only valid JSON lines (the corrupt line stays in place).
-      const raw = readFileSync(path, "utf-8")
-        .split("\n")
-        .filter((l) => l.trim().length > 0);
-      const parsed = raw
-        .map((l) => {
-          try {
-            return JSON.parse(l);
-          } catch {
-            return null;
-          }
-        })
-        .filter((v) => v !== null);
-      // No new session header was written; only the one valid message line was appended.
-      expect(parsed.filter((l) => l.type === "session")).toHaveLength(0);
-      expect(parsed.filter((l) => l.type === "message")).toHaveLength(1);
-      expect(parsed[0].parentId).toBe(SESSION_ID);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
+        // Read original and appended lines, tolerating invalid original JSON.
+        const raw = readFileSync(path, "utf-8")
+          .split("\n")
+          .filter((l) => l.trim().length > 0);
+        const parsed = raw
+          .map((l) => {
+            try {
+              return JSON.parse(l);
+            } catch {
+              return null;
+            }
+          })
+          .filter((v) => v !== null);
+        // No new session header was written; only the one valid message line was appended.
+        expect(parsed.filter((l) => l.type === "session")).toHaveLength(0);
+        expect(parsed.filter((l) => l.type === "message")).toHaveLength(1);
+        expect(parsed.find((line) => line.type === "message")).toMatchObject({
+          parentId: SESSION_ID,
+        });
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
 });
 
 // ── sanitizeForLog ──────────────────────────────────────────────────────────
@@ -461,6 +471,16 @@ describe("createUsageLogger error handling", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("emitAssistantMessages", () => {
+  it("skips assistant messages without usage", () => {
+    const logger = vi.fn<UsageLogger>();
+
+    emitAssistantMessages(logger, [{ role: "assistant" }]);
+
+    expect(logger).not.toHaveBeenCalled();
   });
 });
 

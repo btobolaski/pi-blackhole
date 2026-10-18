@@ -807,16 +807,14 @@ export async function runConsolidationPipeline(
   // One usage logger is shared across all stages and fallback attempts so every
   // OM assistant message is appended to the same per-session usage log.
   let usageLogger: UsageLogger | undefined;
-  if (runtime.config.usageLog !== false) {
-    try {
-      usageLogger = createWorkerUsageLogger(runtime, ctx);
-    } catch (error) {
-      if (isStaleExtensionContextError(error)) {
-        debugLog("pipeline.stale_ctx", { error: String(error) });
-        return;
-      }
-      throw error;
+  try {
+    usageLogger = createWorkerUsageLogger(runtime, ctx);
+  } catch (error) {
+    if (isStaleExtensionContextError(error)) {
+      debugLog("pipeline.stale_ctx", { error: String(error) });
+      return;
     }
+    throw error;
   }
 
   runtime.consolidationPhase = "observer";

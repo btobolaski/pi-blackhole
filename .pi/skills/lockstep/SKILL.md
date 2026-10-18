@@ -37,7 +37,7 @@ Remotes are auto-created on first script run, but a manual fetch ensures they ex
 Even after I approve porting a specific fix or feature, you must then:
 
 1. **Study the code carefully** — read the upstream diff, then read our corresponding file in full
-2. **Trace downstream impacts** — does this change affect any of our unique features? (cooldown, pending.json, noAutoCompact, fallback chains, unified-config, reverse-recall)
+2. **Trace downstream impacts** — does this change affect any of our unique features? (usage logging, pending.json, noAutoCompact, fallback chains, unified-config, reverse-recall)
 3. **Check for conflicts** — does it touch lines we modified? If so, does the fix still apply correctly given our changes?
 4. **Present your analysis** — explain the proposed change, what it fixes, what files it touches, and why it's safe (or why it's risky)
 5. **Wait for approval** — I will say "yes, port it" or "skip it" explicitly
@@ -283,7 +283,7 @@ git rev-parse refs/remotes/upstream-pi-vcc/master > .pi/skills/lockstep/.upstrea
 | File | Reason |
 |---|---|
 | `src/hooks/before-compact.ts` | We inject OM content after VCC compile. Upstream VCC changes won't include OM injection. |
-| `src/om/consolidation.ts` | Completely rewritten with fallback chains, cooldowns, pending.json. Upstream version is unrecognizably different. |
+| `src/om/consolidation.ts` | Completely rewritten with fallback chains, stage-local in-memory failure skips (never persisted), pending.json. Upstream version is unrecognizably different. |
 | `src/om/runtime.ts` | Heavily extended. |
 | `src/om/config.ts` | Just re-exports from unified-config.ts. |
 | `src/core/settings.ts` (upstream) | Eliminated — replaced by unified-config.ts. |

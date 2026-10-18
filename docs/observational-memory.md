@@ -214,6 +214,12 @@ Setting `observeAfterTokens` above `observerChunkMaxTokens` makes every observat
 
 Each stage clears `failedInCycle` between stages. Cursor state is flushed to pending file after all stages complete.
 
+### Usage logging
+
+`usageLog: true` (default) captures usage-bearing assistant messages from all three workers, including fallback attempts, shrink-to-fit batches and shutdown observation, in `{sessionDir}/memory-logs/{sessionId}_memory.jsonl`. These append-only files use Pi's session-log format but stay outside shallow resume discovery.
+
+Writes are best-effort, resume the parent-ID chain, and strip parser-incompatible fields (`cacheWrite1h`, `redacted`, `thoughtSignature`). Set `usageLog: false` to disable. Legacy flat logs are not moved automatically; stop sessions using the old logger before relocating them, and never overwrite a destination. See [configuration and safe relocation guidance](CONFIG.md#debug-section).
+
 ### Cursor system
 
 Pipeline cursors track progress per stage. Defined in `PipelineCursor` / `PipelineCursors`. States: `initial`, `recorded`, `empty`, `error`, `skipped`, `not_due`.

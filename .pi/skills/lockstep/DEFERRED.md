@@ -34,7 +34,7 @@ Extracts pool metric functions (observationPoolFullness, dropUrgencyForFullness,
 **Date**: 2026-05-27 (re-evaluated 2026-06-05)
 **Status**: ⏳ Deferred
 **Blocking**: Previously blocked by `noautocompact-reflector-dropper` branch (now stale/dropped). Still deferred — touches heavily diverged files (`consolidation.ts`, `runtime.ts`).
-**Risk**: HIGH — our `consolidation.ts` and `runtime.ts` have fundamentally different architecture (fallback chains, cooldowns, pending.json).
+**Risk**: HIGH — our `consolidation.ts` and `runtime.ts` have fundamentally different architecture (fallback chains, stage-local in-memory failure skips (never persisted), pending.json).
 **Mitigation applied**: `observationsPoolTargetTokens` added as forward-compat no-op config entry in `unified-config.ts`.
 **Re-evaluate**: When upstream makes further pool-related changes, or if we refactor our consolidation pipeline.
 
