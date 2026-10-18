@@ -2832,3 +2832,44 @@ test("preserving observer does not skip an earlier hole before a disconnected ba
   await fixture.run();
   expect(observerChunkArg().allowedSourceEntryIds).toEqual(["m1", "m2", "m3"]);
 });
+
+test("preserving observer starts after later recorded coverage than a stale source cursor", async () => {
+  const fixture = makePipelineFixture({
+    observeAfterTokens: 1,
+    entries: [
+      smallSource("m1"),
+      smallSource("m2"),
+      observationsRecordedEntry("om1", {
+        coversUpToId: "m2",
+        observations: [observation("aaaaaaaaaaaa", { sourceEntryIds: ["m1", "m2"] })],
+      }),
+      smallSource("m3"),
+    ],
+  });
+  fixture.runtime.config.contextPressureFallback = "vcc";
+  fixture.runtime.advanceCursor("observer", "m1", "recorded");
+
+  await fixture.run();
+
+  expect(observerChunkArg().allowedSourceEntryIds).toEqual(["m3"]);
+});
+
+test("pressure setting replays original sources after compaction", async () => {
+  const fixture = makePipelineFixture({
+    observeAfterTokens: 1,
+    entries: [
+      smallSource("m1"),
+      compactionEntry("c1", {
+        firstKeptEntryId: "m2",
+        details: { "om.preserveSourceHistory": true },
+      }),
+      smallSource("m2"),
+    ],
+  });
+  fixture.runtime.config.tailBehavior = "minimal";
+  fixture.runtime.config.contextPressureFallback = "vcc";
+
+  await fixture.run();
+
+  expect(observerChunkArg().allowedSourceEntryIds).toEqual(["m1", "m2"]);
+});

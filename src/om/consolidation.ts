@@ -357,6 +357,7 @@ function matchesEmptyPressurePool(runtime: Runtime, poolSignature: string): bool
 function preserveObserverSources(entries: Entry[], runtime: Runtime): boolean {
   return (
     runtime.config.tailBehavior === "unobserved" ||
+    runtime.config.contextPressureFallback === "vcc" ||
     entries.some(
       (entry) =>
         entry.type === "compaction" &&

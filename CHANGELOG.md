@@ -6,6 +6,7 @@
 - **Observer records `ask_user_question` choices as high-relevance observations.** A user's answers to a multiple-choice prompt are their own decisions, but the observer had no rule marking them as such and could skip them as routine tool output. The observer prompt now asks for each selected choice and the meaning of any user note as its own observation citing the result entry, at relevance `high` or above, and never the unselected options. Prompt-only: no schema, config or extra model call.
 - **Cooldown writes are diagnosable in the debug log.** With debug logging enabled, successful writes record the model, stage, cause class and a short sanitized reason. Failed writes and in-memory-only skips do not claim a persisted cooldown, and retry policy is unchanged.
 - Opt-in `tailBehavior: "unobserved"` preserves original unobserved history and tool outputs, defers oversized tails safely, and keeps pending observer work across compaction and restart.
+- Opt-in `contextPressureFallback: "vcc"` bridges older retained context under pressure independently of tail policy, with a bounded recent raw suffix and original-history observer continuity. Default is `"off"`.
 
 
 - **Reflection timestamps.** New reflections store evidence time from their latest supporting observation. `reflectionTimestamps` (default `true`, env `PI_BLACKHOLE_REFLECTION_TIMESTAMPS`) displays it in compacted memory, worker prompts and `/blackhole-memory`; export prefers that time. Legacy records remain unchanged.
