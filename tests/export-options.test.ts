@@ -109,10 +109,13 @@ describe("parseBlackholeExportArgs", () => {
 
   it("rejects days values whose window cannot be represented by JavaScript dates", () => {
     expect(expectErr("days:100000001")).toMatch(/days/);
+  });
+
+  it("rejects days values that overflow numeric representation", () => {
     expect(expectErr(`days:${"9".repeat(400)}`)).toMatch(/days/);
   });
 
-  it("accepts the largest representable days window", () => {
+  it("accepts the largest supported days window", () => {
     expect(expectOk("days:100000000").days).toBe(100000000);
   });
 
