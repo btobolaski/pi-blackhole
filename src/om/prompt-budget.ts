@@ -18,7 +18,11 @@
  * under-prices CJK ~3x relative to the measured side. (The measured schema
  * stringifies without typebox's symbol-keyed markers, so it prices slightly
  * below what the provider receives — the unsafe direction for a preflight
- * guard, but the delta is ~zero and the 1024-token safety margin absorbs it.)
+ * guard, but the delta is ~zero and the 1024-token safety margin absorbs it.
+ * Host runtimes that shim typebox with callable schemas (omp/omptype) have
+ * no toJSON, so JSON.stringify would yield `undefined`; schemaStaticJson
+ * prices those at zero — or from toJsonSchema() when the shim exposes one —
+ * instead of crashing extension load at import (#174).)
  */
 import type { Model } from "@earendil-works/pi-ai";
 import { DROPPER_SYSTEM } from "./agents/dropper/prompts.js";
@@ -54,10 +58,34 @@ export const WORKER_TURN_HEADROOM_TOKENS = 2048;
 /** Safety margin applied on top of every fit-check. */
 export const WORKER_SAFETY_MARGIN_TOKENS = 1024;
 
+/**
+ * JSON text of a tool schema for static pricing.
+ *
+ * Real typebox schemas are plain objects that stringify directly. Host
+ * runtimes may swap typebox for a shim whose builders return callable
+ * schemas (omp maps `typebox` to an omptype facade); a function has no
+ * toJSON, so JSON.stringify yields the primitive `undefined` and pricing it
+ * must not reach the token estimator — a throw here kills extension load at
+ * import. Prefer the shim's toJsonSchema() for an accurate measurement,
+ * fall back to zero otherwise: the largest worker schema is ~321 tokens,
+ * well inside the 1024-token safety margin, so the underestimate stays
+ * absorbed and the preflight guard keeps its safe direction.
+ */
+function schemaStaticJson(schema: unknown): string {
+  if (schema == null) return "";
+  try {
+    const toJson = (schema as { toJsonSchema?: () => unknown }).toJsonSchema;
+    if (typeof toJson === "function") return JSON.stringify(toJson.call(schema)) ?? "";
+    return JSON.stringify(schema) ?? "";
+  } catch {
+    return "";
+  }
+}
+
 function measureStatic(system: string, schema: unknown): number {
   return (
     estimateStringTokens(system) +
-    estimateStringTokens(JSON.stringify(schema)) +
+    estimateStringTokens(schemaStaticJson(schema)) +
     WORKER_FRAMING_TOKENS
   );
 }
