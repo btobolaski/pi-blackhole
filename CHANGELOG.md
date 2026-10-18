@@ -8,9 +8,8 @@
 - Opt-in `tailBehavior: "unobserved"` preserves original unobserved history and tool outputs, defers oversized tails safely, and keeps pending observer work across compaction and restart.
 - Opt-in `contextPressureFallback: "vcc"` bridges older retained context under pressure independently of tail policy, with a bounded recent raw suffix and original-history observer continuity. Default is `"off"`.
 
-
 - **Reflection timestamps.** New reflections store evidence time from their latest supporting observation. `reflectionTimestamps` (default `true`, env `PI_BLACKHOLE_REFLECTION_TIMESTAMPS`) displays it in compacted memory, worker prompts and `/blackhole-memory`; export prefers that time. Legacy records remain unchanged.
-- **Display-only supersede notes.** `reflectionSupersedes` (default `false`, env `PI_BLACKHOLE_REFLECTION_SUPERSEDES`) lets new reflections annotate earlier shown ids with `(supersedes <id>)`. No reflection is hidden, removed or rewritten; append segments remain unchanged. Both reflection keys off preserve legacy rendering, reflector prompt and schema. No new model calls.
+- **Reflection supersession metadata.** `reflectionSupersedes` (default `false`, env `PI_BLACKHOLE_REFLECTION_SUPERSEDES`) lets new reflections identify replaced earlier ids with `(supersedes <id>)`. Active projections retire those replacements as described below; ledger evidence and immutable append segments remain unchanged. Both reflection keys off preserve legacy rendering, reflector prompt and schema. No new model calls.
 - Opt-in `observeOnShutdown` (`PI_BLACKHOLE_OBSERVE_ON_SHUTDOWN`, default `false`): persisted sessions can observe their unprocessed tail before quit, new, resume or fork. One observer request at most, a shared 20-second deadline, and a 200-token minimum. Stale host contexts block pending batches and cursor writes, including in-flight consolidation; errors honor `debugLog`. Reload and non-persisted sessions are skipped; no new reflector or dropper is launched.
 
 ### Changed
@@ -19,6 +18,8 @@
 
 ### Fixed
 
+- **Production installs include `typebox`.** Move the unchanged `1.3.37` dependency from development to runtime dependencies so the externalized bundle imports work when devDependencies are omitted.
+- **Batch review follow-ups.** Preserve confirmed questionnaire answers over previews and cancellation, keep the eight-decision cap across compactions, apply reflection retirement to visible memory views, filter superseded pending worker context, and resume observation after the later recorded coverage when a source cursor is stale.
 - **`tailBehavior: "minimal"` keeps a tail in a single long run.** When the live window had no user message after its first one, the minimal cut disabled Pi's own cut, so every such compaction summarized everything and kept no recent messages (about 39% of compactions in a sample of 2,014). Pi's later split-turn cut now applies in that case, as documented; windows with a later user message and compactions with no usable Pi cut behave as before.
 - **Compaction memory keeps the pre-cut observations of a batch that straddles the cut.** An observer batch whose coverage ended after the first kept entry was left out of the compacted memory as a whole, so facts already summarized away from the raw transcript had no observation either (37% of 1,979 compactions in a sample, median about 710 observation tokens). The projection now keeps the observations whose cited sources are all at or before the cut and leaves later ones for the compaction that reaches them; observations with unplaceable sources stay out as before.
 - **Turn limits no longer bench reflector and dropper models.** Exhausting a worker turn budget now skips that model only for the current stage, including batches that cannot be split further. Incomplete work keeps its coverage unchanged and can retry in a later cycle without waiting for a model cooldown.

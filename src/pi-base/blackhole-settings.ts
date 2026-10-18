@@ -90,7 +90,7 @@ export const config = new ConfigManager<UnifiedConfig>({
       type: "enum",
       label: "Visible tail",
       description:
-        "minimal=keep last user message only (default), pi-default=keep Pi's preserved visible context",
+        "minimal=keep last user message (default), pi-default=keep Pi's visible context, unobserved=retain original unobserved history",
       value: cfg.tailBehavior,
       options: ["minimal", "pi-default", "unobserved"],
       optionLabels: {

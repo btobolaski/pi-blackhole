@@ -127,14 +127,14 @@ Projection builds slices of the ledger for different purposes. Defined in [[src/
 
 ### Visible projection
 
-`visibleProjection(entries)` — What the agent sees after compaction. Uses `MemoryDetails` from the latest compaction entry. Before first compaction, shows everything.
+`visibleProjection(entries)` — What the agent sees after compaction. Uses `MemoryDetails` from the latest compaction entry. Before first compaction, builds from recorded memory and applies the configured reflection retirement.
 
 ### Compaction projection
 
 `buildCompactionProjection(entries, firstKeptEntryId, config)` — Builds the memory slice for compaction output. Uses boundary-based folding:
 
 - Observations boundary: `firstKeptEntryId` (normal fold)
-  - A batch recorded wholly at or before the boundary is included. A batch that straddles it (its `coversUpToId` is past the boundary) contributes the observations whose cited `sourceEntryIds` are all at or before the boundary; observations with a later or unplaceable source are left out and are projected by the compaction whose boundary reaches them.
+  - A batch recorded wholly at or before the boundary is included. A batch that straddles it (its `coversUpToId` is past the boundary) contributes the observations whose cited `sourceEntryIds` are all at or before the boundary; later-sourced observations wait until the boundary reaches their sources, while observations with unplaceable sources stay excluded from that partial projection. Whole-batch inclusion remains unchanged once its coverage boundary is reached.
 - Reflections/drops boundary: `latestFullFoldBoundaryId` (maintenance boundary)
   - A reflection run recorded wholly at or before the boundary is included. A run that straddles it contributes the reflections whose every `supportingObservationIds` entry is an observation placed at or before the boundary (by cited sources, or marker position for unanchored ones); others wait for a later compaction. Drops are not applied past the boundary: a drop can rest on a reflection that is still left out, so dropping early could lose the only copy.
 - **Full fold**: When observation tokens ≥ `observationsPoolMaxTokens`, fold through branch tip
