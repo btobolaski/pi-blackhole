@@ -1,0 +1,151 @@
+{
+  "inspection": {
+    "date": "2026-10-18",
+    "mode": "static source-only; no installs, imports, builds, tests, or execution",
+    "branch": "main",
+    "repositories": [
+      {
+        "url": "https://github.com/eko24ive/pi-ask",
+        "directory": "pi-ask",
+        "sha": "49482b7e5d0d57be8af1db81f490f6e860792cfb",
+        "package_path": null,
+        "inspected": [
+          "src/ask-tool.ts",
+          "src/ask-tool-helpers.ts",
+          "src/schema.ts",
+          "src/types.ts",
+          "src/ui/controller.ts",
+          "src/result-format.ts"
+        ]
+      },
+      {
+        "url": "https://github.com/juicesharp/rpiv-mono/tree/main/packages/rpiv-ask-user-question",
+        "directory": "rpiv-mono",
+        "sha": "d3c6f0812140605a4e55e0a660eb83edc12abbc5",
+        "package_path": "packages/rpiv-ask-user-question",
+        "inspected": [
+          "packages/rpiv-ask-user-question/ask-user-question.ts",
+          "packages/rpiv-ask-user-question/tool/response-envelope.ts",
+          "packages/rpiv-ask-user-question/tool/types.ts",
+          "packages/rpiv-ask-user-question/tool/format-answer.ts",
+          "packages/rpiv-ask-user-question/ask-user-question.execute.test.ts"
+        ]
+      },
+      {
+        "url": "https://github.com/edlsh/pi-ask-user",
+        "directory": "pi-ask-user",
+        "sha": "6d6af7cfcb38d0404d571307b0a8a6b5957a207e",
+        "package_path": null,
+        "inspected": ["index.ts", "README.md", "index.test.ts"]
+      },
+      {
+        "url": "https://github.com/Neuron-Mr-White/UniPi/tree/main/packages/ask-user",
+        "directory": "UniPi",
+        "sha": "6ac5da3de10276a22c27ceebbfe07dc75c10b284",
+        "package_path": "packages/ask-user",
+        "inspected": [
+          "packages/ask-user/tools.ts",
+          "packages/ask-user/types.ts",
+          "packages/ask-user/index.ts",
+          "packages/core/constants.ts",
+          "packages/ask-user/tests/subagent-guard.test.ts"
+        ]
+      },
+      {
+        "url": "https://github.com/mrclrchtr/supi/tree/main/packages/supi-ask-user",
+        "directory": "supi",
+        "sha": "df9c8016ac1ccc793a489c4adcb223249fd58c57",
+        "package_path": "packages/supi-ask-user",
+        "inspected": [
+          "packages/supi-ask-user/src/schema.ts",
+          "packages/supi-ask-user/src/types.ts",
+          "packages/supi-ask-user/src/tool/ask_user/spec.ts",
+          "packages/supi-ask-user/src/tool/ask_user/execute.ts",
+          "packages/supi-ask-user/src/tool/ask_user/result.ts",
+          "packages/supi-ask-user/src/tool/ask_user/register.ts"
+        ]
+      },
+      {
+        "url": "https://github.com/can1357/oh-my-pi/blob/main/packages/coding-agent/src/tools/ask.ts",
+        "directory": "oh-my-pi",
+        "sha": "58349dc80de381057437818b8354c86826c8fa10",
+        "package_path": "packages/coding-agent/src/tools/ask.ts",
+        "host_compatibility": "separate native AgentTool/ToolSession host API; no assumption of Pi extension compatibility",
+        "inspected": [
+          "packages/coding-agent/src/tools/ask.ts",
+          "packages/coding-agent/src/tools/index.ts"
+        ]
+      }
+    ],
+    "blackhole_integration_snapshot": {
+      "path": "integration/pr-159-173 at a4eccbe831622c639dada2042645f101d5e88357",
+      "sha": "a4eccbe831622c639dada2042645f101d5e88357",
+      "read_only": true,
+      "files_reviewed": [
+        "src/core/normalize.ts",
+        "src/core/filter-noise.ts",
+        "src/extract/user-decisions.ts",
+        "src/om/serialize.ts",
+        "node_modules/@earendil-works/pi-coding-agent/dist/core/messages.js",
+        "node_modules/@earendil-works/pi-coding-agent/dist/core/session-manager.js"
+      ]
+    }
+  },
+  "recommendation": {
+    "strategy": "small explicit shape recognizers, guarded by result name plus valid success structure; details preferred; use tool-call-id correlation only when details/text omit question identity; skip ambiguity",
+    "pi_tool_names": ["ask_user_question", "ask_user"],
+    "separate_host_tool_name": "ask",
+    "release_minimum": [
+      "retain overlapping ask_user_question structured parsing and existing legacy text fallback; add guarded rpiv success-envelope parsing",
+      "support selected explicit success shapes via persisted details",
+      "exclude cancellation/errors/timeouts/default selections",
+      "preserve note scope and selected-option distinction",
+      "project validated structured decisions into observer serialization selectively"
+    ],
+    "normalized_decision": {
+      "question": "string",
+      "selected": ["string"],
+      "answer": "optional string",
+      "status": "confirmed | confirmed_none | partial | unanswered | cancelled | automated",
+      "notes": [
+        {
+          "scope": "question | option | global",
+          "option": "optional string",
+          "selectedOption": "optional boolean",
+          "text": "string"
+        }
+      ]
+    }
+  },
+  "source_facts_and_static_inference": [
+    {
+      "claim": "rpiv ask_user_question uses details and success text containing question and answer; cancel is authoritative even if partial answer details remain",
+      "classification": "observed source facts"
+    },
+    {
+      "claim": "Blackhole can support several ask_user variants with explicit details recognizers",
+      "classification": "static inference"
+    },
+    {
+      "claim": "oh-my-pi should be treated separately because it uses its own AgentTool/ToolSession API",
+      "classification": "observed source facts plus static compatibility inference"
+    },
+    {
+      "claim": "oh-my-pi timeout-selected recommended/first option is not a confirmed user decision",
+      "classification": "observed source facts plus conservative extraction rule"
+    },
+    {
+      "claim": "structured decisions need selective OM text projection because current serializer does not expose tool-result details",
+      "classification": "static inference from inspected serializer"
+    }
+  ],
+  "execution": "No packages or tests were executed. No product files were changed.",
+  "orchestrator_verification": {
+    "six_clone_heads_checked": true,
+    "citation_paths_and_line_bounds_checked": true,
+    "citation_commit_typos_corrected": true,
+    "rpiv_text_prefix_gap_confirmed": true,
+    "omp_timeout_and_question_context_confirmed": true,
+    "product_unchanged": true
+  }
+}

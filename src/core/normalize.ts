@@ -8,6 +8,7 @@ import type { Message } from "@earendil-works/pi-ai";
 import type { NormalizedBlock } from "../types";
 import { textOf } from "./content";
 import { sanitize } from "./sanitize";
+import { ASK_TOOL_NAMES } from "../extract/user-decisions.js";
 
 // Mirrors @earendil-works/pi-coding-agent's BashExecutionMessage (not re-exported from index)
 interface LocalBashMessage {
@@ -50,15 +51,14 @@ const normalizeOne = (msg: Message, msgIndex: number | undefined): NormalizedBlo
   }
 
   if (msg.role === "toolResult") {
+    const details = (msg as Message & { details?: unknown }).details;
     return [
       {
         kind: "tool_result",
         name: msg.toolName,
         text: sanitize(textOf(msg.content)),
         isError: msg.isError,
-        ...(msg.toolName === "ask_user_question" && (msg as any).details
-          ? { details: (msg as any).details }
-          : {}),
+        ...(ASK_TOOL_NAMES.has(msg.toolName) && details !== undefined ? { details } : {}),
         sourceIndex: msgIndex,
       },
     ];

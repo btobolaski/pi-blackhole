@@ -70,6 +70,8 @@ Long engineering sessions degrade. Pi's native `/compact` calls an LLM to write 
 
 Both halves share a single hook and a single output. Together they keep the agent's context sharp across arbitrarily long sessions — without the cost, drift, or erosion of repeated LLM-based summarization.
 
+Blackhole also preserves confirmed answers from several common question-tool result formats in deterministic compaction and observer context. This is best-effort and shape-guarded: cancellations, drafts, timeouts, and control actions are not treated as user decisions.
+
 ---
 
 ## Commands

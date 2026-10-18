@@ -14,6 +14,7 @@
 
 ### Changed
 
+- Best-effort deterministic decision capture now recognizes guarded result shapes from six selected question tools in compaction and observer source text; cancelled, failed, skipped, timeout-selected, and control outcomes are omitted from confirmed decisions.
 - **`reflectionSupersedes` now retires the replaced reflection.** Supersede notes were display-only, so a reflection that a newer one replaced stayed in compaction output beside it. With `reflectionSupersedes` on (default `false`, unchanged), the replaced reflection now leaves compaction projections, the observer preamble and `/blackhole-memory` views, while the ledger, worker input, export and recall keep it. The prompt wording, summary footer and setting description follow. No new model calls.
 
 ### Fixed
