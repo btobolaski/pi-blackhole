@@ -31,7 +31,8 @@ const flat = (s: string): string =>
 const fromDetails = (d: unknown): Parsed | undefined => {
   if (!d || typeof d !== "object") return;
   const r = d as { cancelled?: boolean; answers?: unknown; globalNote?: unknown };
-  if (r.cancelled || !Array.isArray(r.answers)) return;
+  if (r.cancelled) return { answers: [] };
+  if (!Array.isArray(r.answers)) return;
   const answers: ParsedAnswer[] = [];
   for (const a of r.answers as Record<string, any>[]) {
     if (!a || typeof a.question !== "string") continue;
@@ -84,7 +85,11 @@ const fromText = (text: string): Parsed | undefined => {
     const line = lines[i];
     const header = HEADER_RE.exec(line);
     // A numbered line is a question only when a status line follows; notes may contain "2. foo".
-    if (header && STATUS_RE.test(lines[i + 1] ?? "")) {
+    if (
+      header &&
+      (mode === "none" || lines[i - 1]?.trim() === "") &&
+      STATUS_RE.test(lines[i + 1] ?? "")
+    ) {
       flush();
       cur = { question: header[1], selected: [], notes: [] };
       answers.push(cur);
@@ -92,7 +97,7 @@ const fromText = (text: string): Parsed | undefined => {
       continue;
     }
     if (!cur) continue;
-    if (mode === "none" || mode === "preview" || mode === "skip") {
+    if (mode === "none") {
       if (line.startsWith("Selected: ")) {
         cur.selected = line
           .slice(10)
