@@ -12,6 +12,10 @@ export interface BlackholeExportOptions {
   mode: "distilled" | "timeline";
 }
 
+// Keep the resulting `sinceMs` inside the Date time-clip range used by the
+// timeline renderer's ISO window label (Date supports at most ±8.64e15 ms).
+const MAX_WINDOW_DAYS = 100_000_000;
+
 export type ParseResult =
   | { ok: true; value: BlackholeExportOptions }
   | { ok: false; error: string };
@@ -47,10 +51,10 @@ export function parseBlackholeExportArgs(args: string): ParseResult {
       };
     }
     const parsed = Number(daysRaw);
-    if (parsed <= 0) {
+    if (!Number.isSafeInteger(parsed) || parsed <= 0 || parsed > MAX_WINDOW_DAYS) {
       return {
         ok: false,
-        error: `Invalid days value "${daysRaw}": expected a positive integer (e.g. days:7).`,
+        error: `Invalid days value "${daysRaw}": expected a positive integer within the supported date range (e.g. days:7).`,
       };
     }
     days = parsed;

@@ -107,6 +107,15 @@ describe("parseBlackholeExportArgs", () => {
     expect(expectErr("days:wat")).toMatch(/days/);
   });
 
+  it("rejects days values whose window cannot be represented by JavaScript dates", () => {
+    expect(expectErr("days:100000001")).toMatch(/days/);
+    expect(expectErr(`days:${"9".repeat(400)}`)).toMatch(/days/);
+  });
+
+  it("accepts the largest representable days window", () => {
+    expect(expectOk("days:100000000").days).toBe(100000000);
+  });
+
   it("rejects bare days:", () => {
     expect(expectErr("days:")).toMatch(/days/);
   });
