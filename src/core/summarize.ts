@@ -12,6 +12,7 @@ import { normalize } from "./normalize";
 import { filterNoise } from "./filter-noise";
 import { buildSections } from "./build-sections";
 import { formatFileList } from "../extract/files";
+import { MAX_DECISIONS } from "../extract/user-decisions";
 import { formatSummary, capBrief, RECALL_NOTE, wrapLongLines } from "./format";
 
 export interface CompileInput {
@@ -42,6 +43,7 @@ const HEADER_NAMES = [
   "Commits",
   "Outstanding Context",
   "User Preferences",
+  "User Decisions",
 ];
 
 const SEPARATOR = "\n\n---\n\n";
@@ -146,7 +148,12 @@ const mergeHeaderSection = (header: string, prev: string, fresh: string): string
   const prevLines = prev.split("\n").filter(isClean);
   const freshLines = fresh.split("\n").filter(isClean);
   const combined = [...new Set([...prevLines, ...freshLines])];
-  const CAP = header === "Session Goal" ? 8 : header === "Commits" ? 8 : 15;
+  const CAP =
+    header === "User Decisions"
+      ? MAX_DECISIONS
+      : header === "Session Goal" || header === "Commits"
+        ? 8
+        : 15;
   // Session Goal: keep first items so the original first message persists
   // Other sections: keep last items (fresh overrides stale)
   const capped =

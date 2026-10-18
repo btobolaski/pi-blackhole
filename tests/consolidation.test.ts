@@ -955,6 +955,7 @@ beforeEach(() => {
   agents.runObserver.mockResolvedValue({
     observations: [],
     emptyReason: { kind: "no_new_content" as const },
+    coverageComplete: true,
   });
   agents.runReflector.mockReset();
   agents.runReflector.mockResolvedValue({ reflections: [] });
@@ -994,6 +995,7 @@ describe("worker attempt hard timeout", () => {
       .mockResolvedValueOnce({
         observations: [],
         emptyReason: { kind: "no_new_content" as const },
+        coverageComplete: true,
       });
     fixture.entries.push(rawMessage("source-1", "x".repeat(40_000)));
 
@@ -1049,6 +1051,7 @@ describe("worker attempt hard timeout", () => {
       .mockResolvedValueOnce({
         observations: [],
         emptyReason: { kind: "no_new_content" as const },
+        coverageComplete: true,
       });
     fixture.entries.push(rawMessage("source-1", "x".repeat(40_000)));
 
@@ -1675,17 +1678,35 @@ describe("reflector turn-cap exhaustion", () => {
     expect(agents.runReflector).toHaveBeenCalledTimes(1);
   });
 
-  test("a candidate that exhausts the cap cools down and the fallback is tried", async () => {
+  test("a candidate that exhausts the cap skips in-cycle and the fallback is tried", async () => {
     const fixture = workerStageFixture("candidate");
     const retryable = vi
       .spyOn(fixture.runtime, "recordRetryableError")
       .mockImplementation(() => {});
-    agents.runReflector.mockRejectedValue(turnCapError());
+    const skip = vi.spyOn(fixture.runtime, "skipFailedForCycle");
+    let attempt = 0;
+    fixture.runtime.resolveModel = async () => {
+      const id = attempt++ === 0 ? "primary" : "fallback";
+      return {
+        ok: true as const,
+        source: "candidate" as const,
+        candidateConfig: { provider: "test", id },
+        model: { provider: "test", id, contextWindow: 1_000_000 },
+        apiKey: "test",
+      };
+    };
+    agents.runReflector
+      .mockRejectedValueOnce(turnCapError())
+      .mockResolvedValue({ reflections: [] });
 
     await fixture.run();
 
-    expect(retryable).toHaveBeenCalled();
-    expect(agents.runReflector.mock.calls.length).toBeGreaterThan(1);
+    expect(retryable).not.toHaveBeenCalled();
+    expect(skip).toHaveBeenCalledWith({ provider: "test", id: "primary" }, "turn_cap");
+    expect(agents.runReflector.mock.calls.map(([input]) => input.model?.id)).toEqual([
+      "primary",
+      "fallback",
+    ]);
   });
 });
 
@@ -1703,18 +1724,33 @@ describe("dropper turn-cap exhaustion", () => {
     expect(agents.runDropper).toHaveBeenCalledTimes(1);
   });
 
-  test("a candidate that exhausts the cap cools down and the fallback is tried", async () => {
+  test("a candidate that exhausts the cap skips in-cycle and the fallback is tried", async () => {
     const fixture = workerStageFixture("candidate");
     agents.runReflector.mockResolvedValue({ reflections: [] });
     const retryable = vi
       .spyOn(fixture.runtime, "recordRetryableError")
       .mockImplementation(() => {});
-    agents.runDropper.mockRejectedValue(turnCapError());
+    const skip = vi.spyOn(fixture.runtime, "skipFailedForCycle");
+    fixture.runtime.resolveModel = async () => {
+      const id = agents.runDropper.mock.calls.length === 0 ? "primary" : "fallback";
+      return {
+        ok: true as const,
+        source: "candidate" as const,
+        candidateConfig: { provider: "test", id },
+        model: { provider: "test", id, contextWindow: 1_000_000 },
+        apiKey: "test",
+      };
+    };
+    agents.runDropper.mockRejectedValueOnce(turnCapError()).mockResolvedValue([]);
 
     await fixture.run();
 
-    expect(retryable).toHaveBeenCalled();
-    expect(agents.runDropper.mock.calls.length).toBeGreaterThan(1);
+    expect(retryable).not.toHaveBeenCalled();
+    expect(skip).toHaveBeenCalledWith({ provider: "test", id: "primary" }, "turn_cap");
+    expect(agents.runDropper.mock.calls.map(([input]) => input.model?.id)).toEqual([
+      "primary",
+      "fallback",
+    ]);
   });
 });
 
@@ -2658,4 +2694,189 @@ describe("reflector annotation settings snapshot", () => {
       ),
     }).toEqual({ timestamps: false, supersedes: false, line: "[aaaaaaaaaaaa] C" });
   });
+});
+
+describe("unobserved original-history continuity", () => {
+  test.each([false, true])(
+    "no coverage replays original backlog across repeated compactions (stale cursor %s)",
+    async (stale) => {
+      const fixture = makePipelineFixture({
+        observeAfterTokens: 1,
+        entries: [
+          smallSource("m1"),
+          compactionEntry("c1", { firstKeptEntryId: "m2" }),
+          smallSource("m2"),
+          compactionEntry("c2", { firstKeptEntryId: "m3" }),
+          smallSource("m3"),
+        ],
+      });
+      fixture.runtime.config.tailBehavior = "unobserved";
+      if (stale) fixture.runtime.advanceCursor("observer", "missing", "recorded");
+      await fixture.run();
+      expect(observerChunkArg().allowedSourceEntryIds).toEqual(["m1", "m2", "m3"]);
+    },
+  );
+  test("restart preserves backlog before compaction without recording coverage", async () => {
+    const entries = [
+      smallSource("m1"),
+      compactionEntry("c1", { firstKeptEntryId: "m2" }),
+      smallSource("m2"),
+    ];
+    const first = makePipelineFixture({ observeAfterTokens: 5000, entries });
+    first.runtime.config.tailBehavior = "unobserved";
+    await first.run();
+    first.runtime.saveCursorsToPending("cursor-session");
+    const restored = makePipelineFixture({ observeAfterTokens: 1, entries });
+    restored.runtime.config.tailBehavior = "unobserved";
+    restored.runtime.loadCursorsFromPending("cursor-session");
+    await restored.run();
+    expect(observerChunkArg().allowedSourceEntryIds).toEqual(["m1", "m2"]);
+  });
+});
+
+test("persisted preservation intent survives mode change and missing cursor", async () => {
+  const fixture = makePipelineFixture({
+    observeAfterTokens: 1,
+    entries: [
+      smallSource("m1"),
+      compactionEntry("c1", {
+        firstKeptEntryId: "m2",
+        details: { "om.preserveSourceHistory": true },
+      }),
+      smallSource("m2"),
+    ],
+  });
+  fixture.runtime.config.tailBehavior = "minimal";
+  await fixture.run();
+  expect(observerChunkArg().allowedSourceEntryIds).toEqual(["m1", "m2"]);
+});
+
+test("in-flight observation completes only its snapshot; compaction cannot skip later originals", async () => {
+  const fixture = makePipelineFixture({ observeAfterTokens: 1, entries: [smallSource("m1")] });
+  fixture.runtime.config.tailBehavior = "unobserved";
+  let release: ((value: unknown) => void) | undefined;
+  let entered: (() => void) | undefined;
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  agents.runObserver.mockImplementationOnce(() => {
+    entered?.();
+    return new Promise((resolve) => {
+      release = resolve;
+    });
+  });
+  const running = fixture.run();
+  try {
+    await started;
+    fixture.entries.push(
+      smallSource("m2"),
+      compactionEntry("c1", {
+        firstKeptEntryId: "m2",
+        details: { "om.preserveSourceHistory": true },
+      }),
+    );
+  } finally {
+    release?.({
+      observations: [],
+      emptyReason: { kind: "no_new_content" },
+      coverageComplete: true,
+    });
+    await running;
+  }
+  await fixture.run();
+  expect(agents.runObserver.mock.calls.map(([input]) => input.allowedSourceEntryIds)).toEqual([
+    ["m1"],
+    ["m2"],
+  ]);
+});
+
+test("preserving observer rejects coverage anchored to compaction metadata", async () => {
+  const fixture = makePipelineFixture({
+    observeAfterTokens: 1,
+    entries: [
+      smallSource("m1"),
+      compactionEntry("c1", { firstKeptEntryId: "m2" }),
+      smallSource("m2"),
+      observationsRecordedEntry("om1", {
+        coversUpToId: "c1",
+        observations: [observation("aaaaaaaaaaaa", { sourceEntryIds: ["m1"] })],
+      }),
+    ],
+  });
+  fixture.runtime.config.tailBehavior = "unobserved";
+  await fixture.run();
+  expect(observerChunkArg().allowedSourceEntryIds).toEqual(["m1", "m2"]);
+});
+
+test("preserving observer trigger counts backlog before an inherited compaction cursor", () => {
+  const fixture = makePipelineFixture({
+    observeAfterTokens: 1000,
+    entries: [
+      rawMessage("m1", "x".repeat(10000)),
+      compactionEntry("c1", { firstKeptEntryId: "m2" }),
+      smallSource("m2"),
+    ],
+  });
+  fixture.runtime.config.tailBehavior = "unobserved";
+  fixture.runtime.advanceCursor("observer", "c1", "not_due");
+  expect(anyStageDue(fixture.entries, fixture.runtime)).toBe(true);
+});
+
+test("preserving observer does not skip an earlier hole before a disconnected batch", async () => {
+  const fixture = makePipelineFixture({
+    observeAfterTokens: 1,
+    entries: [
+      smallSource("m1"),
+      smallSource("m2"),
+      smallSource("m3"),
+      observationsRecordedEntry("om1", {
+        coversUpToId: "m2",
+        observations: [observation("aaaaaaaaaaaa", { sourceEntryIds: ["m2"] })],
+      }),
+    ],
+  });
+  fixture.runtime.config.tailBehavior = "unobserved";
+  await fixture.run();
+  expect(observerChunkArg().allowedSourceEntryIds).toEqual(["m1", "m2", "m3"]);
+});
+
+test("preserving observer starts after later recorded coverage than a stale source cursor", async () => {
+  const fixture = makePipelineFixture({
+    observeAfterTokens: 1,
+    entries: [
+      smallSource("m1"),
+      smallSource("m2"),
+      observationsRecordedEntry("om1", {
+        coversUpToId: "m2",
+        observations: [observation("aaaaaaaaaaaa", { sourceEntryIds: ["m1", "m2"] })],
+      }),
+      smallSource("m3"),
+    ],
+  });
+  fixture.runtime.config.contextPressureFallback = "vcc";
+  fixture.runtime.advanceCursor("observer", "m1", "recorded");
+
+  await fixture.run();
+
+  expect(observerChunkArg().allowedSourceEntryIds).toEqual(["m3"]);
+});
+
+test("pressure setting replays original sources after compaction", async () => {
+  const fixture = makePipelineFixture({
+    observeAfterTokens: 1,
+    entries: [
+      smallSource("m1"),
+      compactionEntry("c1", {
+        firstKeptEntryId: "m2",
+        details: { "om.preserveSourceHistory": true },
+      }),
+      smallSource("m2"),
+    ],
+  });
+  fixture.runtime.config.tailBehavior = "minimal";
+  fixture.runtime.config.contextPressureFallback = "vcc";
+
+  await fixture.run();
+
+  expect(observerChunkArg().allowedSourceEntryIds).toEqual(["m1", "m2"]);
 });

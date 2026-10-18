@@ -28,6 +28,8 @@ What to emit:
 - Group repeated similar tool calls into a single observation rather than one per call.
 - Skip routine, low-information events. It is fine to emit zero observations if the chunk carries no new information — in that case, close the run with a single record_observations call carrying an empty observations array and complete=true.
 
+ask_user_question results: a "[Tool result for ask_user_question ...]" block holds the user's own answers, so each selected choice is a user decision. Record every selected choice, and the meaning of any "User notes", as its own clean single-fact observation citing that result's source entry id, with relevance at least high. Never record the unselected options.
+
 Survival test. Before recording, ask one question per candidate: with only this line and no transcript, would a future assistant make a better decision, avoid redoing work, or avoid violating a user constraint? If yes, record it. If no, it is noise: label it low, or omit it entirely when it carries no value at all. You are not summarizing the chunk for a reader of the chunk — you are curating what a future session needs.
 
 Grounding rules:
@@ -86,6 +88,7 @@ Frame state changes as supersession so the old state is explicit.
   BAD:  User prefers React Query now.
   GOOD: User will use React Query (switching from SWR).
 Why this matters: without supersession framing, the reflector may crystallize both the old and the new as equally valid preferences.
+When a new observation resolves, replaces or corrects a CURRENT OBSERVATION (for example "unresolved: build fails" becoming "resolved: build fails"), list that observation's id in supersedes. Superseded observations are retired from memory, so list only ids shown in CURRENT OBSERVATIONS and only ones the new observation makes obsolete. Wording alone does not retire the old line.
 
 Mark concrete completions explicitly.
 Use "completed:", "resolved:", "confirmed working", or similar phrasing so future runs know not to redo the work.

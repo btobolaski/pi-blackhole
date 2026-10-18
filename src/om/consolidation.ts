@@ -7,6 +7,7 @@
  * - All errors record cooldown (so the failed model is skipped next iteration).
  * - 30s retry gate prevents repeated failed runs (isConsolidationRetryGated).
  */
+import { observedPrefixIndex } from "../core/observation-boundary.js";
 import { observeTailOnShutdown } from "./shutdown-observe.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { matchesSkippedProvider } from "../core/provider-skip.js";
@@ -46,6 +47,7 @@ import { OBSERVER_SYSTEM } from "./agents/observer/prompts.js";
 import {
   readPendingState,
   savePendingObservation,
+  savePendingObservationCoverage,
   savePendingReflection,
   savePendingDropped,
   savePendingUnanchored,
@@ -55,11 +57,13 @@ import {
 import { isManualMode } from "../core/unified-config.js";
 import {
   OM_OBSERVATIONS_DROPPED,
+  OM_OBSERVATIONS_COVERAGE,
   OM_OBSERVATIONS_RECORDED,
   OM_OBSERVATIONS_UNANCHORED,
   OM_REFLECTIONS_RECORDED,
   buildExistingObservationsSummary,
   buildObservationsDroppedData,
+  buildObservationsCoverageData,
   buildObservationsRecordedData,
   buildObservationsUnanchoredData,
   buildReflectionsRecordedData,
@@ -351,6 +355,46 @@ function matchesEmptyPressurePool(runtime: Runtime, poolSignature: string): bool
   return cursor?.state === "empty" && cursor.activePoolSignature === poolSignature;
 }
 
+/** Compaction is not observation progress. Persisted intent survives restart
+ * and disabling the opt-in, without pretending a VCC bridge was observed. */
+function preserveObserverSources(entries: Entry[], runtime: Runtime): boolean {
+  return (
+    runtime.config.tailBehavior === "unobserved" ||
+    runtime.config.contextPressureFallback === "vcc" ||
+    entries.some(
+      (entry) =>
+        entry.type === "compaction" &&
+        entry.details &&
+        typeof entry.details === "object" &&
+        "om.preserveSourceHistory" in entry.details &&
+        entry.details["om.preserveSourceHistory"] === true,
+    )
+  );
+}
+
+function observerStartIndex(entries: Entry[], runtime: Runtime): number {
+  const preserve = preserveObserverSources(entries, runtime);
+  const cursor = runtime.getCursor("observer");
+  const cursorIndex = entryIndexForId(entries, cursor?.entryId);
+  if (preserve) {
+    const deliveredPrefix = observedPrefixIndex(entries);
+    // Auto-mode cursors are only hints: after restart an older incomplete or
+    // uncommitted run may have moved one beyond the durable branch prefix.
+    // Replaying that gap is necessary for the next explicit range to connect.
+    // Manual mode may use its persisted pending batches as its operational
+    // resume point, but those batches never enter observedPrefixIndex.
+    if (!isManualMode(runtime.config)) return deliveredPrefix;
+    return Math.max(
+      deliveredPrefix,
+      cursorIndex >= 0 && isSourceEntry(entries[cursorIndex]) ? cursorIndex : -1,
+    );
+  }
+  if (cursorIndex >= 0) return cursorIndex;
+
+  const coverage = latestCoverageIndex(entries, OM_OBSERVATIONS_RECORDED);
+  return coverage >= 0 ? coverage : findLastCompactionIndex(entries);
+}
+
 /** Cursor-aware stage-due check.  Uses cursors when available; falls back to
  *  legacy coverage markers when cursors are absent (cold start, fork recovery).
  *
@@ -363,6 +407,11 @@ export function anyStageDue(entries: Entry[], runtime: Runtime, pending?: Pendin
 
   // ── Observer ──────────────────────────────────────────────────────────
   const observerDue = (() => {
+    if (preserveObserverSources(entries, runtime))
+      return (
+        rawTokensAfterIndex(entries, observerStartIndex(entries, runtime)) >=
+        config.observeAfterTokens
+      );
     const cursor = cursors.observer;
     if (!cursor) {
       return rawTokensSinceObservationCoverage(entries) >= config.observeAfterTokens;
@@ -866,6 +915,7 @@ function handleWorkerErrorAfterClose(args: {
   const sessionIdentity: { provider?: unknown; id?: unknown } | null | undefined = resolved.model;
   const cooled =
     deterministic &&
+    isCooldownWorthyError(afterClose) &&
     (stageModelForThinking
       ? stageModelForThinking.cooldownHours !== 0
       : typeof sessionIdentity?.provider === "string" && typeof sessionIdentity?.id === "string");
@@ -938,22 +988,8 @@ export async function runObserverStage(
   // first keep (see the branch for why one seed per invocation suffices).
   let unanchoredSeenIds: Set<string> | undefined;
 
-  // Determine start index: cursor takes priority. A cursor whose entry left the
-  // branch (fork, navigation, compaction during the session) falls back to the
-  // same marker/compaction rule as an absent cursor, so a pruned pre-compaction
-  // anchor never forces a full-history re-observation.
-  const observerCursor = runtime.getCursor("observer");
-  const observerFallbackStart = (): number => {
-    const lastCoverageIdx = latestCoverageIndex(entries, OM_OBSERVATIONS_RECORDED);
-    return lastCoverageIdx >= 0 ? lastCoverageIdx : findLastCompactionIndex(entries);
-  };
-  let effectiveStart: number;
-  if (observerCursor) {
-    const cursorIdx = entryIndexForId(entries, observerCursor.entryId);
-    effectiveStart = cursorIdx >= 0 ? cursorIdx : observerFallbackStart();
-  } else {
-    effectiveStart = observerFallbackStart();
-  }
+  // The same anchor drives trigger accounting and delivered source selection.
+  const effectiveStart = observerStartIndex(entries, runtime);
 
   // Anchor -1 (no cursor, no marker, no compaction) measures the full history:
   // rawTokensAfterIndex clamps -1 to index 0 (issue #87).
@@ -1019,7 +1055,7 @@ export async function runObserverStage(
   let capTokens = chunkEntries.reduce((s: number, e) => s + estimateEntryTokens(e), 0);
 
   const renderReflection = makeReflectionRenderer(renderOptionsFromConfig(runtime.config));
-  const memory = fullProjection(entries);
+  const memory = fullProjection(entries, undefined, runtime.config.reflectionSupersedes === true);
 
   // The preamble is capped via observerPreambleMaxTokens so accumulated
   // memory doesn't grow unbounded across turns. Each section gets up to the
@@ -1036,20 +1072,17 @@ export async function runObserverStage(
     preambleMaxTokens,
     renderReflection,
   ).map(renderReflection);
-  let priorObservations = selectPriorObservations(memory.observations, preambleMaxTokens).map(
-    observationToSummaryLine,
-  );
+  let priorObservationRecords = selectPriorObservations(memory.observations, preambleMaxTokens);
+  let priorObservations = priorObservationRecords.map(observationToSummaryLine);
   if (isManualMode(runtime.config)) {
     const pendingCtx = readPendingState(sessionId);
     const accumulatedReflections = (pendingCtx.reflectionBatches ?? []).flatMap(
       (b) => (b.data as any).reflections ?? [],
     );
-    const accumulatedObservations = pendingBufferedObservations(pendingCtx);
 
-    const allObservations = [...memory.observations, ...accumulatedObservations];
-    priorObservations = selectPriorObservations(allObservations, preambleMaxTokens).map(
-      observationToSummaryLine,
-    );
+    const allObservations = livePoolObservations(entries, pendingCtx);
+    priorObservationRecords = selectPriorObservations(allObservations, preambleMaxTokens);
+    priorObservations = priorObservationRecords.map(observationToSummaryLine);
 
     const allReflections = [...memory.reflections, ...accumulatedReflections];
     priorReflections = selectPriorReflections(
@@ -1366,6 +1399,7 @@ export async function runObserverStage(
             maxOutputTokens: workerOutputAllowance(effectiveObsCtx, resolved.model as any),
             priorReflections,
             priorObservations,
+            priorObservationIds: priorObservationRecords.map((o) => o.id),
             chunk,
             allowedSourceEntryIds: sourceEntryIds,
             sourceEntryTimestamps,
@@ -1524,9 +1558,13 @@ export async function runObserverStage(
           );
         }
         const coverageId: string = result.partialCoverageId ?? coversUpToId;
-        const data = buildObservationsRecordedData(result.observations, coverageId);
+        const deliveredFromId = sourceEntryIds[0];
+        const data = buildObservationsRecordedData(
+          result.observations,
+          coverageId,
+          deliveredFromId,
+        );
         if (!data) {
-          runtime.advanceCursor("observer", coverageId, "empty");
           return "continue";
         }
         debugLog("observer.records", {
@@ -1591,7 +1629,19 @@ export async function runObserverStage(
           : "warning"
         : "warning";
       debugLog("observer.empty", { coversUpToId, reason: reason?.kind });
-      runtime.advanceCursor("observer", coversUpToId, "empty");
+      if (result.coverageComplete === true && sourceEntryIds[0]) {
+        const coverage = buildObservationsCoverageData(sourceEntryIds[0], coversUpToId);
+        if (!coverage) return "continue";
+        if (isManualMode(runtime.config))
+          savePendingObservationCoverage(sessionId, {
+            coversUpToId,
+            data: coverage,
+          });
+        else if (!appendEntry(pi, runtime, generation, OM_OBSERVATIONS_COVERAGE, coverage))
+          return "abort";
+        runtime.advanceCursor("observer", coversUpToId, "empty");
+        return continueSources();
+      }
       if (reasonLevel === "warning") {
         if (ctx.hasUI)
           ctx.ui?.notify(`Observational memory: no observations — ${reasonLabel}`, "warning");
@@ -1602,9 +1652,9 @@ export async function runObserverStage(
           `Observational memory: no observations — ${reasonLabel}`,
         );
       }
-      // A clean "nothing new" close still proves coverage up to the delivered
-      // point, so the rest of the backlog can drain in this same run.
-      return continueSources();
+      // Without a validated complete close, neither advance coverage nor
+      // drain beyond this input; a later cycle retries the same source range.
+      return "continue";
     } catch (error) {
       if (options) {
         debugLog("observer.shutdown_error", { error: String(error) });
@@ -1703,7 +1753,8 @@ export async function runObserverStage(
       // derive from the same window, so a retry spends another whole budget on
       // an identical outcome. (A turn cap on a multi-entry chunk never reaches
       // here: the halve-and-retry above continues on the smaller input.)
-      // Candidates differ — they cool down and the fallback chain takes over.
+      // Candidates differ — turn caps skip in-cycle and provider failures cool
+      // down, then the fallback chain takes over.
       if (
         !candidateConfig &&
         (error instanceof WorkerAttemptTimeoutError ||
@@ -1809,7 +1860,7 @@ function computeReflectorInput(
       ]
     : folded.reflections;
   const sourceObservations = pending
-    ? [...folded.activeObservations, ...pendingBufferedObservations(pending)]
+    ? livePoolObservations(entries, pending)
     : folded.activeObservations;
   const shownReflections = selectExistingReflections(
     sourceReflections,
@@ -2078,8 +2129,16 @@ export async function runReflectorStage(
     // is abandoned with the cursor unmoved.
     const voidBatchedRun = (error: unknown): ReflectorStageResult => {
       const candidateConfig = stageModelForBatch;
-      runtime.recordRetryableError(candidateConfig, error, "reflector");
-      if (!candidateConfig) runtime.recordDeterministicError(bestModel, error, "reflector");
+      if (error instanceof WorkerStreamError && error.turnCapExhausted) {
+        runtime.skipFailedForCycle(candidateConfig ?? bestModel, "turn_cap");
+      } else if (error instanceof WorkerStreamError && error.lengthCut) {
+        // The smallest batch still exceeded the output allowance. Like the
+        // normal catch, this is an input-size skip, not model unavailability.
+        runtime.skipOversizedForCycle(candidateConfig ?? bestModel);
+      } else {
+        runtime.recordRetryableError(candidateConfig, error, "reflector");
+        if (!candidateConfig) runtime.recordDeterministicError(bestModel, error, "reflector");
+      }
       debugLog("reflector.error", {
         error: String(error),
         retryable: isRetryableError(error),
@@ -2343,8 +2402,12 @@ export async function runReflectorStage(
       if (!(error instanceof WorkerStreamError && (error.turnCapExhausted || error.lengthCut)))
         sawAttemptError = true;
       const candidateConfig = stageModelForThinking;
-      runtime.recordRetryableError(candidateConfig, error, "reflector");
-      if (!candidateConfig) runtime.recordDeterministicError(resolved.model, error, "reflector");
+      if (error instanceof WorkerStreamError && error.turnCapExhausted) {
+        runtime.skipFailedForCycle(candidateConfig ?? resolved.model, "turn_cap");
+      } else {
+        runtime.recordRetryableError(candidateConfig, error, "reflector");
+        if (!candidateConfig) runtime.recordDeterministicError(resolved.model, error, "reflector");
+      }
       debugLog("reflector.error", {
         error: String(error),
         retryable: isRetryableError(error),
@@ -2359,7 +2422,8 @@ export async function runReflectorStage(
       // cut on an input the preflight accepted — fails the same way: the turn
       // budget and the output cap derive from the same window, so a retry
       // spends another whole budget on an identical outcome. Candidates
-      // differ — they cool down and the fallback chain takes over.
+      // differ — they are skipped in-cycle for turn caps (cooled for provider
+      // failures), and the fallback chain takes over.
       if (
         !candidateConfig &&
         (error instanceof WorkerAttemptTimeoutError ||
@@ -2451,7 +2515,7 @@ function computeDropperInput(
   // In manual mode, merge accumulated pending batches with
   // branch data (preserving pre-switch markers).
   const sourceObsForDropper = pending
-    ? [...folded.activeObservations, ...pendingBufferedObservations(pending)]
+    ? livePoolObservations(entries, pending)
     : folded.activeObservations;
   const existingObservationsSummary = buildExistingObservationsSummary(
     sourceObsForDropper.filter((o: any) => !newObservations.some((no: any) => no.id === o.id)),
@@ -2745,8 +2809,16 @@ export async function runDropperStage(
     // unmoved.
     const voidBatchedRun = (error: unknown): StageOutcome => {
       const candidateConfig = stageModelForBatch;
-      runtime.recordRetryableError(candidateConfig, error, "dropper");
-      if (!candidateConfig) runtime.recordDeterministicError(bestModel, error, "dropper");
+      if (error instanceof WorkerStreamError && error.turnCapExhausted) {
+        runtime.skipFailedForCycle(candidateConfig ?? bestModel, "turn_cap");
+      } else if (error instanceof WorkerStreamError && error.lengthCut) {
+        // The smallest batch still exceeded the output allowance. Like the
+        // normal catch, this is an input-size skip, not model unavailability.
+        runtime.skipOversizedForCycle(candidateConfig ?? bestModel);
+      } else {
+        runtime.recordRetryableError(candidateConfig, error, "dropper");
+        if (!candidateConfig) runtime.recordDeterministicError(bestModel, error, "dropper");
+      }
       debugLog("dropper.error", {
         error: String(error),
         retryable: isRetryableError(error),
@@ -3003,8 +3075,12 @@ export async function runDropperStage(
       if (!(error instanceof WorkerStreamError && (error.turnCapExhausted || error.lengthCut)))
         sawAttemptError = true;
       const candidateConfig = stageModelForThinking;
-      runtime.recordRetryableError(candidateConfig, error, "dropper");
-      if (!candidateConfig) runtime.recordDeterministicError(resolved.model, error, "dropper");
+      if (error instanceof WorkerStreamError && error.turnCapExhausted) {
+        runtime.skipFailedForCycle(candidateConfig ?? resolved.model, "turn_cap");
+      } else {
+        runtime.recordRetryableError(candidateConfig, error, "dropper");
+        if (!candidateConfig) runtime.recordDeterministicError(resolved.model, error, "dropper");
+      }
       debugLog("dropper.error", {
         error: String(error),
         retryable: isRetryableError(error),
@@ -3019,7 +3095,8 @@ export async function runDropperStage(
       // cut on an input the preflight accepted — fails the same way: the turn
       // budget and the output cap derive from the same window, so a retry
       // spends another whole budget on an identical outcome. Candidates
-      // differ — they cool down and the fallback chain takes over.
+      // differ — they are skipped in-cycle for turn caps (cooled for provider
+      // failures), and the fallback chain takes over.
       if (
         !candidateConfig &&
         (error instanceof WorkerAttemptTimeoutError ||

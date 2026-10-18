@@ -21,7 +21,7 @@ The config file must contain **valid JSON**. A trailing comma, partial write, or
   // ── Compaction ──
   "compaction": "auto",           // "auto" | "manual" | "off"
   "compactionEngine": "blackhole", // "blackhole" | "pi-default"
-  "tailBehavior": "minimal",   // "pi-default" | "minimal"
+  "tailBehavior": "minimal",   // "pi-default" | "minimal" | "unobserved"
   "showPreCompactionMessage": true, // Display-only copy of the newest dropped assistant output (max 16 KiB)
   "midRunCompaction": "off",    // "resume" | "pause" | "off" (default: off)
   "compactionSummaryMode": "default", // "default" | "append" (default: "default")
@@ -47,7 +47,7 @@ The config file must contain **valid JSON**. A trailing comma, partial write, or
   "memory": true,                 // Enable OM workers + content injection
   "sessionFallback": true,        // Fall back to session model when OM models fail
   "reflectionTimestamps": true,  // Show reflection evidence time
-  "reflectionSupersedes": false, // Display-only replacement notes
+  "reflectionSupersedes": false, // Replacement notes; replaced reflections leave compaction output
   "observeOnShutdown": false,    // One bounded observer attempt before session exit
   "fullFoldAlways": true,         // Treat first compaction as full-fold boundary
   "statusBar": true,              // Footer token gauges (O/P/X) + worker events
@@ -135,7 +135,7 @@ Controls how much of the recent transcript stays *visible* after compaction. Onl
 | Value | Behavior |
 |-------|----------|
 | `"pi-default"` | Use Pi's `firstKeptEntryId` — respects Pi's `keepRecentTokens` (~20k tokens kept). Messages before Pi's cut are compiled into the summary and removed from view. |
-| `"minimal"` | Keep only the last user message, unless Pi provides a later safe split-turn boundary for an oversized current turn. Everything before the chosen boundary gets compiled and removed (default for both auto-triggered and manual `/blackhole`). |
+| `"minimal"` | Keep only the last user message, unless Pi provides a later safe split-turn boundary for an oversized current turn. Everything before the chosen boundary gets compiled and removed (default for both auto-triggered and manual `/blackhole`). When the live window has no user message after its first message (one long run), Pi's cut applies; with no usable Pi cut (for example overflow recovery that finds none), everything is compiled and no tail is kept. |
 
 **Visual comparison:**
 
@@ -407,9 +407,9 @@ reflections without timestamps remain unchanged. Export prefers stored evidence 
 ### `reflectionSupersedes`
 
 Boolean, default `false`. Allow the reflector to cite earlier shown reflection ids
-that a new fact replaces. The new line displays `(supersedes <id>)`; this is display-only.
-Earlier reflections stay available in summaries, worker inputs, coverage, export and
-recall. Only the new reflection stores the annotation. Export and recall do not display
+that a new fact replaces. The new line displays `(supersedes <id>)` and the replaced
+reflection is retired from compaction projections and the observer preamble. Retired
+reflections stay in the ledger, worker inputs, coverage, export and recall. Only the new reflection stores the annotation. Export and recall do not display
 the suffix. With both reflection keys off, rendering, reflector prompt and tool schema
 match the legacy output. Toggle changes affect the next compaction, not stored segments.
 
@@ -868,3 +868,14 @@ Controls how auto-compaction summaries are stored and presented to the model. On
 ```
 
 See [`docs/APPEND_COMPACTION.md`](docs/APPEND_COMPACTION.md) for the fallback, branch, observational-memory, and cache-measurement rules.
+
+### Unobserved raw tail (opt-in)
+
+`tailBehavior: "unobserved"` retains original messages after trustworthy completed OM observation coverage, backing up to a complete user turn to avoid splitting tool interactions. Missing, invalid or disconnected coverage retains extra original history. Compaction and VCC never advance OM coverage. Pending observer input remains the original branch, including across restart and repeated compactions; no blocking observer flush is added.
+
+The default remains `"minimal"`; `"pi-default"` is unchanged. This mode does not truncate retained tool outputs. If the raw tail plus summary cannot fit the model context minus Pi's `reserveTokens`, capacity is unknown, or no useful summary exists, Blackhole explicitly defers compaction rather than dropping the tail or invoking native summarization. Token estimates are not a provider acceptance guarantee.
+### Reusable VCC pressure fallback (opt-in)
+
+`contextPressureFallback: "vcc"` enables a pressure fallback independently of `tailBehavior`; the default is `"off"`, so existing modes retain their behavior. A preferred context that fits is left alone. Otherwise VCC bridges older retained messages and keeps a recent raw suffix bounded by Pi's `keepRecentTokens`, using the model window minus `reserveTokens` and the current system prompt. Whole user-turn boundaries conservatively keep tool interactions together. If the newest turn cannot fit, capacity is unknown, or no useful summary is available, compaction explicitly defers. No native fallback silently drops the protected backlog.
+
+Compaction records `om.preserveSourceHistory` as continuity intent, not observed coverage. The observer still reads original branch source entries, not VCC summaries, across compactions and restart. Pending work remains eligible even after the opt-in is disabled. No blocking observer flush is added. Estimates do not prove provider acceptance; tool schemas and provider-specific overhead can still cause an overflow.

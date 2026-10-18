@@ -57,7 +57,7 @@ Orchestrates section extraction from filtered blocks. Defined in [[src/core/buil
 
 ## Section extraction
 
-Four extraction modules produce the structured sections. Each uses deterministic regex-based heuristics — no LLM involved.
+Five extraction modules produce the structured sections. Each uses deterministic regex-based heuristics — no LLM involved.
 
 ### Goals extraction
 
@@ -88,6 +88,15 @@ Extracts user preferences from user message blocks. Defined in [[src/extract/pre
 - **Filters**: Length 5-200 chars, excludes questions (ending `?`), max 1 preference per user block
 - **Dedup**: `dedupPreferencesAgainstGoals()` removes preferences that duplicate goals
 - **Limit**: Max 10 preferences
+
+### User decisions extraction
+
+Keeps the user's answers to `ask_user_question` prompts. Defined in [[src/extract/user-decisions.ts]].
+
+- **Source**: `ask_user_question` tool results. Structured `details` are used first; the tool's text format (`User answers:` …) is the fallback. Cancelled results, errors and validation failures yield nothing.
+- **Line format**: `User decided: <question> → <selected labels or custom answer>`. Notes are appended verbatim, flattened to one line, as `user note:`; a global note becomes `User note (global): …`. Option descriptions and previews are never emitted.
+- **Clips**: question 120 chars, answer 240, note 300.
+- **Limit**: Max 8 lines, newest kept.
 
 ### Commits extraction
 
@@ -133,7 +142,7 @@ Text utilities shared across the pipeline. Defined in [[src/core/content.ts]].
 
 Formats `SectionData` into a human-readable summary with TUI-safe wrapping. Defined in [[src/core/format.ts]].
 
-- **Section headers**: `[Session Goal]`, `[Files And Changes]`, `[Commits]`, `[Outstanding Context]`, `[User Preferences]`
+- **Section headers**: `[Session Goal]`, `[Files And Changes]`, `[Commits]`, `[Outstanding Context]`, `[User Preferences]`, `[User Decisions]`
 - **List format**: `- item` under each header
 - **Brief cap**: Keep last 120 lines, avoid cutting mid-section
 - **Line wrapping**: 120 chars, preserve list-item continuation indent
@@ -256,3 +265,14 @@ When `lastKeptEntryId` from a previous compaction no longer exists in the branch
 4. Set `firstKeptEntryId=""` as sentinel (triggers orphan recovery on next compaction too if needed)
 
 This prevents broken state after manual session editing.
+
+### Unobserved raw tail (opt-in)
+
+`tailBehavior: "unobserved"` retains original messages after trustworthy completed OM observation coverage, backing up to a complete user turn to avoid splitting tool interactions. Missing, invalid or disconnected coverage retains extra original history. Compaction and VCC never advance OM coverage. Pending observer input remains the original branch, including across restart and repeated compactions; no blocking observer flush is added.
+
+The default remains `"minimal"`; `"pi-default"` is unchanged. This mode does not truncate retained tool outputs. If the raw tail plus summary cannot fit the model context minus Pi's `reserveTokens`, capacity is unknown, or no useful summary exists, Blackhole explicitly defers compaction rather than dropping the tail or invoking native summarization. Token estimates are not a provider acceptance guarantee.
+### Reusable VCC pressure fallback (opt-in)
+
+`contextPressureFallback: "vcc"` enables a pressure fallback independently of `tailBehavior`; the default is `"off"`, so existing modes retain their behavior. A preferred context that fits is left alone. Otherwise VCC bridges older retained messages and keeps a recent raw suffix bounded by Pi's `keepRecentTokens`, using the model window minus `reserveTokens` and the current system prompt. Whole user-turn boundaries conservatively keep tool interactions together. If the newest turn cannot fit, capacity is unknown, or no useful summary is available, compaction explicitly defers. No native fallback silently drops the protected backlog.
+
+Compaction records `om.preserveSourceHistory` as continuity intent, not observed coverage. The observer still reads original branch source entries, not VCC summaries, across compactions and restart. Pending work remains eligible even after the opt-in is disabled. No blocking observer flush is added. Estimates do not prove provider acceptance; tool schemas and provider-specific overhead can still cause an overflow.

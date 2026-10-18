@@ -8,7 +8,7 @@
  * - This is the single joining point between pi-vcc and OM.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { convertToLlm } from "@earendil-works/pi-coding-agent";
+import { convertToLlm, estimateTokens } from "@earendil-works/pi-coding-agent";
 import { writeFileSync } from "fs";
 import {
   compile,
@@ -17,7 +17,11 @@ import {
   stripOMContent,
   stripRecallNotes,
 } from "../core/summarize";
-import { buildAppendOnlyDetails, coverageForMessages } from "../core/compaction-chain.js";
+import {
+  buildAppendOnlyDetails,
+  coverageForMessages,
+  projectAppendOnlyContext,
+} from "../core/compaction-chain.js";
 import { getModelProvider, matchesSkippedProvider } from "../core/provider-skip.js";
 import type { PiVccCompactionDetails } from "../details";
 import {
@@ -33,6 +37,19 @@ import { buildRetainedToolOutputProjection } from "../core/tool-output-budget.js
 import { buildGlobalIndexById, loadGlobalIndexById } from "../core/global-indices.js";
 import { loadGitFileTags } from "../extract/git-status.js";
 import { collectFilesTouched } from "../extract/file-touch.js";
+
+import { isSourceEntry } from "../om/ledger/progress.js";
+import { isToolSafeCut } from "../core/tool-safe-cut.js";
+import { observedPrefixIndex } from "../core/observation-boundary.js";
+import { selectPressureTail } from "../core/context-pressure.js";
+import { estimateEntryTokens, estimateStringTokens } from "../om/tokens.js";
+
+/** Count the actual host wrapper, not only the summary's text. */
+const summaryContextTokens = (summary: string): number =>
+  convertToLlm([{ role: "compactionSummary", summary, tokensBefore: 0, timestamp: 0 }]).reduce(
+    (sum, message) => sum + estimateTokens(message),
+    0,
+  );
 
 export const PI_VCC_COMPACT_INSTRUCTION = "__pi_vcc__";
 
@@ -139,7 +156,7 @@ export function buildOwnCut(
   /** Pi's firstKeptEntryId from preparation (undefined = don't use Pi's cut). */
   piFirstKeptEntryId?: string,
   /** "pi-default" = use Pi's cut, "minimal" = keep only last user message (current). */
-  tailBehavior?: "pi-default" | "minimal",
+  tailBehavior?: "pi-default" | "minimal" | "unobserved",
 ): OwnCutResult {
   // Find the last compaction entry and its firstKeptEntryId
   let lastCompactionIdx = -1;
@@ -150,6 +167,43 @@ export function buildOwnCut(
       lastKeptId = branchEntries[i].firstKeptEntryId;
       break;
     }
+  }
+
+  if (tailBehavior === "unobserved") {
+    // Restrict selection to the currently retained window. Older messages are
+    // already represented by previousSummary even when OM coverage lags behind.
+    const keptIndex = lastKeptId ? branchEntries.findIndex((entry) => entry.id === lastKeptId) : -1;
+    const liveStart =
+      lastCompactionIdx < 0 ? 0 : keptIndex >= 0 ? keptIndex : lastCompactionIdx + 1;
+    const messages = branchEntries
+      .slice(liveStart)
+      .filter((entry) => entry.type === "message" && entry.message);
+    if (messages.length === 0) return { ok: false, reason: "no_live_messages" };
+    const boundary = observedPrefixIndex(branchEntries);
+    let cut = messages.findIndex((entry) => branchEntries.indexOf(entry) > boundary);
+    if (cut < 0) cut = messages.length - 1;
+    // A whole user turn is the conservative validity boundary. In particular,
+    // an observed tool call must not be separated from its pending result.
+    while (
+      cut > 0 &&
+      (messages[cut].message.role !== "user" ||
+        !isToolSafeCut(branchEntries, branchEntries.indexOf(messages[cut])))
+    )
+      cut--;
+    return {
+      ok: true,
+      messages: messages.slice(0, cut).map((entry) => entry.message),
+      selectedIds: messages.slice(0, cut).map((entry) => entry.id),
+      firstKeptEntryId:
+        branchEntries.find(
+          (entry, index) =>
+            index >= liveStart &&
+            index > boundary &&
+            index < branchEntries.indexOf(messages[cut]) &&
+            isSourceEntry(entry),
+        )?.id ?? messages[cut].id,
+      compactAll: false,
+    };
   }
 
   // Orphan recovery: triggers when lastKeptId is set to "" (sentinel from prior
@@ -183,11 +237,12 @@ export function buildOwnCut(
 
   // Minimal normally cuts at the last user message. If Pi found a later safe
   // split-turn boundary, use it too so one oversized current turn is not kept whole.
+  // With no user message after the first live one, minimal has no cut of its own
+  // (index 0), so any Pi cut past the window start is later and wins.
   let minimalCutIdx = liveMessages.length - 1;
   while (minimalCutIdx > 0 && liveMessages[minimalCutIdx]?.message.role !== "user") {
     minimalCutIdx--;
   }
-  if (minimalCutIdx <= 0) minimalCutIdx = liveMessages.length; // compact-all
 
   // ── Pi's cut path: always use in pi-default; in minimal only when later ──
   if (piFirstKeptEntryId) {
@@ -398,7 +453,7 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI, omRuntime: Runtime) 
       piFirstKeptEntryId: preparation.firstKeptEntryId,
     });
 
-    const ownCut = buildOwnCut(
+    let ownCut = buildOwnCut(
       branchEntries as any[],
       preparation.firstKeptEntryId,
       effectiveTailBehavior,
@@ -478,6 +533,94 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI, omRuntime: Runtime) 
       } catch {}
       omRuntime.lastCompactCancelled = true;
       return { cancel: true };
+    }
+
+    const pressureEnabled = omRuntime.config.contextPressureFallback === "vcc";
+    let pressureBridged = false;
+    if (pressureEnabled) {
+      const preferredCut = ownCut;
+      const originalSelected = new Set(preferredCut.selectedIds);
+      const preferredIndex = branchEntries.findIndex(
+        (entry) => entry.id === preferredCut.firstKeptEntryId,
+      );
+      const candidateEntries = (id: string) => {
+        const end =
+          id === "" ? branchEntries.length : branchEntries.findIndex((entry) => entry.id === id);
+        return branchEntries.filter(
+          (entry, index) =>
+            entry.type === "message" &&
+            (originalSelected.has(entry.id) ||
+              (preferredIndex >= 0 && index >= preferredIndex && index < end)),
+        );
+      };
+      const pressure = selectPressureTail({
+        entries: branchEntries,
+        firstKeptEntryId: preferredCut.firstKeptEntryId,
+        contextWindow:
+          ctx.model && Number.isFinite(ctx.model.contextWindow) && ctx.model.contextWindow > 0
+            ? effectiveContextWindow(ctx.model)
+            : undefined,
+        reserveTokens:
+          (preparation.settings?.reserveTokens ?? Number.NaN) +
+          estimateStringTokens(ctx.getSystemPrompt?.() ?? ""),
+        keepRecentTokens: preparation.settings?.keepRecentTokens ?? Number.NaN,
+        summaryTokens: (id) => {
+          const sources = candidateEntries(id);
+          const messages = sources.flatMap((entry) =>
+            entry.type === "message" ? convertToLlm([entry.message]) : [],
+          );
+          const summary = compile({
+            messages,
+            previousSummary: preparation.previousSummary,
+            fileOps: {
+              readFiles: [...preparation.fileOps.read],
+              modifiedFiles: [...preparation.fileOps.written, ...preparation.fileOps.edited],
+            },
+            cwd: ctx.cwd ?? process.cwd(),
+          });
+          const projectionBoundary =
+            effectiveTailBehavior === "unobserved"
+              ? (branchEntries[observedPrefixIndex(branchEntries)]?.id ?? id)
+              : id;
+          const projection = buildCompactionProjection(branchEntries, projectionBoundary, {
+            observationsPoolMaxTokens: omRuntime.config.observationsPoolMaxTokens,
+            reflectionsPoolMaxTokens:
+              omRuntime.config.reflectionsPoolMaxTokens ?? DEFAULTS.reflectionsPoolMaxTokens,
+            fullFoldAlways: omRuntime.config.fullFoldAlways,
+            reflectionTimestamps: omRuntime.config.reflectionTimestamps,
+            reflectionSupersedes: omRuntime.config.reflectionSupersedes,
+          });
+          return summaryContextTokens(
+            summary +
+              "\n\n" +
+              renderSummary(
+                omRuntime.config.memory === false ? [] : projection.reflections,
+                omRuntime.config.memory === false ? [] : projection.observations,
+                renderOptionsFromConfig(omRuntime.config),
+              ),
+          );
+        },
+      });
+      if (!pressure.ok) {
+        trace("before_compact.cancel", { reason: pressure.reason });
+        ctx.ui?.notify?.(
+          "blackhole: context pressure fallback deferred; no safe fitting raw tail or capacity is unknown.",
+          "warning",
+        );
+        omRuntime.lastCompactCancelled = true;
+        return { cancel: true };
+      }
+      pressureBridged = pressure.bridgedIds.length > 0;
+      if (pressureBridged) {
+        const selected = candidateEntries(pressure.firstKeptEntryId);
+        ownCut = {
+          ok: true,
+          messages: selected.flatMap((entry) => (entry.type === "message" ? [entry.message] : [])),
+          selectedIds: selected.map((entry) => entry.id),
+          firstKeptEntryId: pressure.firstKeptEntryId,
+          compactAll: false,
+        };
+      }
     }
 
     trace("before_compact.proceeding", {
@@ -686,16 +829,19 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI, omRuntime: Runtime) 
     } catch {
       // Omitted outputs remain generically recallable when an index is unproven.
     }
-    const retainedToolOutputProjection = buildRetainedToolOutputProjection(
-      keptEntries,
-      allEntries,
-      omRuntime.config.retainedToolOutputMaxTokens,
-    );
+    const retainedToolOutputProjection =
+      effectiveTailBehavior === "unobserved" || pressureBridged
+        ? undefined
+        : buildRetainedToolOutputProjection(
+            keptEntries,
+            allEntries,
+            omRuntime.config.retainedToolOutputMaxTokens,
+          );
     trace("before_compact.tool_output_budget", {
-      retainedTokens: retainedToolOutputProjection.retainedTokens,
-      omittedTokens: retainedToolOutputProjection.omittedTokens,
-      omittedCount: retainedToolOutputProjection.omissions.length,
-      pendingCount: retainedToolOutputProjection.pendingCount,
+      retainedTokens: retainedToolOutputProjection?.retainedTokens,
+      omittedTokens: retainedToolOutputProjection?.omittedTokens,
+      omittedCount: retainedToolOutputProjection?.omissions.length,
+      pendingCount: retainedToolOutputProjection?.pendingCount,
     });
 
     const legacyDetails: PiVccCompactionDetails = {
@@ -715,7 +861,14 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI, omRuntime: Runtime) 
       memoryEnabled: omRuntime.config.memory !== false,
     });
     if (omRuntime.config.memory !== false) {
-      const projection = buildCompactionProjection(branchEntries as any[], firstKeptEntryId, {
+      // A conservative tool-safe cut can precede the completed batch end.
+      // Include completed OM facts even when that means duplicating a little
+      // retained raw evidence; never lose earlier facts from a straddling batch.
+      const omBoundary =
+        effectiveTailBehavior === "unobserved"
+          ? (branchEntries[observedPrefixIndex(branchEntries)]?.id ?? firstKeptEntryId)
+          : firstKeptEntryId;
+      const projection = buildCompactionProjection(branchEntries as any[], omBoundary, {
         observationsPoolMaxTokens: omRuntime.config.observationsPoolMaxTokens,
         reflectionsPoolMaxTokens:
           omRuntime.config.reflectionsPoolMaxTokens ?? DEFAULTS.reflectionsPoolMaxTokens,
@@ -741,6 +894,41 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI, omRuntime: Runtime) 
     // (renderSummary([], []) always emits the OM recall footer, so the check
     // must not key off footer-inclusive omContent.)
     const fallbackSummary = summary + "\n\n" + omContent;
+    if (effectiveTailBehavior === "unobserved") {
+      const window =
+        ctx.model && Number.isFinite(ctx.model.contextWindow) && ctx.model.contextWindow > 0
+          ? effectiveContextWindow(ctx.model)
+          : undefined;
+      const reserve = preparation.settings?.reserveTokens ?? 0;
+      const estimated =
+        estimateStringTokens(ctx.getSystemPrompt?.() ?? "") +
+        summaryContextTokens(fallbackSummary) +
+        (keptIdx >= 0 ? branchEntries.slice(keptIdx) : []).reduce(
+          (total, entry) => total + estimateEntryTokens(entry),
+          0,
+        );
+      if (
+        !window ||
+        estimated > window - reserve ||
+        (summary.trim().length === 0 && !omHasContent)
+      ) {
+        trace("before_compact.cancel", { reason: "unobserved_context_unavailable", estimated });
+        ctx.ui?.notify?.(
+          "blackhole: unobserved tail preserved; compaction deferred (no useful summary or insufficient known context capacity).",
+          "warning",
+        );
+        omRuntime.lastCompactCancelled = true;
+        return { cancel: true };
+      }
+    }
+    if (pressureEnabled && summary.trim().length === 0 && !omHasContent) {
+      ctx.ui?.notify?.(
+        "blackhole: context pressure fallback deferred; no useful summary.",
+        "warning",
+      );
+      omRuntime.lastCompactCancelled = true;
+      return { cancel: true };
+    }
     if (summary.trim().length === 0 && !omHasContent) {
       // Returning undefined delegates to Pi's native summarizer:
       // ExtensionHandler permits void, and pi only acts on result?.compaction.
@@ -783,7 +971,7 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI, omRuntime: Runtime) 
         try {
           const result = buildAppendOnlyDetails({
             branchEntries: branchEntries as any[],
-            manualRebase: isPiVcc,
+            manualRebase: isPiVcc || pressureBridged,
             freshSummary: freshSegmentSummary,
             aggregateSummary,
             trailingSummary,
@@ -828,10 +1016,75 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI, omRuntime: Runtime) 
         );
       }
     }
+    if (pressureEnabled) {
+      // Final render is authoritative: refs, OM and append metadata can cost more
+      // than the candidate estimate. Never publish a knowingly oversized cut.
+      const estimated =
+        estimateStringTokens(ctx.getSystemPrompt?.() ?? "") +
+        summaryContextTokens(fallbackSummary) +
+        (keptIdx >= 0 ? branchEntries.slice(keptIdx) : []).reduce(
+          (total, entry) => total + estimateEntryTokens(entry),
+          0,
+        );
+      const capacity =
+        (ctx.model ? effectiveContextWindow(ctx.model) : 0) -
+        (preparation.settings?.reserveTokens ?? 0);
+      if (estimated > capacity) {
+        ctx.ui?.notify?.(
+          "blackhole: context pressure fallback deferred; final summary and raw tail exceed capacity.",
+          "warning",
+        );
+        omRuntime.lastCompactCancelled = true;
+        return { cancel: true };
+      }
+    }
+    if ((effectiveTailBehavior === "unobserved" || pressureEnabled) && details.version === 2) {
+      let candidateId = "blackhole-pressure-candidate";
+      while (branchEntries.some((entry) => entry.id === candidateId)) candidateId += "-";
+      const candidateMessages = projectAppendOnlyContext(
+        [{ role: "compactionSummary", summary: fallbackSummary, tokensBefore: 0, timestamp: 0 }],
+        [
+          ...branchEntries,
+          {
+            id: candidateId,
+            type: "compaction",
+            summary: fallbackSummary,
+            firstKeptEntryId,
+            details,
+          },
+        ],
+      );
+      const summaryTokens = convertToLlm(candidateMessages).reduce(
+        (total, message) => total + estimateTokens(message),
+        0,
+      );
+      const rawTokens = (keptIdx >= 0 ? branchEntries.slice(keptIdx) : []).reduce(
+        (total, entry) => total + estimateEntryTokens(entry),
+        0,
+      );
+      const capacity =
+        (ctx.model ? effectiveContextWindow(ctx.model) : 0) -
+        (preparation.settings?.reserveTokens ?? 0) -
+        estimateStringTokens(ctx.getSystemPrompt?.() ?? "");
+      if (summaryTokens + rawTokens > capacity) {
+        ctx.ui?.notify?.(
+          "blackhole: compaction deferred; append context and raw tail exceed capacity.",
+          "warning",
+        );
+        omRuntime.lastCompactCancelled = true;
+        return { cancel: true };
+      }
+    }
     return {
       compaction: {
         summary: fallbackSummary,
-        details: { ...details, "om.folded": omDetails },
+        details: {
+          ...details,
+          "om.folded": omDetails,
+          ...(effectiveTailBehavior === "unobserved" || pressureEnabled
+            ? { "om.preserveSourceHistory": true }
+            : {}),
+        },
         tokensBefore: preparation.tokensBefore,
         firstKeptEntryId,
       },

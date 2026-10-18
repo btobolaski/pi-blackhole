@@ -136,7 +136,11 @@ export function registerMemoryCommand(pi: ExtensionAPI, runtime: Runtime): void 
 
       // /blackhole-memory full — show full recorded memory + copy to clipboard
       if (mode === "full") {
-        const projection = fullProjection(entries);
+        const projection = fullProjection(
+          entries,
+          undefined,
+          runtime.config.reflectionSupersedes === true,
+        );
         const output = renderContentOnlyProjection(
           projection,
           "recorded",
@@ -154,7 +158,11 @@ export function registerMemoryCommand(pi: ExtensionAPI, runtime: Runtime): void 
 
       // /blackhole-memory view — show visible memory + copy to clipboard
       if (mode === "view") {
-        const projection = visibleProjection(entries);
+        const projection = visibleProjection(
+          entries,
+          undefined,
+          runtime.config.reflectionSupersedes === true,
+        );
         const output = renderContentOnlyProjection(
           projection,
           "visible",
@@ -177,8 +185,12 @@ export function registerMemoryCommand(pi: ExtensionAPI, runtime: Runtime): void 
       }
 
       const folded = foldLedger(entries);
-      const visible = visibleProjection(entries);
-      const full = fullProjection(entries);
+      const visible = visibleProjection(
+        entries,
+        undefined,
+        runtime.config.reflectionSupersedes === true,
+      );
+      const full = fullProjection(entries, undefined, runtime.config.reflectionSupersedes === true);
       const drift = diffProjection(visible, full);
 
       // Manual mode keeps observations in pending.json rather than the branch;

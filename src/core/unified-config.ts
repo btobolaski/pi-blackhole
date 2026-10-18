@@ -127,8 +127,12 @@ export interface UnifiedConfig {
   /** How much recent transcript to keep visible after compaction.
    *  "pi-default" — use Pi's firstKeptEntryId (respects Pi's keepRecentTokens)
    *  "minimal"    — keep only last user message (current agressive pi-vcc behavior)
+   *  "unobserved" — retain raw messages beyond completed OM coverage
    *  ONLY applies when compactionEngine: "blackhole" */
-  tailBehavior: "pi-default" | "minimal";
+  tailBehavior: "pi-default" | "minimal" | "unobserved";
+
+  /** Opt-in policy-independent VCC bridge when the preferred context cannot fit. */
+  contextPressureFallback: "off" | "vcc";
 
   /** Show a display-only copy of the newest assistant output that the
    *  compaction dropped from view (`blackhole-pre-compaction-output` custom
@@ -301,6 +305,7 @@ export const DEFAULTS: UnifiedConfig = {
 
   skipForProviders: [],
   tailBehavior: "minimal",
+  contextPressureFallback: "off",
   showPreCompactionMessage: true,
   retainedToolOutputMaxTokens: 20_000,
   recallResponseMaxChars: 48_000,
@@ -402,7 +407,7 @@ const COMPACTION_VALUES = ["auto", "manual", "off"] as const;
 const COMPACTION_ENGINE_VALUES = ["blackhole", "pi-default"] as const;
 const COMPACTION_SUMMARY_MODE_VALUES = ["default", "append"] as const;
 
-const TAIL_BEHAVIOR_VALUES = ["pi-default", "minimal"] as const;
+const TAIL_BEHAVIOR_VALUES = ["pi-default", "minimal", "unobserved"] as const;
 const MID_RUN_COMPACTION_VALUES = ["resume", "pause", "off"] as const;
 
 function isCompaction(v: unknown): v is "auto" | "manual" | "off" {
@@ -414,7 +419,7 @@ function isCompactionEngine(v: unknown): v is "blackhole" | "pi-default" {
 function isCompactionSummaryMode(v: unknown): v is "default" | "append" {
   return typeof v === "string" && (COMPACTION_SUMMARY_MODE_VALUES as readonly string[]).includes(v);
 }
-function isTailBehavior(v: unknown): v is "pi-default" | "minimal" {
+function isTailBehavior(v: unknown): v is "pi-default" | "minimal" | "unobserved" {
   return typeof v === "string" && (TAIL_BEHAVIOR_VALUES as readonly string[]).includes(v);
 }
 function isMidRunCompaction(v: unknown): v is "resume" | "pause" | "off" {
@@ -583,6 +588,8 @@ function parseConfig(raw: Record<string, unknown>): Partial<UnifiedConfig> {
   if (isCompactionSummaryMode(raw.compactionSummaryMode))
     c.compactionSummaryMode = raw.compactionSummaryMode;
   if (isTailBehavior(raw.tailBehavior)) c.tailBehavior = raw.tailBehavior;
+  if (raw.contextPressureFallback === "off" || raw.contextPressureFallback === "vcc")
+    c.contextPressureFallback = raw.contextPressureFallback;
   if (isMidRunCompaction(raw.midRunCompaction)) c.midRunCompaction = raw.midRunCompaction;
   // cacheRetention is the one string enum that canonicalizes: the raw value is
   // normalized so a hand-edited "LONG" resolves the same as the env var's.

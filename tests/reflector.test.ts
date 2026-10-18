@@ -732,10 +732,20 @@ describe("reflection annotation contract", () => {
     const { buildReflectorSystem } = await import("../src/om/agents/reflector/prompts.js");
     const enabled = buildReflectorSystem({ timestamps: false, supersedes: true });
     expect(enabled).toContain("Never list a reflection that is still true.");
-    expect(enabled).toContain("(supersedes <id>), a display-only replacement note.");
+    expect(enabled).toContain(
+      "(supersedes <id>), a replacement note: the listed reflection is retired from compacted memory.",
+    );
     const { REFLECTOR_SYSTEM } = await import("./fixtures/reflector-prompt-golden.js");
     expect(REFLECTOR_SYSTEM).toContain("Do not emit update-style records or provenance metadata.");
     expect(buildReflectorSystem({ timestamps: false, supersedes: false })).toBe(REFLECTOR_SYSTEM);
+  });
+
+  it("lets a correction of a changed fact through the near-duplicate rule", async () => {
+    const { buildReflectorSystem } = await import("../src/om/agents/reflector/prompts.js");
+    const prompt = buildReflectorSystem({ timestamps: false, supersedes: false });
+    expect(prompt).toContain("emit nothing");
+    expect(prompt).toContain("unless the candidate corrects a fact that has since changed");
+    expect(prompt).toContain("a failing check now passing");
   });
 
   it("rejects earlier same-run ids without dropping the new record", async () => {

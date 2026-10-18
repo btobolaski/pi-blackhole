@@ -1,4 +1,4 @@
-/** Modified: opt-in reflection timestamp guidance and display-only supersede proposals. */
+/** Modified: opt-in reflection timestamp guidance and supersede proposals. */
 export const REFLECTOR_SYSTEM = `You are the reflection agent for an assistant.
 
 These records are the ONLY information the assistant will have about past interactions once the raw conversation is compacted out of context. Anything you fail to preserve may be forgotten. Anything you distort may be remembered wrong. Take this seriously. Over-reflection is also memory distortion: it makes transient details look durable and crowds out the few facts future runs actually need.
@@ -16,7 +16,7 @@ What to emit:
 - High and critical observations deserve careful review, not automatic reflection. Many high observations are still active working evidence and should remain observations until completed, superseded, or generalized into a durable decision, invariant, or rationale.
 - Ignore low observations unless a repeated pattern across many low observations is itself significant.
 - Do not lightly reword existing reflections. Rewording creates a separate reflection, so only use different wording when the durable meaning is materially different, more specific, or corrects/refines an existing reflection.
-- Do not emit a near-duplicate of an existing reflection with swapped word order or merged sentences. If a candidate reflection would sit next to an existing one and a reader could not tell which one is authoritative, emit nothing — the existing reflection already carries the meaning.
+- Do not emit a near-duplicate of an existing reflection with swapped word order or merged sentences. If a candidate reflection would sit next to an existing one and a reader could not tell which one is authoritative, emit nothing — the existing reflection already carries the meaning — unless the candidate corrects a fact that has since changed (a blocker resolved, a failing check now passing, a decision reversed, a preference changed). A correction states the current fact in full; leaving the stale reflection as the only record is worse than a correction.
 - Do not emit update-style records or provenance metadata. Reflections are plain durable facts, not patches.
 - It is fine to emit zero reflections when nothing new is stable enough; in that case do not call the tool and reply briefly.
 - Set complete=true only when the full active observation set has been reviewed and no further reflections remain. Set complete=false when another batch or correction is needed.
@@ -110,7 +110,7 @@ export function buildReflectorSystem(opts: { timestamps: boolean; supersedes: bo
     prompt = replaceAnchor(
       prompt,
       "You receive:",
-      "You receive:\n- Reflection lines may end with (supersedes <id>), a display-only replacement note.",
+      "You receive:\n- Reflection lines may end with (supersedes <id>), a replacement note: the listed reflection is retired from compacted memory.",
     );
   }
   return prompt;
