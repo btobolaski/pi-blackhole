@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+---
+
+## [0.5.15] - 2026-10-18
+
 ### Fixed
 
 - **No `typebox` load warning.** 0.5.14 moved `typebox` from development to runtime dependencies after a plain Node.js `import` of the packed tarball failed with `ERR_MODULE_NOT_FOUND` — but pi does not load the extension that way. Its extension loader supplies `typebox` (and the `@earendil-works/pi-*` packages) to extensions in every load mode, so the runtime dependency installed a second physical copy that pi flags on load: “Host-provided extension packages must be declared in peerDependencies with a `*` range, not dependencies — installed copies can bypass the extension loader and create duplicate runtime modules.” `typebox` is a `peerDependencies` entry with `"*"` again, pinned in `devDependencies` for the build, typecheck and tests, and absent from `dependencies`. The packed tarball was re-verified through pi's own extension loader with no `node_modules` present: no warning, no error.

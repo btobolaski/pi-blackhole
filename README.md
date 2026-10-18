@@ -46,7 +46,7 @@ Then `/reload` or restart Pi. The config file at `~/.pi/agent/pi-blackhole/pi-bl
 
 ## ✨ What's new
 
-> **Latest release: [0.5.14](CHANGELOG.md#0514---2026-10-18)**
+> **Latest release: [0.5.15](CHANGELOG.md#0515---2026-10-18)**
 >
 > - **Timeline and scheduled memory exports** — `/blackhole-export days:7 mode:timeline` produces a chronological rolling snapshot. Use `pi --no-session --blackhole-export "days:7 mode:timeline out:memory/weekly.md" -p` for scheduled exports; distilled export remains the default.
 > - **Keep unobserved original context** — opt into `tailBehavior: "unobserved"` to retain the raw history the observer has not completed. The default remains `"minimal"`; oversized protected tails defer compaction safely.
