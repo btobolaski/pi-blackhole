@@ -19,6 +19,7 @@
 
 ### Fixed
 
+- **Unobserved-tail compaction progresses across routine and empty observer chunks.** Persist delivered source ranges independently of fact citations, retain ordered manual coverage through restart and flush, and replay gaps without treating cursors or rejected output as completed coverage. Repeated compaction selects only the active window, preventing duplicate summaries and append coverage.
 - **Production installs include `typebox`.** Move the unchanged `1.3.37` dependency from development to runtime dependencies so the externalized bundle imports work when devDependencies are omitted.
 - **Batch review follow-ups.** Preserve confirmed questionnaire answers over previews and cancellation, keep the eight-decision cap across compactions, apply reflection retirement to visible memory views, filter superseded pending worker context, and resume observation after the later recorded coverage when a source cursor is stale.
 - **`tailBehavior: "minimal"` keeps a tail in a single long run.** When the live window had no user message after its first one, the minimal cut disabled Pi's own cut, so every such compaction summarized everything and kept no recent messages (about 39% of compactions in a sample of 2,014). Pi's later split-turn cut now applies in that case, as documented; windows with a later user message and compactions with no usable Pi cut behave as before.

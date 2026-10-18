@@ -117,6 +117,7 @@ const textForTokens = (tokens: number, sentinel: string) =>
 const emptyObserverResult = () => ({
   observations: [],
   emptyReason: { kind: "no_new_content" as const },
+  coverageComplete: true,
 });
 
 const lengthCutError = (worker: string) =>

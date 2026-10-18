@@ -90,9 +90,11 @@ beforeEach(() => {
   host.dir = mkdtempSync(join(tmpdir(), "blackhole-cooldown-probe-"));
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(now);
-  workers.observer
-    .mockReset()
-    .mockResolvedValue({ observations: [], emptyReason: { kind: "no_new_content" } });
+  workers.observer.mockReset().mockResolvedValue({
+    observations: [],
+    emptyReason: { kind: "no_new_content" },
+    coverageComplete: true,
+  });
   workers.reflector.mockReset().mockResolvedValue({ reflections: [] });
   workers.dropper.mockReset().mockResolvedValue([]);
 });

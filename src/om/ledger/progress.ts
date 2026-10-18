@@ -4,10 +4,12 @@ import type { PendingOMState } from "../pending.js";
 import { foldLedger } from "./fold.js";
 import {
   OM_OBSERVATIONS_DROPPED,
+  OM_OBSERVATIONS_COVERAGE,
   OM_OBSERVATIONS_RECORDED,
   OM_OBSERVATIONS_UNANCHORED,
   OM_REFLECTIONS_RECORDED,
   isObservationsRecordedData,
+  isObservationsCoverageData,
   isObservationsUnanchoredData,
   isReflectionsRecordedData,
   supersededIds,
@@ -62,7 +64,10 @@ function isValidCoverageEntry(
   entry: Entry,
   customType: V3MemoryCustomType,
 ): entry is Entry & { data: { coversUpToId: string } } {
-  if (entry.type !== "custom" || entry.customType !== customType) return false;
+  if (entry.type !== "custom") return false;
+  if (customType === OM_OBSERVATIONS_RECORDED && entry.customType === OM_OBSERVATIONS_COVERAGE)
+    return isObservationsCoverageData(entry.data);
+  if (entry.customType !== customType) return false;
   if (!isObject(entry.data) || typeof entry.data.coversUpToId !== "string") return false;
 
   if (customType === OM_OBSERVATIONS_RECORDED) return isNonEmptyArray(entry.data.observations);

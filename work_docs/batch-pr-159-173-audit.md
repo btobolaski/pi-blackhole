@@ -1,6 +1,6 @@
 # PR #159–#173 integration audit
 
-Validated code revision: `806b6fdbeb4ac500ddd2dfe13e6257579393d787`. Baseline: `8ac87dd3922ad79c3f69de37ab26542ff558ff0f` (current `origin/dev`, including Dependabot #176).
+Validated code revision after inline-review corrections: `3d2f23a` (initial batch validation: `806b6fdbeb4ac500ddd2dfe13e6257579393d787`). Baseline: `8ac87dd3922ad79c3f69de37ab26542ff558ff0f` (current `origin/dev`, including Dependabot #176).
 
 All fifteen pinned original contributor commits are merge ancestors. No contributor branch was rebased or rewritten. #149 and #158 were excluded. The original dev working tree is unchanged. This staging branch is intended for one normal merge into dev after human review; do not squash away contributor ancestry.
 
@@ -69,3 +69,14 @@ The first final gate attempt caught one formatting difference between the old an
 - Context estimates include the tested summary/raw/system costs, but provider-specific framing and tool schemas can still overflow. Unsafe or unknown capacity cancels the opt-in paths.
 - The optional unobserved/pressure selectors can scan long histories repeatedly. The existing inline performance concern is retained as a scaling follow-up; no broad selection algorithm redesign is included.
 - Local validation used Node 26; the PR’s normal CI also targets Node 22. Bot/CI results will be checked in the next session, as requested. Do not update dev or close original PRs before final human approval.
+
+## PR #177 inline-review follow-up
+
+Both [observed-prefix liveness](https://github.com/k0valik/pi-blackhole/pull/177#discussion_r4307169759) and [active-window selection](https://github.com/k0valik/pi-blackhole/pull/177#discussion_r4307169762) findings were reproduced and repaired.
+
+- `a4dde22`: nine new tests failed before the active-window correction. Unobserved selection now begins at the latest compaction's retained boundary, or after that compaction when the boundary is unavailable. Retired messages and custom sources cannot re-enter the selected IDs or raw tail. Repeated compaction and adjacent append/tool-boundary suites passed (157 tests).
+- `3d2f23a` (reviewer source commit `2fd4432`): persist explicit delivered ranges on recorded batches and dedicated coverage-only markers for validated complete empty chunks. Sparse citations no longer determine chunk delivery. Coverage remains independent of cuts, runtime cursors, rejected output and unflushed manual buffers. Ordered pending coverage survives restart and `/blackhole` flush; legacy singular pending facts are preserved. Coverage markers contain no facts and are inert in folding. Legacy ranges without explicit evidence remain conservative and can be replayed.
+- Red runs were witnessed for the delivered-boundary, stale cursor replay, missing completion proof, marker folding, pending discriminator, singular pending migration and rejected-then-empty cases. The focused reviewer suite passed 308 tests.
+- Final cumulative gates at `3d2f23a`: `pnpm build`, `pnpm verify` (161 files / 3,033 tests), and `pnpm format:check` passed with `PI_CODING_AGENT_DIR` unset. No dependency changes. Contributor ancestry remains intact.
+
+The maintainer subsequently authorized merging #177, #179, #178 and #158 into dev, followed by release preparation. The separate ask-tool follow-up is #179; timeline export remains #158.

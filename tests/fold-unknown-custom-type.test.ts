@@ -87,4 +87,21 @@ describe("foldLedger foreign custom entries", () => {
 
     expect(vi.mocked(debugLog).mock.calls).toEqual([]);
   });
+
+  it("ignores the delivered-coverage marker as ledger metadata", () => {
+    const entries: Entry[] = [
+      { type: "message", id: "msg-1" },
+      {
+        type: "custom",
+        id: "coverage-1",
+        customType: "om.observations.coverage",
+        data: { coversFromId: "msg-1", coversUpToId: "msg-1" },
+      },
+    ];
+
+    const folded = foldLedger(entries);
+
+    expect(folded.observations).toEqual([]);
+    expect(vi.mocked(debugLog).mock.calls).toEqual([]);
+  });
 });

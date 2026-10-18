@@ -178,6 +178,8 @@ export type ObserverEmptyReason =
 export interface ObserverResult {
   observations: Observation[] | undefined;
   emptyReason?: ObserverEmptyReason;
+  /** True only when a valid complete=true tool batch closed an empty run. */
+  coverageComplete?: boolean;
   /**
    * Provider error from a turn after a valid complete=true close. The run kept
    * its result (the chunk was declared covered); the caller should log this.
@@ -536,7 +538,14 @@ ${conversation}`;
     } else {
       emptyReason = { kind: "no_new_content" };
     }
-    return { observations: undefined, emptyReason };
+    return {
+      observations: undefined,
+      emptyReason,
+      // A closing flag proves the delivered range only if every proposed
+      // source reference was valid. Rejected output remains uncovered even if
+      // the model later sends an empty complete batch.
+      coverageComplete: closedByCompleteBatch && totalRejected === 0,
+    };
   }
 
   return {

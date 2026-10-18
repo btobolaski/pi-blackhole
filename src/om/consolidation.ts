@@ -47,6 +47,7 @@ import { OBSERVER_SYSTEM } from "./agents/observer/prompts.js";
 import {
   readPendingState,
   savePendingObservation,
+  savePendingObservationCoverage,
   savePendingReflection,
   savePendingDropped,
   savePendingUnanchored,
@@ -56,11 +57,13 @@ import {
 import { isManualMode } from "../core/unified-config.js";
 import {
   OM_OBSERVATIONS_DROPPED,
+  OM_OBSERVATIONS_COVERAGE,
   OM_OBSERVATIONS_RECORDED,
   OM_OBSERVATIONS_UNANCHORED,
   OM_REFLECTIONS_RECORDED,
   buildExistingObservationsSummary,
   buildObservationsDroppedData,
+  buildObservationsCoverageData,
   buildObservationsRecordedData,
   buildObservationsUnanchoredData,
   buildReflectionsRecordedData,
@@ -374,8 +377,15 @@ function observerStartIndex(entries: Entry[], runtime: Runtime): number {
   const cursor = runtime.getCursor("observer");
   const cursorIndex = entryIndexForId(entries, cursor?.entryId);
   if (preserve) {
+    const deliveredPrefix = observedPrefixIndex(entries);
+    // Auto-mode cursors are only hints: after restart an older incomplete or
+    // uncommitted run may have moved one beyond the durable branch prefix.
+    // Replaying that gap is necessary for the next explicit range to connect.
+    // Manual mode may use its persisted pending batches as its operational
+    // resume point, but those batches never enter observedPrefixIndex.
+    if (!isManualMode(runtime.config)) return deliveredPrefix;
     return Math.max(
-      observedPrefixIndex(entries),
+      deliveredPrefix,
       cursorIndex >= 0 && isSourceEntry(entries[cursorIndex]) ? cursorIndex : -1,
     );
   }
@@ -1548,9 +1558,13 @@ export async function runObserverStage(
           );
         }
         const coverageId: string = result.partialCoverageId ?? coversUpToId;
-        const data = buildObservationsRecordedData(result.observations, coverageId);
+        const deliveredFromId = sourceEntryIds[0];
+        const data = buildObservationsRecordedData(
+          result.observations,
+          coverageId,
+          deliveredFromId,
+        );
         if (!data) {
-          runtime.advanceCursor("observer", coverageId, "empty");
           return "continue";
         }
         debugLog("observer.records", {
@@ -1615,7 +1629,19 @@ export async function runObserverStage(
           : "warning"
         : "warning";
       debugLog("observer.empty", { coversUpToId, reason: reason?.kind });
-      runtime.advanceCursor("observer", coversUpToId, "empty");
+      if (result.coverageComplete === true && sourceEntryIds[0]) {
+        const coverage = buildObservationsCoverageData(sourceEntryIds[0], coversUpToId);
+        if (!coverage) return "continue";
+        if (isManualMode(runtime.config))
+          savePendingObservationCoverage(sessionId, {
+            coversUpToId,
+            data: coverage,
+          });
+        else if (!appendEntry(pi, runtime, generation, OM_OBSERVATIONS_COVERAGE, coverage))
+          return "abort";
+        runtime.advanceCursor("observer", coversUpToId, "empty");
+        return continueSources();
+      }
       if (reasonLevel === "warning") {
         if (ctx.hasUI)
           ctx.ui?.notify(`Observational memory: no observations — ${reasonLabel}`, "warning");
@@ -1626,9 +1652,9 @@ export async function runObserverStage(
           `Observational memory: no observations — ${reasonLabel}`,
         );
       }
-      // A clean "nothing new" close still proves coverage up to the delivered
-      // point, so the rest of the backlog can drain in this same run.
-      return continueSources();
+      // Without a validated complete close, neither advance coverage nor
+      // drain beyond this input; a later cycle retries the same source range.
+      return "continue";
     } catch (error) {
       if (options) {
         debugLog("observer.shutdown_error", { error: String(error) });

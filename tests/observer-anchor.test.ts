@@ -93,6 +93,7 @@ beforeEach(() => {
   runObserverSpy.mockResolvedValue({
     observations: [],
     emptyReason: { kind: "no_new_content" as const },
+    coverageComplete: true,
   });
 });
 

@@ -365,6 +365,52 @@ describe("/blackhole command", () => {
     expect(existsSync(pendingFile)).toBe(false); // cleared after flush
     expect(ctx.compact).toHaveBeenCalledTimes(1);
   });
+
+  it("flushes empty coverage and fact batches in their recorded delivery order", async () => {
+    const { pi, runtime, handlerMap, makeHandlerArgs, appendEntryCalls } = createMockEnvironment();
+    runtime.config.compaction = "manual";
+    registerPiVccCommand(pi as any, runtime as any);
+
+    const pendingFile = join(testRoot, "agent", "pi-blackhole", "test-session-pending.json");
+    const emptyCoverage = { coversFromId: "s0", coversUpToId: "s0" };
+    const recorded = {
+      observations: [
+        {
+          id: "aaaaaaaaaaaa",
+          content: "fact from the next range",
+          timestamp: "2026-05-02 10:00",
+          relevance: "medium",
+          sourceEntryIds: ["s1"],
+          tokenCount: 6,
+        },
+      ],
+      coversFromId: "s1",
+      coversUpToId: "s1",
+    };
+    writeFileSync(
+      pendingFile,
+      JSON.stringify({
+        observation: { coversUpToId: "s1", data: recorded },
+        observationBatches: [
+          {
+            coversUpToId: "s0",
+            data: emptyCoverage,
+            customType: "om.observations.coverage",
+          },
+          { coversUpToId: "s1", data: recorded },
+        ],
+      }),
+    );
+
+    const handler = handlerMap.get("blackhole");
+    if (!handler) throw new Error("blackhole command was not registered");
+    await handler("", makeHandlerArgs());
+
+    expect(appendEntryCalls).toEqual([
+      { customType: "om.observations.coverage", data: emptyCoverage },
+      { customType: "om.observations.recorded", data: recorded },
+    ]);
+  });
 });
 
 // ── Manual-compaction eligibility ───────────────────────────────────────────

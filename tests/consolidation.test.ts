@@ -955,6 +955,7 @@ beforeEach(() => {
   agents.runObserver.mockResolvedValue({
     observations: [],
     emptyReason: { kind: "no_new_content" as const },
+    coverageComplete: true,
   });
   agents.runReflector.mockReset();
   agents.runReflector.mockResolvedValue({ reflections: [] });
@@ -994,6 +995,7 @@ describe("worker attempt hard timeout", () => {
       .mockResolvedValueOnce({
         observations: [],
         emptyReason: { kind: "no_new_content" as const },
+        coverageComplete: true,
       });
     fixture.entries.push(rawMessage("source-1", "x".repeat(40_000)));
 
@@ -1049,6 +1051,7 @@ describe("worker attempt hard timeout", () => {
       .mockResolvedValueOnce({
         observations: [],
         emptyReason: { kind: "no_new_content" as const },
+        coverageComplete: true,
       });
     fixture.entries.push(rawMessage("source-1", "x".repeat(40_000)));
 
@@ -2773,7 +2776,11 @@ test("in-flight observation completes only its snapshot; compaction cannot skip 
       }),
     );
   } finally {
-    release?.({ observations: [], emptyReason: { kind: "no_new_content" } });
+    release?.({
+      observations: [],
+      emptyReason: { kind: "no_new_content" },
+      coverageComplete: true,
+    });
     await running;
   }
   await fixture.run();
