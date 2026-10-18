@@ -259,6 +259,8 @@ Models with active cooldowns are transparently skipped. Up to 10 model resolutio
 
 Models that fail with retryable errors are cooled down and skipped in subsequent attempts. Defined in [[src/om/cooldown.ts]].
 
+Local import/programming errors and aborted requests do not show that a provider is unavailable. They skip the failed identity only for the current stage, even if the runtime generation is still active; the next stage or cycle may use it again. Stale-generation guards still discard late errors before any cooldown decision. Network failures (including fetch transport errors), authentication failures and provider model-not-found errors retain their existing cooldown behavior.
+
 ### Persistence
 
 With `debugLog` enabled, each successful cooldown write emits one `model.cooldown_write` event at the persistence owner. It contains the normalized model identity, stage, cause class (`provider_configuration`, `provider_transient`, or `unknown`) and a short sanitized reason, not an HTML/JSON response body. The class describes the current error classification; it does not change cooldown eligibility or retry policy. Failed writes and in-memory-only skips emit no write event.
