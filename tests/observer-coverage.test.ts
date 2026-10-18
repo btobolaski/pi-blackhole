@@ -669,9 +669,7 @@ describe("observer never covers source entries it was never shown", () => {
 
     await runStage(runtime, entries);
 
-    expect(observedInput(0).priorObservations.join("\n")).toContain(
-      "resolved: manual build fails",
-    );
+    expect(observedInput(0).priorObservations.join("\n")).toContain("resolved: manual build fails");
     expect(observedInput(0).priorObservations.join("\n")).not.toContain(
       "unresolved: manual build fails",
     );
