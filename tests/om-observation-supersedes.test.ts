@@ -64,7 +64,7 @@ describe("observation supersession in the ledger", () => {
   });
 
   it("keeps the stale line when the superseder is outside the projection boundary", () => {
-    const entries = asEntries(branch({ supersedes: [STALE] }));
+    const entries = asEntries(branch({ supersedes: [STALE], sourceEntryIds: ["raw-2"] }));
     const projection = buildCompactionProjection(entries, "raw-1", projectionConfig);
     expect(projection.observations.map((o) => o.id)).toEqual([STALE]);
   });
