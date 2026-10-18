@@ -23,6 +23,7 @@ import {
   isDeterministicError,
   isRetryableError,
   isLocalExecutionError,
+  isRequestLocalError,
 } from "./retryable-error.js";
 import { readPendingCursors, writePendingCursors } from "./pending.js";
 import type { PendingOMState } from "./pending.js";
@@ -967,7 +968,8 @@ export class Runtime {
    * (not the session model).  If it's the session model we don't cool it down.
    *
    * When cooldownHours is explicitly 0, the model is tracked in-memory for the
-   * current consolidation stage (no disk writes). Local execution errors and aborts
+   * current consolidation stage (no disk writes). Local execution errors/aborts
+   * and request-local size/option errors
    * are also in-cycle only. Otherwise a persisted cooldown
    * is recorded.
    */
@@ -980,7 +982,11 @@ export class Runtime {
     // Thinking-only modifiers carry no identity to cool down; the session
     // model's deterministic errors are handled via recordDeterministicError.
     if (!hasModelIdentity(modelConfig)) return;
-    if (modelConfig.cooldownHours === 0 || isLocalExecutionError(error)) {
+    if (
+      modelConfig.cooldownHours === 0 ||
+      isLocalExecutionError(error) ||
+      isRequestLocalError(error)
+    ) {
       // In-memory only: skip this model for the rest of this stage.
       // No disk writes, no persistent cooldown.
       this.failedInCycle.add(modelKey(modelConfig));
@@ -1019,7 +1025,7 @@ export class Runtime {
   ): void {
     const model = resolvedModel as { provider?: unknown; id?: unknown } | null | undefined;
     if (typeof model?.provider !== "string" || typeof model?.id !== "string") return;
-    if (isLocalExecutionError(error)) {
+    if (isLocalExecutionError(error) || isRequestLocalError(error)) {
       this.skipFailedForCycle({ provider: model.provider, id: model.id });
       return;
     }
