@@ -2,13 +2,15 @@ import { describe, expect, it } from "vitest";
 import type { NormalizedBlock } from "../src/types.js";
 import { extractUserDecisions, projectUserDecision } from "../src/extract/user-decisions.js";
 import { serializeSourceAddressedBranchEntries } from "../src/om/serialize.js";
+import { normalize } from "../src/core/normalize.js";
+import { toolResult } from "./vcc-fixtures.js";
 
 const result = (
   name: string,
   text: string,
   details?: unknown,
   isError = false,
-): NormalizedBlock => ({
+): Extract<NormalizedBlock, { kind: "tool_result" }> => ({
   kind: "tool_result",
   name,
   text,
@@ -48,6 +50,19 @@ describe("ask-tool compatibility", () => {
     ]);
   });
 
+  it("captures pi-ask custom text beside selected values", () => {
+    expect(
+      extractUserDecisions([
+        result("ask_user", "summary", {
+          mode: "submit",
+          cancelled: false,
+          questions: [{ id: "name", prompt: "What should it be called?" }],
+          answers: { name: { values: ["custom"], labels: ["Custom"], customText: "Harbor" } },
+        }),
+      ]),
+    ).toEqual(["User decided: What should it be called? → Custom; custom: Harbor"]);
+  });
+
   it("captures explicit edlsh batch answers and ignores skipped questions", () => {
     expect(
       extractUserDecisions([
@@ -76,7 +91,37 @@ describe("ask-tool compatibility", () => {
     ).toEqual(["User decided: Proceed? → No — user note: Keep rollback simple"]);
   });
 
-  it("captures UniPi combined answers but not end-turn or handoff controls", () => {
+  it("captures edlsh single freeform responses", () => {
+    expect(
+      extractUserDecisions([
+        result("ask_user", "summary", {
+          question: "What name?",
+          cancelled: false,
+          response: { kind: "freeform", text: "Harbor" },
+        }),
+      ]),
+    ).toEqual(["User decided: What name? → Harbor"]);
+  });
+
+  it("captures edlsh batch freeform responses and their comments", () => {
+    expect(
+      extractUserDecisions([
+        result("ask_user", "batch summary", {
+          kind: "batch",
+          cancelled: false,
+          questions: [{ question: "What name?" }],
+          answers: [
+            {
+              status: "answered",
+              response: { kind: "freeform", text: "Harbor", comment: "Short and clear" },
+            },
+          ],
+        }),
+      ]),
+    ).toEqual(["User decided: What name? → Harbor — user note: Short and clear"]);
+  });
+
+  it("captures UniPi combined answers", () => {
     expect(
       extractUserDecisions([
         result("ask_user", "User selected: Local and wrote: keep it offline", {
@@ -85,11 +130,36 @@ describe("ask-tool compatibility", () => {
         }),
       ]),
     ).toEqual(["User decided: Where should data live? → Local; custom: keep it offline"]);
+  });
+
+  it("excludes UniPi end-turn control results", () => {
     expect(
       extractUserDecisions([
         result("ask_user", "User chose to end the turn.", {
           question: "Continue?",
           response: { kind: "end_turn" },
+        }),
+      ]),
+    ).toEqual([]);
+  });
+
+  it("excludes UniPi cancellation control results", () => {
+    expect(
+      extractUserDecisions([
+        result("ask_user", "cancelled", {
+          question: "Continue?",
+          response: { kind: "cancelled" },
+        }),
+      ]),
+    ).toEqual([]);
+  });
+
+  it("excludes UniPi timeout control results", () => {
+    expect(
+      extractUserDecisions([
+        result("ask_user", "timed out", {
+          question: "Continue?",
+          response: { kind: "timed_out" },
         }),
       ]),
     ).toEqual([]);
@@ -135,6 +205,23 @@ describe("ask-tool compatibility", () => {
     ).toEqual([
       "User decided: Which database? → Postgres — user note: Prefer managed hosting / note on selected option Postgres: Existing expertise / note on unselected option MySQL: Would need migration / form status: needs discussion before a complete decision",
     ]);
+  });
+
+  it("captures an answered supi text response", () => {
+    expect(
+      extractUserDecisions([
+        result("ask_user", "summary", {
+          outcome: "submitted",
+          questions: [{ id: "reason", prompt: "Why?", type: "text" }],
+          responses: [
+            {
+              questionId: "reason",
+              answer: { kind: "text", answered: true, value: "Keep it local" },
+            },
+          ],
+        }),
+      ]),
+    ).toEqual(["User decided: Why? → Keep it local"]);
   });
 
   it("keeps supi form comments as global notes without inventing an answer", () => {
@@ -196,7 +283,7 @@ describe("ask-tool compatibility", () => {
     ]);
   });
 
-  it("recognizes the rpiv success envelope only when its quoted fields are unambiguous", () => {
+  it("recognizes the rpiv success envelope", () => {
     expect(
       extractUserDecisions([
         result(
@@ -205,6 +292,9 @@ describe("ask-tool compatibility", () => {
         ),
       ]),
     ).toEqual(["User decided: Deployment? → No"]);
+  });
+
+  it("rejects ambiguous quoted fields in the rpiv success envelope", () => {
     expect(
       extractUserDecisions([
         result(
@@ -420,5 +510,14 @@ describe("ask-tool compatibility", () => {
         ),
       ]),
     ).toEqual(["User decided: Scope? → (no option selected) — user note: Keep the patch narrow"]);
+  });
+
+  it("carries third-party result details through normalize into extraction", () => {
+    const details = {
+      question: "Proceed?",
+      response: { kind: "selection", selections: ["No"] },
+    };
+    const message = { ...toolResult("ask_user", "summary"), details };
+    expect(extractUserDecisions(normalize([message]))).toEqual(["User decided: Proceed? → No"]);
   });
 });
