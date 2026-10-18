@@ -40,7 +40,7 @@ describe("unobserved tail", () => {
       });
     },
   );
-  test("compaction never advances observation coverage", () => {
+  test("prior compaction leaves the unobserved active window unsummarized", () => {
     expect(
       buildOwnCut(
         [
@@ -51,7 +51,7 @@ describe("unobserved tail", () => {
         "m5",
         "unobserved",
       ),
-    ).toMatchObject({ ok: true, firstKeptEntryId: "m1", selectedIds: [] });
+    ).toMatchObject({ ok: true, firstKeptEntryId: "m5", selectedIds: [] });
   });
   test("backs up to user turn rather than splitting tool call/result", () => {
     const entries = history();

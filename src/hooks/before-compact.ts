@@ -158,8 +158,26 @@ export function buildOwnCut(
   /** "pi-default" = use Pi's cut, "minimal" = keep only last user message (current). */
   tailBehavior?: "pi-default" | "minimal" | "unobserved",
 ): OwnCutResult {
+  // Find the last compaction entry and its firstKeptEntryId
+  let lastCompactionIdx = -1;
+  let lastKeptId: string | undefined;
+  for (let i = branchEntries.length - 1; i >= 0; i--) {
+    if (branchEntries[i].type === "compaction") {
+      lastCompactionIdx = i;
+      lastKeptId = branchEntries[i].firstKeptEntryId;
+      break;
+    }
+  }
+
   if (tailBehavior === "unobserved") {
-    const messages = branchEntries.filter((entry) => entry.type === "message" && entry.message);
+    // Restrict selection to the currently retained window. Older messages are
+    // already represented by previousSummary even when OM coverage lags behind.
+    const keptIndex = lastKeptId ? branchEntries.findIndex((entry) => entry.id === lastKeptId) : -1;
+    const liveStart =
+      lastCompactionIdx < 0 ? 0 : keptIndex >= 0 ? keptIndex : lastCompactionIdx + 1;
+    const messages = branchEntries
+      .slice(liveStart)
+      .filter((entry) => entry.type === "message" && entry.message);
     if (messages.length === 0) return { ok: false, reason: "no_live_messages" };
     const boundary = observedPrefixIndex(branchEntries);
     let cut = messages.findIndex((entry) => branchEntries.indexOf(entry) > boundary);
@@ -179,23 +197,13 @@ export function buildOwnCut(
       firstKeptEntryId:
         branchEntries.find(
           (entry, index) =>
+            index >= liveStart &&
             index > boundary &&
             index < branchEntries.indexOf(messages[cut]) &&
             isSourceEntry(entry),
         )?.id ?? messages[cut].id,
       compactAll: false,
     };
-  }
-
-  // Find the last compaction entry and its firstKeptEntryId
-  let lastCompactionIdx = -1;
-  let lastKeptId: string | undefined;
-  for (let i = branchEntries.length - 1; i >= 0; i--) {
-    if (branchEntries[i].type === "compaction") {
-      lastCompactionIdx = i;
-      lastKeptId = branchEntries[i].firstKeptEntryId;
-      break;
-    }
   }
 
   // Orphan recovery: triggers when lastKeptId is set to "" (sentinel from prior
