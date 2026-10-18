@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+---
+
+## [0.5.14] - 2026-10-18
+
 ### Added
 
 - **`ask_user_question` answers survive VCC compaction.** The user's answers to a multiple-choice prompt were treated like any other tool output and could vanish from the summary. VCC now adds a deterministic `[User Decisions]` section (`User decided: <question> → <selected labels or custom answer>`, notes verbatim as `user note:`, newest 8 kept), using structured `details` when present and the tool's text format otherwise. No config key or model call.
@@ -21,6 +25,7 @@
 
 ### Fixed
 
+- **Timeline export rejects unsupported day windows.** Oversized or non-finite `days:N` inputs now report a parse error instead of overflowing date formatting.
 - **Unobserved-tail compaction progresses across routine and empty observer chunks.** Persist delivered source ranges independently of fact citations, retain ordered manual coverage through restart and flush, and replay gaps without treating cursors or rejected output as completed coverage. Repeated compaction selects only the active window, preventing duplicate summaries and append coverage.
 - **Extension loads where the host returns callable tool schemas (omp).** Host runtimes that shim `typebox` with callable schemas (oh-my-pi's omptype facade) made `JSON.stringify` of the worker tool schemas evaluate to `undefined`, and pricing it crashed with `undefined is not an object (evaluating 'e.matchAll')` at module import — the extension never loaded (#174). Static prompt measurement now prices such schemas from their `toJsonSchema()` when the shim exposes one, otherwise at zero, which stays inside the 1024-token safety margin (largest worker schema ≈ 321 tokens); a throwing serializer also degrades to zero instead of killing the import. Real typebox (pi) pricing is unchanged.
 - **Production installs include `typebox`.** Move the unchanged `1.3.37` dependency from development to runtime dependencies so the externalized bundle imports work when devDependencies are omitted.

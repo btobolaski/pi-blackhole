@@ -22,6 +22,7 @@ The config file must contain **valid JSON**. A trailing comma, partial write, or
   "compaction": "auto",           // "auto" | "manual" | "off"
   "compactionEngine": "blackhole", // "blackhole" | "pi-default"
   "tailBehavior": "minimal",   // "pi-default" | "minimal" | "unobserved"
+  "contextPressureFallback": "off", // "off" | "vcc"
   "showPreCompactionMessage": true, // Display-only copy of the newest dropped assistant output (max 16 KiB)
   "midRunCompaction": "off",    // "resume" | "pause" | "off" (default: off)
   "compactionSummaryMode": "default", // "default" | "append" (default: "default")
@@ -136,6 +137,7 @@ Controls how much of the recent transcript stays *visible* after compaction. Onl
 |-------|----------|
 | `"pi-default"` | Use Pi's `firstKeptEntryId` — respects Pi's `keepRecentTokens` (~20k tokens kept). Messages before Pi's cut are compiled into the summary and removed from view. |
 | `"minimal"` | Keep only the last user message, unless Pi provides a later safe split-turn boundary for an oversized current turn. Everything before the chosen boundary gets compiled and removed (default for both auto-triggered and manual `/blackhole`). When the live window has no user message after its first message (one long run), Pi's cut applies; with no usable Pi cut (for example overflow recovery that finds none), everything is compiled and no tail is kept. |
+| `"unobserved"` | Keep original context after completed observer coverage, backing up to a safe user-turn boundary. Unknown or incomplete coverage keeps extra context; an oversized protected tail defers compaction. Opt-in; default stays `"minimal"`. |
 
 **Visual comparison:**
 
@@ -159,6 +161,7 @@ minimal (last user at m5):
 | Manual `/blackhole` | `"pi-default"` | `"pi-default"` |
 | Auto-triggered | not set | `"minimal"` (aggressive) |
 | Auto-triggered | `"minimal"` | `"minimal"` |
+| Manual or auto-triggered | `"unobserved"` | `"unobserved"` |
 
 **Examples:**
 
@@ -168,6 +171,14 @@ minimal (last user at m5):
 
 // Use Pi's gentler cut for both auto and manual
 { "tailBehavior": "pi-default" }
+```
+
+### `contextPressureFallback`
+
+Default: `"off"`. Set `"vcc"` to bridge older retained context with a deterministic summary when the preferred projection does not fit, keeping a recent raw suffix bounded by Pi's `keepRecentTokens`. This works independently of `tailBehavior`. The observer still reads original history; fallback summaries never establish observation coverage. Unknown capacity or an oversized newest turn defers compaction. See [pressure fallback details](#reusable-vcc-pressure-fallback-opt-in).
+
+```json
+{ "contextPressureFallback": "vcc" }
 ```
 
 ### `showPreCompactionMessage`

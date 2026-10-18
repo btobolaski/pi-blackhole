@@ -234,8 +234,11 @@ The interaction matrix:
 | off | (any) | skipped | Pi handles | blackhole handles |
 
 `tailBehavior` controls how much stays visible after compaction. Only applies when `compactionEngine: "blackhole"`:
-- `"minimal"` (default) — aggressive: keep only the last user message. Everything before gets compiled and removed from view.
+- `"minimal"` (default) — keep the last user turn, or use Pi's later safe split-turn boundary for an oversized current turn. Everything before the chosen boundary is compiled.
 - `"pi-default"` — gentle: use Pi's `firstKeptEntryId`, respects Pi's `keepRecentTokens` (~20k tokens kept visible).
+- `"unobserved"` — opt-in retention of original history after completed observer coverage; oversized protected tails defer compaction.
+
+`contextPressureFallback` defaults to `"off"`; opt into `"vcc"` to bridge older retained context under pressure while keeping a recent raw suffix, independently of tail policy.
 
 Both `/blackhole` and auto-triggered default to `"minimal"`. Set explicitly to `"pi-default"` for a gentler cut.
 
@@ -269,7 +272,8 @@ Based on interview answers, build the config object. Write it to:
   // ── Compaction mode ──
   "compaction": "auto",           // "auto" | "manual" | "off"
   "compactionEngine": "blackhole", // "blackhole" | "pi-default" — irrelevant for manual/off
-  "tailBehavior": "minimal",      // "minimal" (last user msg only, default) | "pi-default" (Pi's gentler cut)
+  "tailBehavior": "minimal",      // "minimal" (default) | "pi-default" | "unobserved"
+  "contextPressureFallback": "off", // "off" (default) | "vcc"
   "showPreCompactionMessage": true, // display-only copy of the newest dropped assistant output (16 KiB cap); never enters context or memory
   "retainedToolOutputMaxTokens": 20000, // 0 = disabled
   "recallResponseMaxChars": 48000,      // recall response cap in chars (~12k tokens); 0 = unbounded
