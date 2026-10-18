@@ -645,6 +645,38 @@ describe("observer never covers source entries it was never shown", () => {
     expect(observedInput(0).priorObservations.join("\n")).toContain("manual kept fact");
   });
 
+  test("manual observer preamble omits a pending observation superseded in the same pending pool", async () => {
+    const entries = [rawMessage("s0", text("OLD-A")), rawMessage("s1", text("OLD-B"))];
+    const runtime = makeRuntime(100, 10_000);
+    runtime.config.compaction = "manual";
+    const stale = observation("aaaaaaaaaaaa", {
+      content: "unresolved: manual build fails",
+      sourceEntryIds: ["s0"],
+      tokenCount: 10,
+    });
+    const fresh = {
+      ...observation("bbbbbbbbbbbb", {
+        content: "resolved: manual build fails",
+        sourceEntryIds: ["s1"],
+        tokenCount: 10,
+      }),
+      supersedes: [stale.id],
+    };
+    savePendingUnanchored("test-session", {
+      data: { observations: [stale, fresh] },
+    });
+    runObserverSpy.mockResolvedValueOnce(emptyResult());
+
+    await runStage(runtime, entries);
+
+    expect(observedInput(0).priorObservations.join("\n")).toContain(
+      "resolved: manual build fails",
+    );
+    expect(observedInput(0).priorObservations.join("\n")).not.toContain(
+      "unresolved: manual build fails",
+    );
+  });
+
   test("a halve retry re-emitting the kept fact stores no second wrapper", async () => {
     const entries = [
       rawMessage("s0", text("OLD-A")),

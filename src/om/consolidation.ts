@@ -1044,9 +1044,8 @@ export async function runObserverStage(
     const accumulatedReflections = (pendingCtx.reflectionBatches ?? []).flatMap(
       (b) => (b.data as any).reflections ?? [],
     );
-    const accumulatedObservations = pendingBufferedObservations(pendingCtx);
 
-    const allObservations = [...memory.observations, ...accumulatedObservations];
+    const allObservations = livePoolObservations(entries, pendingCtx);
     priorObservationRecords = selectPriorObservations(allObservations, preambleMaxTokens);
     priorObservations = priorObservationRecords.map(observationToSummaryLine);
 
@@ -1810,7 +1809,7 @@ function computeReflectorInput(
       ]
     : folded.reflections;
   const sourceObservations = pending
-    ? [...folded.activeObservations, ...pendingBufferedObservations(pending)]
+    ? livePoolObservations(entries, pending)
     : folded.activeObservations;
   const shownReflections = selectExistingReflections(
     sourceReflections,
@@ -2465,7 +2464,7 @@ function computeDropperInput(
   // In manual mode, merge accumulated pending batches with
   // branch data (preserving pre-switch markers).
   const sourceObsForDropper = pending
-    ? [...folded.activeObservations, ...pendingBufferedObservations(pending)]
+    ? livePoolObservations(entries, pending)
     : folded.activeObservations;
   const existingObservationsSummary = buildExistingObservationsSummary(
     sourceObsForDropper.filter((o: any) => !newObservations.some((no: any) => no.id === o.id)),
