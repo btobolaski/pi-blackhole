@@ -1,9 +1,5 @@
 ## [Unreleased]
 
-### Changed
-
-- Best-effort deterministic decision capture now recognizes guarded result shapes from six selected question tools in compaction and observer source text; cancelled, failed, skipped, timeout-selected, and control outcomes remain excluded.
-
 ### Added
 
 - **`ask_user_question` answers survive VCC compaction.** The user's answers to a multiple-choice prompt were treated like any other tool output and could vanish from the summary. VCC now adds a deterministic `[User Decisions]` section (`User decided: <question> → <selected labels or custom answer>`, notes verbatim as `user note:`, newest 8 kept), using structured `details` when present and the tool's text format otherwise. No config key or model call.
@@ -18,6 +14,7 @@
 
 ### Changed
 
+- Best-effort deterministic decision capture now recognizes guarded result shapes from six selected question tools in compaction and observer source text; cancelled, failed, skipped, timeout-selected, and control outcomes are omitted from confirmed decisions.
 - **`reflectionSupersedes` now retires the replaced reflection.** Supersede notes were display-only, so a reflection that a newer one replaced stayed in compaction output beside it. With `reflectionSupersedes` on (default `false`, unchanged), the replaced reflection now leaves compaction projections, the observer preamble and `/blackhole-memory` views, while the ledger, worker input, export and recall keep it. The prompt wording, summary footer and setting description follow. No new model calls.
 
 ### Fixed
