@@ -284,17 +284,22 @@ export function fullProjection(
   });
 }
 
-export function visibleProjection(entries: Entry[], upToEntryId?: string): Projection {
+export function visibleProjection(
+  entries: Entry[],
+  upToEntryId?: string,
+  retireSupersededReflections = false,
+): Projection {
   if (!upToEntryId) {
     const details = latestV3CompactionDetails(entries);
     if (details) return projectionFromMemoryDetails(details);
     // No compaction has run yet — show everything so the user sees
     // recorded data until first /blackhole creates a proper snapshot.
-    return fullProjection(entries);
+    return fullProjection(entries, undefined, retireSupersededReflections);
   }
 
   return buildCompactionProjection(entries, upToEntryId, {
     observationsPoolMaxTokens: Number.POSITIVE_INFINITY,
+    reflectionSupersedes: retireSupersededReflections,
   });
 }
 

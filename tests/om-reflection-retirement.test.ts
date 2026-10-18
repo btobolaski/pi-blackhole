@@ -4,7 +4,12 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { buildCompactionProjection, renderSummary, type Entry } from "../src/om/ledger/index.js";
+import {
+  buildCompactionProjection,
+  renderSummary,
+  visibleProjection,
+  type Entry,
+} from "../src/om/ledger/index.js";
 import {
   observation,
   observationsRecordedEntry,
@@ -49,6 +54,11 @@ describe("reflection supersession retires from projection", () => {
   it("keeps every reflection when reflectionSupersedes is off (display-only default)", () => {
     const projection = buildCompactionProjection(entries(), "", projectionConfig);
     expect(projection.reflections.map((r) => r.id)).toEqual([OLD, NEW]);
+  });
+
+  it("retires superseded reflections from the pre-compaction visible view when enabled", () => {
+    const projection = visibleProjection(entries(), undefined, true);
+    expect(projection.reflections.map((r) => r.id)).toEqual([NEW]);
   });
 
   it("footer no longer claims superseded reflections remain available", () => {
