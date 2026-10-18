@@ -10,6 +10,10 @@
 - **Display-only supersede notes.** `reflectionSupersedes` (default `false`, env `PI_BLACKHOLE_REFLECTION_SUPERSEDES`) lets new reflections annotate earlier shown ids with `(supersedes <id>)`. No reflection is hidden, removed or rewritten; append segments remain unchanged. Both reflection keys off preserve legacy rendering, reflector prompt and schema. No new model calls.
 - Opt-in `observeOnShutdown` (`PI_BLACKHOLE_OBSERVE_ON_SHUTDOWN`, default `false`): persisted sessions can observe their unprocessed tail before quit, new, resume or fork. One observer request at most, a shared 20-second deadline, and a 200-token minimum. Stale host contexts block pending batches and cursor writes, including in-flight consolidation; errors honor `debugLog`. Reload and non-persisted sessions are skipped; no new reflector or dropper is launched.
 
+### Changed
+
+- **`reflectionSupersedes` now retires the replaced reflection.** Supersede notes were display-only, so a reflection that a newer one replaced stayed in compaction output beside it. With `reflectionSupersedes` on (default `false`, unchanged), the replaced reflection now leaves compaction projections, the observer preamble and `/blackhole-memory` views, while the ledger, worker input, export and recall keep it. The prompt wording, summary footer and setting description follow. No new model calls.
+
 ### Fixed
 
 - **`tailBehavior: "minimal"` keeps a tail in a single long run.** When the live window had no user message after its first one, the minimal cut disabled Pi's own cut, so every such compaction summarized everything and kept no recent messages (about 39% of compactions in a sample of 2,014). Pi's later split-turn cut now applies in that case, as documented; windows with a later user message and compactions with no usable Pi cut behave as before.

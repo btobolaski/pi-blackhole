@@ -54,6 +54,8 @@ type ProjectionFoldOptions = {
   observationsBoundary: ProjectionBoundary;
   reflectionsBoundary: ProjectionBoundary;
   dropsBoundary: ProjectionBoundary;
+  /** Retire reflections named by a projected reflection's `supersedes`. */
+  retireSupersededReflections?: boolean;
 };
 
 function entryIndexById(entries: Entry[]): Map<string, number> {
@@ -204,9 +206,20 @@ function foldProjection(entries: Entry[], options: ProjectionFoldOptions): Proje
     }
   }
 
+  // Scoped to what the projection holds: a superseder outside the boundary
+  // retires nothing.
+  const retiredReflectionIds = new Set<string>();
+  if (options.retireSupersededReflections) {
+    for (const reflection of reflections) {
+      for (const id of supersededIds(reflection)) {
+        if (reflectionsById.has(id)) retiredReflectionIds.add(id);
+      }
+    }
+  }
+
   return {
     observations: observations.filter((observation) => !droppedObservationIds.has(observation.id)),
-    reflections,
+    reflections: reflections.filter((reflection) => !retiredReflectionIds.has(reflection.id)),
   };
 }
 
@@ -257,9 +270,14 @@ function latestV3CompactionDetails(entries: Entry[]): MemoryDetails | undefined 
   return undefined;
 }
 
-export function fullProjection(entries: Entry[], upToEntryId?: string): Projection {
+export function fullProjection(
+  entries: Entry[],
+  upToEntryId?: string,
+  retireSupersededReflections = false,
+): Projection {
   const boundary = upToEntryId ? entryBoundary(upToEntryId) : tipBoundary();
   return foldProjection(entries, {
+    retireSupersededReflections,
     observationsBoundary: boundary,
     reflectionsBoundary: boundary,
     dropsBoundary: boundary,
@@ -320,7 +338,9 @@ export function buildCompactionProjection(
       : config.fullFoldAlways
         ? outputBoundary
         : noneBoundary();
+  const retireSupersededReflections = config.reflectionSupersedes === true;
   const normalProjection = foldProjection(entries, {
+    retireSupersededReflections,
     observationsBoundary: outputBoundary,
     reflectionsBoundary: maintenanceBoundary,
     dropsBoundary: maintenanceBoundary,
@@ -333,7 +353,9 @@ export function buildCompactionProjection(
     0,
   );
   const fullFold = observationTokens >= config.observationsPoolMaxTokens;
-  let projection = fullFold ? fullProjection(entries, firstKeptEntryId) : normalProjection;
+  let projection = fullFold
+    ? fullProjection(entries, firstKeptEntryId, retireSupersededReflections)
+    : normalProjection;
 
   // Output limits are independent of stored-token full-fold maintenance.
   // Source records stay in the branch; raw/view callers can omit finite caps.
