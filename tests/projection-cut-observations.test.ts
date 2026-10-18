@@ -86,11 +86,27 @@ describe("buildCompactionProjection — batch straddling the cut", () => {
 
   it("excludes observations whose sources cannot be placed in the branch", async () => {
     const { buildCompactionProjection } = await import("../src/om/ledger/projection.js");
+    const early = obs("early-control", ["s1"]);
     const unknown = obs("unknown", ["not-in-branch"]);
-    const nothing = obs("nothing", []);
     const entries: Entry[] = [src("s1"), src("s2"), src("s3")];
-    entries.push(recordEntry("e1", [unknown, nothing], "s3"));
-    expect(buildCompactionProjection(entries, "s2", cfg).observations).toEqual([]);
+    entries.push(recordEntry("e1", [early, unknown], "s3"));
+    expect(buildCompactionProjection(entries, "s2", cfg).observations.map((o) => o.id)).toEqual([
+      early.id,
+    ]);
+  });
+
+  it("keeps whole-batch behavior when unknown citations are fully covered", async () => {
+    const { buildCompactionProjection } = await import("../src/om/ledger/projection.js");
+    const early = obs("early-control-covered", ["s1"]);
+    const unknown = obs("unknown-covered", ["not-in-branch"]);
+    const entries: Entry[] = [src("s1"), src("s2"), src("s3")];
+    entries.push(recordEntry("e1", [early, unknown], "s3"));
+    // Once the batch coverage itself is inside the boundary, whole-batch
+    // inclusion remains the established behavior, even for unknown citations.
+    expect(buildCompactionProjection(entries, "s3", cfg).observations.map((o) => o.id)).toEqual([
+      early.id,
+      unknown.id,
+    ]);
   });
 
   it("still excludes a batch that lies wholly past the cut", async () => {

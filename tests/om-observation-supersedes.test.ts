@@ -27,7 +27,10 @@ const STALE = "aaaaaaaaaaaa";
 const FRESH = "bbbbbbbbbbbb";
 const asEntries = (entries: TestEntry[]): Entry[] => entries as unknown as Entry[];
 
-function branch(freshExtra: Record<string, unknown> = {}): TestEntry[] {
+function branch(
+  freshExtra: Record<string, unknown> = {},
+  freshSourceEntryIds: string[] = ["raw-1"],
+): TestEntry[] {
   return [
     textCustomMessage("raw-1", "unresolved"),
     observationsRecordedEntry("om-1", {
@@ -37,7 +40,13 @@ function branch(freshExtra: Record<string, unknown> = {}): TestEntry[] {
     textCustomMessage("raw-2", "fixed"),
     observationsRecordedEntry("om-2", {
       observations: [
-        { ...observation(FRESH, { content: "resolved: build fails" }), ...freshExtra },
+        {
+          ...observation(FRESH, {
+            content: "resolved: build fails",
+            sourceEntryIds: freshSourceEntryIds,
+          }),
+          ...freshExtra,
+        },
       ],
       coversUpToId: "raw-2",
     }),
@@ -64,7 +73,7 @@ describe("observation supersession in the ledger", () => {
   });
 
   it("keeps the stale line when the superseder is outside the projection boundary", () => {
-    const entries = asEntries(branch({ supersedes: [STALE], sourceEntryIds: ["raw-2"] }));
+    const entries = asEntries(branch({ supersedes: [STALE] }, ["raw-2"]));
     const projection = buildCompactionProjection(entries, "raw-1", projectionConfig);
     expect(projection.observations.map((o) => o.id)).toEqual([STALE]);
   });
