@@ -1,4 +1,4 @@
-import { createEventBus, type ExtensionAPI, type ExtensionEvent, type ExtensionHandler, type TurnEndEvent, type TurnEndEventResult } from "@earendil-works/pi-coding-agent";
+import { createEventBus, type ExtensionAPI, type ExtensionEvent, type ExtensionHandler, type TurnEndEvent, type TurnEndEventResult, type SessionShutdownEvent } from "@earendil-works/pi-coding-agent";
 
 /**
  * Host-interface double for extension wiring tests.
@@ -10,6 +10,7 @@ import { createEventBus, type ExtensionAPI, type ExtensionEvent, type ExtensionH
  */
 export interface ExtensionApiDoubleOptions {
   turnEndHandlers?: ExtensionHandler<TurnEndEvent, TurnEndEventResult>[];
+  shutdownHandlers?: ExtensionHandler<SessionShutdownEvent>[];
   appendEntry?: (customType: string, data: unknown) => unknown;
 }
 
@@ -23,10 +24,12 @@ export function createExtensionApiDouble(options: ExtensionApiDoubleOptions = {}
   return {
     on(...[event, handler]:
       | [event: "turn_end", handler: ExtensionHandler<TurnEndEvent, TurnEndEventResult>]
-      | [event: Exclude<ExtensionEvent["type"], "turn_end">, handler: (...args: never[]) => unknown]
+      | [event: "session_shutdown", handler: ExtensionHandler<SessionShutdownEvent>]
+      | [event: Exclude<ExtensionEvent["type"], "turn_end" | "session_shutdown">, handler: (...args: never[]) => unknown]
     ): () => void {
-      // Other events are registered but never replayed by these fixtures.
+      // Capture only events these fixtures replay.
       if (event === "turn_end") options.turnEndHandlers?.push(handler);
+      if (event === "session_shutdown") options.shutdownHandlers?.push(handler);
       // Pi 0.87's `on()` returns an unsubscribe function; the double captures
       // handlers for replay and has nothing to detach.
       return () => {};

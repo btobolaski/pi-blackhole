@@ -1,14 +1,18 @@
-import { estimateEntryTokens, getUsageTokens } from "../tokens.js";
+import { reflectionToSummaryLine } from "./render-summary.js";
+import { estimateEntryTokens, estimateStringTokens, getUsageTokens } from "../tokens.js";
 import type { PendingOMState } from "../pending.js";
 import { foldLedger } from "./fold.js";
 import {
   OM_OBSERVATIONS_DROPPED,
+  OM_OBSERVATIONS_COVERAGE,
   OM_OBSERVATIONS_RECORDED,
   OM_OBSERVATIONS_UNANCHORED,
   OM_REFLECTIONS_RECORDED,
   isObservationsRecordedData,
+  isObservationsCoverageData,
   isObservationsUnanchoredData,
   isReflectionsRecordedData,
+  supersededIds,
   type Entry,
   type Observation,
   type Reflection,
@@ -60,7 +64,10 @@ function isValidCoverageEntry(
   entry: Entry,
   customType: V3MemoryCustomType,
 ): entry is Entry & { data: { coversUpToId: string } } {
-  if (entry.type !== "custom" || entry.customType !== customType) return false;
+  if (entry.type !== "custom") return false;
+  if (customType === OM_OBSERVATIONS_RECORDED && entry.customType === OM_OBSERVATIONS_COVERAGE)
+    return isObservationsCoverageData(entry.data);
+  if (entry.customType !== customType) return false;
   if (!isObject(entry.data) || typeof entry.data.coversUpToId !== "string") return false;
 
   if (customType === OM_OBSERVATIONS_RECORDED) return isNonEmptyArray(entry.data.observations);
@@ -195,6 +202,13 @@ export function livePoolObservations(entries: Entry[], pending?: PendingOMState)
       pool.set(observation.id, observation as Observation);
     }
   }
+  // Supersession from pending observations retires pool members (branch or
+  // pending) the same way a branch record's would.
+  const superseded = new Set<string>();
+  for (const observation of pool.values()) {
+    for (const id of supersededIds(observation)) superseded.add(id);
+  }
+  for (const id of superseded) pool.delete(id);
 
   const dropped = pending?.droppedBatches?.length
     ? pending.droppedBatches
@@ -372,20 +386,29 @@ export function buildExistingObservationsSummary(
 
 /**
  * Build a compact one-line summary of existing reflections for context.
- * Capped at maxTokens.
+ * Preserves legacy prefix selection, including its first-record allowance.
+ * Charges the supplied rendering, so annotations consume the same budget.
  */
+export function selectExistingReflections(
+  reflections: Reflection[],
+  maxTokens: number,
+  render = reflectionToSummaryLine,
+): Reflection[] {
+  const selected: Reflection[] = [];
+  let tokens = 0;
+  for (const ref of reflections) {
+    const lineTokens = estimateStringTokens(render(ref));
+    if (tokens + lineTokens > maxTokens && selected.length > 0) break;
+    selected.push(ref);
+    tokens += lineTokens;
+  }
+  return selected;
+}
+
 export function buildExistingReflectionsSummary(
   reflections: Reflection[],
   maxTokens: number,
+  render = reflectionToSummaryLine,
 ): string {
-  const lines: string[] = [];
-  let tokens = 0;
-  for (const ref of reflections) {
-    const line = `[${ref.id}] ${ref.content}`;
-    const lineTokens = Math.ceil(line.length / 4);
-    if (tokens + lineTokens > maxTokens && lines.length > 0) break;
-    lines.push(line);
-    tokens += lineTokens;
-  }
-  return lines.join("\n");
+  return selectExistingReflections(reflections, maxTokens, render).map(render).join("\n");
 }

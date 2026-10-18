@@ -4,7 +4,12 @@
  * Upstream: https://github.com/elpapi42/pi-observational-memory (src/session-ledger/projection.ts)
  * Modified: nested snapshots, bounded output, and compact-all coverage.
  */
-import { selectPriorObservations, selectPriorReflections } from "./render-summary.js";
+import {
+  makeReflectionRenderer,
+  renderOptionsFromConfig,
+  selectPriorObservations,
+  selectPriorReflections,
+} from "./render-summary.js";
 import {
   OM_FOLDED,
   isMemoryDetails,
@@ -12,6 +17,7 @@ import {
   isObservationsRecordedEntry,
   isObservationsUnanchoredEntry,
   isReflectionsRecordedEntry,
+  supersededIds,
   type Entry,
   type MemoryDetails,
   type Observation,
@@ -30,6 +36,8 @@ export type ProjectionDiff = {
 };
 
 export type CompactionProjectionConfig = {
+  reflectionTimestamps?: boolean;
+  reflectionSupersedes?: boolean;
   observationsPoolMaxTokens: number;
   reflectionsPoolMaxTokens?: number;
   fullFoldAlways?: boolean;
@@ -46,6 +54,8 @@ type ProjectionFoldOptions = {
   observationsBoundary: ProjectionBoundary;
   reflectionsBoundary: ProjectionBoundary;
   dropsBoundary: ProjectionBoundary;
+  /** Retire reflections named by a projected reflection's `supersedes`. */
+  retireSupersededReflections?: boolean;
 };
 
 function entryIndexById(entries: Entry[]): Map<string, number> {
@@ -95,6 +105,25 @@ function isCoveredAtOrBefore(
   return isAtOrBefore(coverageIndex(entry, indexes), boundaryIndex);
 }
 
+/**
+ * An observation of a batch that straddles the boundary joins the projection
+ * only when every cited source is provably at or before it. A source that is
+ * missing from the branch cannot be placed, so the observation stays out
+ * (the whole-batch rule it replaces) rather than being guessed in. Observations
+ * with a source past the boundary stay in the kept tail and are projected by
+ * the compaction whose boundary reaches them.
+ */
+function isObservationWithinBoundary(
+  observation: Observation,
+  indexes: Map<string, number>,
+  boundaryIndex: number,
+): boolean {
+  return (
+    observation.sourceEntryIds.length > 0 &&
+    observation.sourceEntryIds.every((id) => isAtOrBefore(indexes.get(id) ?? -1, boundaryIndex))
+  );
+}
+
 function foldProjection(entries: Entry[], options: ProjectionFoldOptions): Projection {
   const indexes = entryIndexById(entries);
   const observationsBoundary = boundaryIndex(entries, indexes, options.observationsBoundary);
@@ -105,13 +134,16 @@ function foldProjection(entries: Entry[], options: ProjectionFoldOptions): Proje
   const observationsById = new Set<string>();
   const reflectionsById = new Set<string>();
   const droppedObservationIds = new Set<string>();
+  let placedObservationIds: Set<string> | undefined;
 
   for (const entry of entries) {
-    if (
-      isObservationsRecordedEntry(entry) &&
-      isCoveredAtOrBefore(entry, indexes, observationsBoundary)
-    ) {
+    if (isObservationsRecordedEntry(entry)) {
+      const covered = isCoveredAtOrBefore(entry, indexes, observationsBoundary);
+      const straddles = !covered && coverageIndex(entry, indexes) > observationsBoundary;
+      if (!covered && !straddles) continue;
       for (const observation of entry.data.observations) {
+        if (straddles && !isObservationWithinBoundary(observation, indexes, observationsBoundary))
+          continue;
         if (observationsById.has(observation.id)) continue;
         observationsById.add(observation.id);
         observations.push(observation);
@@ -134,11 +166,25 @@ function foldProjection(entries: Entry[], options: ProjectionFoldOptions): Proje
       continue;
     }
 
-    if (
-      isReflectionsRecordedEntry(entry) &&
-      isCoveredAtOrBefore(entry, indexes, reflectionsBoundary)
-    ) {
+    if (isReflectionsRecordedEntry(entry)) {
+      const covered = isCoveredAtOrBefore(entry, indexes, reflectionsBoundary);
+      const straddles = !covered && coverageIndex(entry, indexes) > reflectionsBoundary;
+      if (!covered && !straddles) continue;
+      // A straddling run keeps only reflections whose every supporting
+      // observation is placed at or before the boundary.
+      if (straddles)
+        placedObservationIds ??= observationIdsWithinBoundary(
+          entries,
+          indexes,
+          reflectionsBoundary,
+        );
       for (const reflection of entry.data.reflections) {
+        if (
+          straddles &&
+          (reflection.supportingObservationIds.length === 0 ||
+            !reflection.supportingObservationIds.every((id) => placedObservationIds?.has(id)))
+        )
+          continue;
         if (reflectionsById.has(reflection.id)) continue;
         reflectionsById.add(reflection.id);
         reflections.push(reflection);
@@ -152,10 +198,59 @@ function foldProjection(entries: Entry[], options: ProjectionFoldOptions): Proje
     }
   }
 
+  // Supersession is scoped to what the projection holds: a superseder outside
+  // the boundary does not hide anything.
+  for (const observation of observations) {
+    for (const id of supersededIds(observation)) {
+      if (observationsById.has(id)) droppedObservationIds.add(id);
+    }
+  }
+
+  // Scoped to what the projection holds: a superseder outside the boundary
+  // retires nothing.
+  const retiredReflectionIds = new Set<string>();
+  if (options.retireSupersededReflections) {
+    for (const reflection of reflections) {
+      for (const id of supersededIds(reflection)) {
+        if (reflectionsById.has(id)) retiredReflectionIds.add(id);
+      }
+    }
+  }
+
   return {
     observations: observations.filter((observation) => !droppedObservationIds.has(observation.id)),
-    reflections,
+    reflections: reflections.filter((reflection) => !retiredReflectionIds.has(reflection.id)),
   };
+}
+
+/**
+ * Ids of the observations that are provably placed at or before the boundary,
+ * by their cited sources (recorded batches) or marker position (unanchored).
+ */
+function observationIdsWithinBoundary(
+  entries: Entry[],
+  indexes: Map<string, number>,
+  boundaryIndex: number,
+): Set<string> {
+  const ids = new Set<string>();
+  for (const entry of entries) {
+    if (isObservationsRecordedEntry(entry)) {
+      for (const observation of entry.data.observations) {
+        const sources = observation.sourceEntryIds;
+        if (
+          sources.length > 0 &&
+          sources.every((id) => isAtOrBefore(indexes.get(id) ?? -1, boundaryIndex))
+        )
+          ids.add(observation.id);
+      }
+    } else if (
+      isObservationsUnanchoredEntry(entry) &&
+      isAtOrBefore(indexes.get(entry.id) ?? -1, boundaryIndex)
+    ) {
+      for (const observation of entry.data.observations) ids.add(observation.id);
+    }
+  }
+  return ids;
 }
 
 function projectionFromMemoryDetails(details: MemoryDetails): Projection {
@@ -175,26 +270,36 @@ function latestV3CompactionDetails(entries: Entry[]): MemoryDetails | undefined 
   return undefined;
 }
 
-export function fullProjection(entries: Entry[], upToEntryId?: string): Projection {
+export function fullProjection(
+  entries: Entry[],
+  upToEntryId?: string,
+  retireSupersededReflections = false,
+): Projection {
   const boundary = upToEntryId ? entryBoundary(upToEntryId) : tipBoundary();
   return foldProjection(entries, {
+    retireSupersededReflections,
     observationsBoundary: boundary,
     reflectionsBoundary: boundary,
     dropsBoundary: boundary,
   });
 }
 
-export function visibleProjection(entries: Entry[], upToEntryId?: string): Projection {
+export function visibleProjection(
+  entries: Entry[],
+  upToEntryId?: string,
+  retireSupersededReflections = false,
+): Projection {
   if (!upToEntryId) {
     const details = latestV3CompactionDetails(entries);
     if (details) return projectionFromMemoryDetails(details);
     // No compaction has run yet — show everything so the user sees
     // recorded data until first /blackhole creates a proper snapshot.
-    return fullProjection(entries);
+    return fullProjection(entries, undefined, retireSupersededReflections);
   }
 
   return buildCompactionProjection(entries, upToEntryId, {
     observationsPoolMaxTokens: Number.POSITIVE_INFINITY,
+    reflectionSupersedes: retireSupersededReflections,
   });
 }
 
@@ -238,7 +343,9 @@ export function buildCompactionProjection(
       : config.fullFoldAlways
         ? outputBoundary
         : noneBoundary();
+  const retireSupersededReflections = config.reflectionSupersedes === true;
   const normalProjection = foldProjection(entries, {
+    retireSupersededReflections,
     observationsBoundary: outputBoundary,
     reflectionsBoundary: maintenanceBoundary,
     dropsBoundary: maintenanceBoundary,
@@ -251,7 +358,9 @@ export function buildCompactionProjection(
     0,
   );
   const fullFold = observationTokens >= config.observationsPoolMaxTokens;
-  let projection = fullFold ? fullProjection(entries, firstKeptEntryId) : normalProjection;
+  let projection = fullFold
+    ? fullProjection(entries, firstKeptEntryId, retireSupersededReflections)
+    : normalProjection;
 
   // Output limits are independent of stored-token full-fold maintenance.
   // Source records stay in the branch; raw/view callers can omit finite caps.
@@ -272,7 +381,11 @@ export function buildCompactionProjection(
   ) {
     projection = {
       ...projection,
-      reflections: selectPriorReflections(projection.reflections, config.reflectionsPoolMaxTokens),
+      reflections: selectPriorReflections(
+        projection.reflections,
+        config.reflectionsPoolMaxTokens,
+        makeReflectionRenderer(renderOptionsFromConfig(config)),
+      ),
     };
   }
 

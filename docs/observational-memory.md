@@ -56,7 +56,7 @@ Compresses a chunk of recent conversation into timestamped, rated observations. 
 
 **Edge cases**: when nothing is recorded, `ObserverEmptyReason` distinguishes `no_new_content`, `tool_not_called`, `all_rejected` (every `sourceEntryIds` invalid), `all_duplicates`, and `empty_array`. Both observer prompts instruct the empty `complete: true` batch as the only nothing-new close, so it reports `no_new_content` (info level); replying with plain text instead leaves the tool uncalled and reports `tool_not_called` (warning), as does an unflagged empty batch. All of these outcomes advance the cursor to `"empty"`, i.e. the chunk counts as covered. Completion is fail-closed: only an explicit `stop` — or an exempt ending (a recording `complete: true` close, a turn-cap cut) — counts as success. `length`, `aborted`, a terminal `toolUse` with no close and no cap, any other stop reason, or an already-aborted signal makes `runObserver` throw a `WorkerStreamError` carrying the count of observations it discarded, so the cursor stays put and the stage falls back to another model — unless the run had already closed the chunk with a valid `complete: true` batch while it had recorded observations. A turn-cap cut on a tool-work turn that recorded observations with a verifiable cited prefix does not throw: the run returns the batch with `partialCoverageId` (the end of the contiguous cited prefix — the scan stops at the first uncited entry, so later cited entries past a gap are re-offered, never silently claimed), the stage commits that prefix and drains the remainder in-run, and the model is skipped in-cycle only, never a persisted cooldown. A partial id outside the delivered chunk fails closed instead: the batch is discarded — the unproven point is never committed — and the stage halves the delivered entries and retries on the smaller input, converging to a single entry (which always yields a prefix or an empty advance), still with no cooldown and no in-cycle skip of the retrying model; only a single-entry chunk that still cannot commit falls back to the skip-and-abort path. Citations forming no head-anchored prefix at all no longer discard the run either: the agent returns the batch as `unanchoredObservations`, and the stage stores it under the `om.observations.unanchored` key — coverage-inert facts that join the pool, preamble, and reflector/dropper inputs (content-hash dedup collapses later re-emits) while no cursor or coverage scan reads them — then halves and retries exactly as above, still with no cooldown; manual mode buffers them in pending `unanchoredBatches` and `/blackhole` flushes them under the same key. Old builds fold the new key as an unknown custom type (log-only); new code reads old branches unchanged, so no migration is needed. A run that stopped on its own stays success even if the attempt signal aborted in the settle window. A cap firing before anything was recorded is still an empty success, and a cap turn that did no tool work (the model stopped naturally on exactly its last allowed turn) does not report exhaustion. `complete: true` is what declares the chunk covered, so the size of the closing batch does not matter — an empty close after a partial batch still counts as coverage. The close is kept and the failure is surfaced as `errorAfterClose`: a warning naming only the error class (the provider text stays in the cooldown/debug log, per [#80](https://github.com/k0valik/pi-blackhole/issues/80)), an `observer.error_after_close` debug entry, and a model cooldown for deterministic errors. A later batch that records new observations or has rejected entries withdraws the close; one that is empty or all-duplicate does not. A `complete: true` close from a run that recorded nothing at all still throws, so a failing provider cannot turn each chunk into a silent `no_new_content` skip.
 
-**Why it matters**: the relevance level assigned here drives downstream dropping, and `sourceEntryIds` are the only provenance link back to the raw conversation. The prompt enforces single-fact granularity (one fact per observation) so retrieval and dropping can operate at fact resolution.
+**`ask_user_question` answers**: a result block from that tool holds the user's own choices. The prompt tells the observer to record each selected choice, and the meaning of any user notes, as its own single-fact observation citing that result's entry id, at relevance `high` or above, and never to record unselected options. The full result text already reaches the observer chunk; this rule only changes how it is recorded.\n\n**Why it matters**: the relevance level assigned here drives downstream dropping, and `sourceEntryIds` are the only provenance link back to the raw conversation. The prompt enforces single-fact granularity (one fact per observation) so retrieval and dropping can operate at fact resolution.
 
 ### Reflector contract
 
@@ -67,6 +67,8 @@ Distills durable reflections from active observations — explicitly not a secon
 **Injected inputs**: current reflections, current observations shown as `[id] date [relevance] [coverage: none|partial|strong] content` (coverage tiers from [[src/om/agents/dropper/coverage.ts]]), and optional compact summaries of existing reflections/observations marked "for context only — do NOT re-process".
 
 **Validation**: `normalizeReflectionContent` rejects empty or multiline content. `normalizeSupportingObservationIds` is **strict** — if *any* id is unknown, the reflection is rejected (unlike the observer/dropper filter pattern), because inflated support ids would make observations look more-covered than they are and cause unsafe downstream drops. Dedup is against existing reflections plus this run.
+
+**Corrections**: the near-duplicate rule ("emit nothing" when a reader could not tell which of two reflections is authoritative) has one exception: a candidate that corrects a fact that has since changed (a blocker resolved, a failing check now passing, a decision reversed) is emitted and states the current fact in full. The prompt change adds no schema field, config key or model call.
 
 **Edge cases**: returns `{ reflections: undefined }` immediately when `observations.length === 0`. Emitting zero reflections is a valid, expected outcome ("it is better to emit zero reflections than one per observation"). A failure follows the observer's fail-closed contract: `runReflector` throws a `WorkerStreamError` carrying the count of reflections it discarded when the run ends on anything but a clean `stop` or an exempt close, and when the agent turn cap cuts off a run that recorded something — so the stage never advances the reflector cursor over observations it did not crystallize — unless a valid `complete: true` batch that recorded reflections already closed the review. That close is kept and the trailing failure is returned as `errorAfterClose`, which the stage logs as `reflector.error_after_close`, warns about, and cools when deterministic — exactly like the observer's kept close; a later batch that records or rejects anything retracts the close. An error before anything was recorded throws, as it always did, and a cap before anything was recorded is still an empty success.
 
@@ -125,14 +127,16 @@ Projection builds slices of the ledger for different purposes. Defined in [[src/
 
 ### Visible projection
 
-`visibleProjection(entries)` — What the agent sees after compaction. Uses `MemoryDetails` from the latest compaction entry. Before first compaction, shows everything.
+`visibleProjection(entries)` — What the agent sees after compaction. Uses `MemoryDetails` from the latest compaction entry. Before first compaction, builds from recorded memory and applies the configured reflection retirement.
 
 ### Compaction projection
 
 `buildCompactionProjection(entries, firstKeptEntryId, config)` — Builds the memory slice for compaction output. Uses boundary-based folding:
 
 - Observations boundary: `firstKeptEntryId` (normal fold)
+  - A batch recorded wholly at or before the boundary is included. A batch that straddles it (its `coversUpToId` is past the boundary) contributes the observations whose cited `sourceEntryIds` are all at or before the boundary; later-sourced observations wait until the boundary reaches their sources, while observations with unplaceable sources stay excluded from that partial projection. Whole-batch inclusion remains unchanged once its coverage boundary is reached.
 - Reflections/drops boundary: `latestFullFoldBoundaryId` (maintenance boundary)
+  - A reflection run recorded wholly at or before the boundary is included. A run that straddles it contributes the reflections whose every `supportingObservationIds` entry is an observation placed at or before the boundary (by cited sources, or marker position for unanchored ones); others wait for a later compaction. Drops are not applied past the boundary: a drop can rest on a reflection that is still left out, so dropping early could lose the only copy.
 - **Full fold**: When observation tokens ≥ `observationsPoolMaxTokens`, fold through branch tip
 - **Token cap**: Even if dropper kept some old observations, a safety valve caps to pool budget using `selectPriorObservations()`
 
@@ -222,6 +226,10 @@ Pipeline cursors track progress per stage. Defined in `PipelineCursor` / `Pipeli
 
 Before calling each worker, the pipeline estimates the full first-turn input — variable content (chunk text, observation/reflection contents, actual capped summaries) with the CJK-aware estimator, the rendered preamble, measured static overhead (system prompt + the one tool schema + framing: ~3.8k/2.8k/1.6k tokens for observer/reflector/dropper, computed once at import), plus headroom for later tool turns — and checks it against the model's window minus the output allowance (sharing the same window) minus a safety margin. The output allowance is capped at a quarter of the window (floored at zero), so small-context models stay usable instead of computing a negative budget. The stage passes that same allowance as each worker's `maxTokens`, so a prompt that passes the fit check cannot overflow at generation time.
 
+Reflector and dropper turn-cap exhaustion also skips the model only within the current stage, like the observer. This includes a single-item batch that cannot be split further. It never creates a persisted cooldown; incomplete work does not advance coverage, and a later cycle can try the model again. Existing shrink-to-fit retries remain bounded.
+
+An output-length cut in a reflector/dropper batch that cannot be split further is also a size skip, not a model cooldown. The incomplete batched run leaves coverage unchanged; a later cycle or smaller request can use the model again.
+
 A model that cannot hold the input is skipped for the rest of the run. A too-small window is not a broken model, so the skip never writes a persisted cooldown — the model stays available for smaller inputs and later cycles.
 
 When no candidate fits anything, the stage shrinks to the largest resolved window instead of aborting — but only on a pure size-mismatch record; any runtime failure keeps error semantics and aborts exactly as before:
@@ -251,9 +259,15 @@ Models with active cooldowns are transparently skipped. Up to 10 model resolutio
 
 ## Cooldown system
 
+A provider rejection specific to the current request (payload/context too large or an invalid thinking level) skips that identity for the current stage without persisting a cooldown. This applies to configured candidates and the session fallback, including failures after useful work has closed. Classification uses SDK fields or status-framed, specific rejection text; generic 400/422 errors, required provider headers, 401 authentication, provider 404 and transient failures keep their existing behavior.
+
 Models that fail with retryable errors are cooled down and skipped in subsequent attempts. Defined in [[src/om/cooldown.ts]].
 
+Local import/programming errors and aborted requests do not show that a provider is unavailable. They skip the failed identity only for the current stage, even if the runtime generation is still active; the next stage or cycle may use it again. Stale-generation guards still discard late errors before any cooldown decision. Network failures (including fetch transport errors), authentication failures and provider model-not-found errors retain their existing cooldown behavior.
+
 ### Persistence
+
+With `debugLog` enabled, each successful cooldown write emits one `model.cooldown_write` event at the persistence owner. It contains the normalized model identity, stage, cause class (`provider_configuration`, `provider_transient`, or `unknown`) and a short sanitized reason, not an HTML/JSON response body. The class describes the current error classification; it does not change cooldown eligibility or retry policy. Failed writes and in-memory-only skips emit no write event.
 
 Cooldowns persist to `~/.pi/agent/pi-blackhole/pi-blackhole-cooldown.json` with ISO 8601 timestamps. Each entry records:
 
@@ -366,3 +380,58 @@ If any stage fails (model error, rate limit, timeout), remaining stages are skip
 - **30-second retry gate**: After any stage fails completely, `markConsolidationError()` sets a timestamp. `isConsolidationRetryGated()` returns true for 30 seconds.
 - **Per-model cooldown**: Failed models are cooled down and skipped in subsequent attempts.
 - **Stale context handling**: `agent_end` handlers catch "extension ctx is stale" errors gracefully.
+
+## Observation supersession
+
+The observer's `record_observations` items accept an optional `supersedes` list of
+observation ids shown in its CURRENT OBSERVATIONS preamble. Unknown, self or malformed
+ids are ignored (debug-logged) without failing the batch. The ids are stored on the new
+observation; fold, projection and the live pool treat them as tombstones, so the
+resolved/replaced observation leaves the pool, the dropper's candidates and the
+compaction summary. No drop marker is written, so dropper cadence is unaffected. Legacy
+records without the field load unchanged. It needs no config key.
+
+## Reflection timestamps and supersede notes
+
+New reflection records carry optional `timestamp` and `supersedes` fields. Timestamp
+is derived in code from the latest usable supporting observation timestamp, never from
+model output. It is stored regardless of display settings; no legacy backfill occurs.
+
+`reflectionTimestamps` defaults to `true`: lines render as `[id] YYYY-MM-DD HH:MM content`.
+The full footer says: "When entries conflict, the entry with the latest timestamp
+reflects the latest known state." Legacy records without a timestamp render as before.
+Observation timestamps remain unconditional. Export prefers a reflection's own time,
+falling back to entry time or pending observation time for legacy records.
+
+`reflectionSupersedes` defaults to `false`. When enabled, the reflector may list ids
+of earlier reflections shown in its input. Unknown, self and same-run ids are ignored.
+The new record alone stores the annotation, displayed as `(supersedes <id>[, <id>])`.
+The replaced reflection is retired from compaction projections, the observer preamble
+and `/blackhole-memory` views; the ledger, worker input, dropper coverage, export and
+recall keep it. Export and recall omit the suffix.
+Nothing edits an earlier record or append segment. Toggling changes display at the
+next compaction only. Both keys off preserve legacy rendering, prompt and tool schema.
+No additional model calls are introduced. Rendered lines count against existing caps.
+
+The observer's normal threshold still defines session-tail coverage: messages below
+that threshold may remain unobserved at session end. This reflection feature adds no
+shutdown model call and does not make export observe missing raw messages.
+
+## Session shutdown observation
+
+`observeOnShutdown` is opt-in (default `false`, env `PI_BLACKHOLE_OBSERVE_ON_SHUTDOWN`). On quit, new, resume or fork of a persisted session, it waits for in-flight consolidation then makes at most one observer request for an unobserved tail of at least 200 raw tokens. The shared deadline is 20 seconds, including the wait, and the observer gets one turn. The flush launches no request retry, reflector, dropper or multi-chunk drain; previously running consolidation may finish within the shared deadline. The normal observer resolver supplies the model; observations and cursors use normal branch or manual-mode pending storage. If the host session is closed before the flush completes, nothing is written for it (no observation, pending batch or cursor): the tail stays unobserved until a later session observes it. Errors and timeout are debug-logged, and disposal always runs.
+
+Reload, non-persisted sessions, memory-off, skipped providers, legacy passive mode and retry gates skip this work. Forced termination and SDK hosts calling `AgentSession.dispose()` without emitting shutdown are not covered. Persisted child CLI sessions can incur the same exit delay. A capped chunk or partial checkpoint may leave a remainder. Export/project recall can use recorded tail observations, subject to their viability filters. With the setting off, a below-threshold tail remains raw history: `recall` and resumed observation can still see it, but export and project recall cannot until it is observed.
+
+Host limit: the locally inspected `pi-subagents` SDK host emits child shutdown events but disposes after a 3-second host deadline. Its persisted children therefore have no guarantee of completing this 20-second flush; in-memory children are skipped.
+
+### Unobserved raw tail (opt-in)
+
+`tailBehavior: "unobserved"` retains original messages after trustworthy completed OM observation coverage, backing up to a complete user turn to avoid splitting tool interactions. Missing, invalid or disconnected coverage retains extra original history. Compaction and VCC never advance OM coverage. Pending observer input remains the original branch, including across restart and repeated compactions; no blocking observer flush is added.
+
+The default remains `"minimal"`; `"pi-default"` is unchanged. This mode does not truncate retained tool outputs. If the raw tail plus summary cannot fit the model context minus Pi's `reserveTokens`, capacity is unknown, or no useful summary exists, Blackhole explicitly defers compaction rather than dropping the tail or invoking native summarization. Token estimates are not a provider acceptance guarantee.
+### Reusable VCC pressure fallback (opt-in)
+
+`contextPressureFallback: "vcc"` enables a pressure fallback independently of `tailBehavior`; the default is `"off"`, so existing modes retain their behavior. A preferred context that fits is left alone. Otherwise VCC bridges older retained messages and keeps a recent raw suffix bounded by Pi's `keepRecentTokens`, using the model window minus `reserveTokens` and the current system prompt. Whole user-turn boundaries conservatively keep tool interactions together. If the newest turn cannot fit, capacity is unknown, or no useful summary is available, compaction explicitly defers. No native fallback silently drops the protected backlog.
+
+Compaction records `om.preserveSourceHistory` as continuity intent, not observed coverage. The observer still reads original branch source entries, not VCC summaries, across compactions and restart. Pending work remains eligible even after the opt-in is disabled. No blocking observer flush is added. Estimates do not prove provider acceptance; tool schemas and provider-specific overhead can still cause an overflow.

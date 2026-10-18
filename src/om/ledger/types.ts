@@ -2,9 +2,10 @@
  * Observational memory ledger types — validated Entry, Observation, Reflection.
  *
  * Upstream: https://github.com/elpapi42/pi-observational-memory (src/session-ledger/types.ts)
- * Unmodified.
+ * Modified: optional evidence timestamps and supersede annotations.
  */
 export const OM_OBSERVATIONS_RECORDED = "om.observations.recorded";
+export const OM_OBSERVATIONS_COVERAGE = "om.observations.coverage";
 export const OM_OBSERVATIONS_UNANCHORED = "om.observations.unanchored";
 export const OM_REFLECTIONS_RECORDED = "om.reflections.recorded";
 export const OM_OBSERVATIONS_DROPPED = "om.observations.dropped";
@@ -36,9 +37,13 @@ export type Observation = {
   relevance: Relevance;
   sourceEntryIds: string[];
   tokenCount: number;
+  /** Prior observation ids this one replaces. Optional: legacy records omit it. */
+  supersedes?: string[];
 };
 
 export type Reflection = {
+  timestamp?: string;
+  supersedes?: string[];
   id: string;
   content: string;
   supportingObservationIds: string[];
@@ -47,6 +52,14 @@ export type Reflection = {
 
 export type ObservationsRecordedEntryData = {
   observations: Observation[];
+  coversUpToId: string;
+  /** Delivered start of this batch. Legacy records omit it and use citation checks. */
+  coversFromId?: string;
+};
+
+/** A fully delivered observer chunk that produced no observations. */
+export type ObservationsCoverageEntryData = {
+  coversFromId: string;
   coversUpToId: string;
 };
 
@@ -110,6 +123,16 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object";
 }
 
+/**
+ * Valid supersede targets of a record: well-formed ids other than its own.
+ * Persisted annotations are optional, so a malformed value reads as "none"
+ * and never invalidates the record.
+ */
+export function supersededIds(record: { id: string; supersedes?: unknown }): string[] {
+  if (!Array.isArray(record.supersedes)) return [];
+  return record.supersedes.filter((id): id is string => isMemoryId(id) && id !== record.id);
+}
+
 export function isObservation(value: unknown): value is Observation {
   if (!isPlainRecord(value)) return false;
   return (
@@ -139,6 +162,15 @@ export function isObservationsRecordedData(value: unknown): value is Observation
     Array.isArray(value.observations) &&
     value.observations.length > 0 &&
     value.observations.every(isObservation) &&
+    isNonEmptyString(value.coversUpToId) &&
+    (value.coversFromId === undefined || isNonEmptyString(value.coversFromId))
+  );
+}
+
+export function isObservationsCoverageData(value: unknown): value is ObservationsCoverageEntryData {
+  return (
+    isPlainRecord(value) &&
+    isNonEmptyString(value.coversFromId) &&
     isNonEmptyString(value.coversUpToId)
   );
 }
@@ -194,6 +226,18 @@ export function isObservationsRecordedEntry(entry: Entry): entry is Entry & {
   );
 }
 
+export function isObservationsCoverageEntry(entry: Entry): entry is Entry & {
+  type: "custom";
+  customType: typeof OM_OBSERVATIONS_COVERAGE;
+  data: ObservationsCoverageEntryData;
+} {
+  return (
+    entry.type === "custom" &&
+    entry.customType === OM_OBSERVATIONS_COVERAGE &&
+    isObservationsCoverageData(entry.data)
+  );
+}
+
 export function isObservationsUnanchoredEntry(entry: Entry): entry is Entry & {
   type: "custom";
   customType: typeof OM_OBSERVATIONS_UNANCHORED;
@@ -233,9 +277,22 @@ export function isObservationsDroppedEntry(entry: Entry): entry is Entry & {
 export function buildObservationsRecordedData(
   observations: Observation[],
   coversUpToId: string,
+  coversFromId?: string,
 ): ObservationsRecordedEntryData | undefined {
   if (observations.length === 0 || !isNonEmptyString(coversUpToId)) return undefined;
-  return { observations, coversUpToId };
+  return {
+    observations,
+    coversUpToId,
+    ...(isNonEmptyString(coversFromId) ? { coversFromId } : {}),
+  };
+}
+
+export function buildObservationsCoverageData(
+  coversFromId: string,
+  coversUpToId: string,
+): ObservationsCoverageEntryData | undefined {
+  if (!isNonEmptyString(coversFromId) || !isNonEmptyString(coversUpToId)) return undefined;
+  return { coversFromId, coversUpToId };
 }
 
 export function buildObservationsUnanchoredData(

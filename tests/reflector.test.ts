@@ -1,8 +1,9 @@
+import { reflectionTestModel } from "./fixtures/reflection-model.js";
 /**
  * Reflector agent tests — ported from upstream pi-observational-memory.
  *
  * Upstream: https://github.com/elpapi42/pi-observational-memory (tests/reflector.test.ts)
- * Ported with import paths adjusted for om/ layout.
+ * Modified: om/ imports and reflection annotation contract coverage.
  */
 
 import { describe, expect, it } from "vitest";
@@ -38,8 +39,8 @@ interface CapturedToolResult {
 }
 
 describe("V3 reflector agent", () => {
-  const obsA = observation("aaaaaaaaaaaa");
-  const obsB = observation("bbbbbbbbbbbb");
+  const obsA = observation("aaaaaaaaaaaa", { timestamp: "2026-05-02 10:00" });
+  const obsB = observation("bbbbbbbbbbbb", { timestamp: "2026-05-02 10:00" });
   const baseArgs = {
     model: {} as any,
     apiKey: "test",
@@ -325,6 +326,7 @@ describe("V3 reflector agent", () => {
         content,
         supportingObservationIds: ["aaaaaaaaaaaa", "bbbbbbbbbbbb"],
         tokenCount: estimateStringTokens(content),
+        timestamp: obsA.timestamp,
       },
     ]);
   });
@@ -634,6 +636,232 @@ describe("V3 reflector agent", () => {
     const loop = fakeAgentLoop(() => {});
     await expect(runReflector({ ...baseArgs, agentLoop: loop })).resolves.toEqual({
       reflections: undefined,
+    });
+  });
+});
+
+describe("reflection annotation contract", () => {
+  async function propose(
+    timestamps: string[],
+    supersedes: string[] = [],
+    enabled = true,
+    shown = ["aaaaaaaaaaaa"],
+  ) {
+    let receipt: unknown;
+    const result = await runReflector({
+      model: reflectionTestModel,
+      apiKey: "test",
+      observations: timestamps.map((timestamp, i) =>
+        observation(["bbbbbbbbbbbb", "cccccccccccc", "dddddddddddd"][i], { timestamp }),
+      ),
+      reflections: [],
+      timestampsEnabled: false,
+      supersedesEnabled: enabled,
+      supersedableReflectionIds: shown,
+      agentLoop: fakeAgentLoop(async (_prompts, context) => {
+        receipt = await context.tools[0].execute("call", {
+          reflections: [
+            {
+              content: "C",
+              supportingObservationIds: ["bbbbbbbbbbbb", "cccccccccccc"].slice(
+                0,
+                timestamps.length,
+              ),
+              timestamp: "2099-01-01 00:00",
+              supersedes,
+            },
+          ],
+          complete: true,
+        });
+      }),
+    });
+    return { record: result.reflections?.[0], receipt };
+  }
+
+  it.each([
+    [
+      "latest cited, not model or uncited time",
+      ["2026-10-03 10:00", "2026-10-03 14:05", "2099-01-01 00:00"],
+      "2026-10-03 14:05",
+    ],
+    ["no now fallback", ["unknown", ""], undefined],
+    ["impossible calendar date", ["2026-02-29 14:05", "1899-12-31 10:00"], "1899-12-31 10:00"],
+  ])("derives evidence timestamp: %s", async (_label, times, expected) => {
+    const { record } = await propose(times);
+    expect(record).toEqual(expect.objectContaining({ content: "C" }));
+    if (expected === undefined) expect(record).not.toHaveProperty("timestamp");
+    else expect(record?.timestamp).toBe(expected);
+  });
+
+  it.each([
+    ["unknown", ["eeeeeeeeeeee"], true, ["aaaaaaaaaaaa"], undefined, 1],
+    ["self", [hashId("C")], true, [hashId("C")], undefined, 1],
+    ["malformed shown id", ["not-an-id"], true, ["not-an-id"], undefined, 1],
+    ["duplicate", ["aaaaaaaaaaaa", "aaaaaaaaaaaa"], true, ["aaaaaaaaaaaa"], ["aaaaaaaaaaaa"], 0],
+    ["key off", ["aaaaaaaaaaaa"], false, ["aaaaaaaaaaaa"], undefined, undefined],
+  ])("validates supersedes: %s", async (_label, ids, enabled, shown, expected, ignored) => {
+    const { record, receipt } = await propose(["2026-10-03 10:00"], ids, enabled, shown);
+    expect({ ids: record?.supersedes, receipt }).toEqual({
+      ids: expected,
+      receipt: expect.objectContaining({
+        details: enabled
+          ? expect.objectContaining({ added: 1, ignoredSupersedeIds: ignored })
+          : { added: 1, duplicates: 0, rejected: 0, total: 1 },
+        content: expect.arrayContaining([
+          expect.objectContaining({
+            text: enabled
+              ? expect.stringContaining(`${ignored} ignored supersede ids.`)
+              : expect.not.stringContaining("ignored supersede ids"),
+          }),
+        ]),
+      }),
+    });
+  });
+
+  it("explains evidence timestamps only when timestamps enabled", async () => {
+    const { buildReflectorSystem } = await import("../src/om/agents/reflector/prompts.js");
+    expect(buildReflectorSystem({ timestamps: true, supersedes: false })).toContain(
+      "Reflection lines may start with YYYY-MM-DD HH:MM evidence timestamps",
+    );
+    expect(buildReflectorSystem({ timestamps: false, supersedes: false })).not.toContain(
+      "YYYY-MM-DD HH:MM evidence timestamps",
+    );
+  });
+
+  it("replaces the patch prohibition only when supersedes enabled", async () => {
+    const { buildReflectorSystem } = await import("../src/om/agents/reflector/prompts.js");
+    const enabled = buildReflectorSystem({ timestamps: false, supersedes: true });
+    expect(enabled).toContain("Never list a reflection that is still true.");
+    expect(enabled).toContain(
+      "(supersedes <id>), a replacement note: the listed reflection is retired from compacted memory.",
+    );
+    const { REFLECTOR_SYSTEM } = await import("./fixtures/reflector-prompt-golden.js");
+    expect(REFLECTOR_SYSTEM).toContain("Do not emit update-style records or provenance metadata.");
+    expect(buildReflectorSystem({ timestamps: false, supersedes: false })).toBe(REFLECTOR_SYSTEM);
+  });
+
+  it("lets a correction of a changed fact through the near-duplicate rule", async () => {
+    const { buildReflectorSystem } = await import("../src/om/agents/reflector/prompts.js");
+    const prompt = buildReflectorSystem({ timestamps: false, supersedes: false });
+    expect(prompt).toContain("emit nothing");
+    expect(prompt).toContain("unless the candidate corrects a fact that has since changed");
+    expect(prompt).toContain("a failing check now passing");
+  });
+
+  it("rejects earlier same-run ids without dropping the new record", async () => {
+    const loop = fakeAgentLoop(async (_prompts, context) => {
+      await context.tools[0].execute("first", {
+        reflections: [{ content: "first", supportingObservationIds: ["bbbbbbbbbbbb"] }],
+        complete: false,
+      });
+      await context.tools[0].execute("second", {
+        reflections: [
+          {
+            content: "second",
+            supportingObservationIds: ["bbbbbbbbbbbb"],
+            supersedes: [hashId("first")],
+          },
+        ],
+        complete: true,
+      });
+    });
+    const result = await runReflector({
+      model: reflectionTestModel,
+      apiKey: "test",
+      observations: [observation("bbbbbbbbbbbb")],
+      reflections: [],
+      agentLoop: loop,
+      supersedesEnabled: true,
+      supersedableReflectionIds: [],
+    });
+    expect(
+      result.reflections?.map((r) => ({ content: r.content, supersedes: r.supersedes })),
+    ).toEqual([
+      { content: "first", supersedes: undefined },
+      { content: "second", supersedes: undefined },
+    ]);
+  });
+
+  it.each([true, false])("dispatches supersedes schema only when enabled=%s", async (enabled) => {
+    let properties: Record<string, unknown> | undefined;
+    await runReflector({
+      model: reflectionTestModel,
+      apiKey: "test",
+      observations: [observation("cccccccccccc")],
+      reflections: [],
+      timestampsEnabled: false,
+      supersedesEnabled: enabled,
+      agentLoop: fakeAgentLoop((_prompts, context) => {
+        properties = context.tools[0].parameters.properties.reflections.items.properties;
+      }),
+    });
+    expect(properties !== undefined && "supersedes" in properties).toBe(enabled);
+  });
+
+  it.each([undefined, ["aaaaaaaaaaaa"]])(
+    "on schema accepts optional supersedes %s",
+    async (supersedes) => {
+      const { Value } = await import("typebox/value");
+      const { RecordReflectionsWithSupersedesSchema } =
+        await import("../src/om/agents/reflector/tool-schema.js");
+      expect(
+        Value.Check(RecordReflectionsWithSupersedesSchema, {
+          reflections: [
+            {
+              content: "C",
+              supportingObservationIds: ["bbbbbbbbbbbb"],
+              ...(supersedes ? { supersedes } : {}),
+            },
+          ],
+        }),
+      ).toBe(true);
+    },
+  );
+
+  it("off schema excludes supersedes property", async () => {
+    const { RecordReflectionsSchema } = await import("../src/om/agents/reflector/tool-schema.js");
+    expect(RecordReflectionsSchema.properties.reflections.items.properties).not.toHaveProperty(
+      "supersedes",
+    );
+  });
+
+  it("keeps both-off render, dispatched prompt and schema byte-identical", async () => {
+    const { REFLECTOR_SYSTEM } = await import("./fixtures/reflector-prompt-golden.js");
+    const { RecordReflectionsSchema } = await import("./fixtures/reflector-schema-golden.js");
+    const { renderSummary } = await import("../src/om/ledger/index.js");
+    let prompt = "";
+    let schema: unknown;
+    await runReflector({
+      model: reflectionTestModel,
+      apiKey: "test",
+      observations: [observation("cccccccccccc")],
+      reflections: [],
+      timestampsEnabled: false,
+      supersedesEnabled: false,
+      agentLoop: fakeAgentLoop((_prompts, context) => {
+        prompt = leadingSystemPrompt(context);
+        schema = context.tools[0].parameters;
+      }),
+    });
+    expect({
+      prompt,
+      schema: JSON.stringify(schema),
+      render: renderSummary(
+        [
+          reflection("bbbbbbbbbbbb", ["cccccccccccc"], {
+            content: "tests pass",
+            timestamp: "2026-10-03 14:20",
+            supersedes: ["aaaaaaaaaaaa"],
+          }),
+        ],
+        [],
+        { timestamps: false, supersedes: false },
+      ),
+    }).toEqual({
+      prompt: REFLECTOR_SYSTEM,
+      schema: JSON.stringify(RecordReflectionsSchema),
+      render:
+        "## Reflections\n[bbbbbbbbbbbb] tests pass\n\n----\nBracketed ids in reflections and observations connect to their source session entries. These are condensed memories from earlier in this session.\nWhen entries conflict, the most recent observation reflects the latest known state.\nUse `recall` with an id to retrieve original context, or `#N:path` drill-down to explore file content from referenced entries.\nWhen exact source context is needed for precision or traceability, use the `recall` tool with the relevant observation or reflection id. This is especially useful when a reflection materially affects a decision or is too compressed to continue confidently.\n----",
     });
   });
 });

@@ -169,6 +169,7 @@ interface SectionData {
   filesAndChanges: string[];
   commits: string[];
   userPreferences: string[];
+  userDecisions: string[];
   briefTranscript: string;
 }
 ```
@@ -223,3 +224,7 @@ pi-blackhole carries DNA from both upstreams but has diverged significantly. A l
 - **From pi-vcc**: The `compile()` pipeline, section extraction, recall core — `src/core/` and `src/extract/` modules are largely unmodified from upstream.
 - **From pi-observational-memory**: Session-ledger-based observation/reflection capture, memory agents, ledger folding — `src/om/ledger/` is unmodified, `src/om/runtime.ts` and `src/om/consolidation.ts` are modified for fallback chains.
 - **pi-blackhole additions**: Unified config, per-worker model fallback with cooldowns, manual flush mode, memory toggle, per-session pending state, provider stream bridge, retryable error detection, improved prompts, OM-recall coupling, thinking level support.
+
+### Shutdown lifecycle
+
+`session_shutdown` normally disposes the OM runtime immediately. With `observeOnShutdown` enabled (default `false`), `shutdown-observe.ts` first waits for in-flight consolidation and runs at most one observer attempt on an eligible persisted session tail. One shared 20-second deadline bounds both operations; the minimum tail is 200 raw tokens, with `maxTurns: 1` and no drain or request retry. The observer stage remains the owner of branch/pending persistence, and cursors are saved synchronously. A `finally` block disposes the runtime even after error or timeout. Reload is excluded; direct SDK disposal without shutdown events is not covered.

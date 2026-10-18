@@ -1,3 +1,4 @@
+/** Modified: opt-in reflection timestamp guidance and supersede proposals. */
 export const REFLECTOR_SYSTEM = `You are the reflection agent for an assistant.
 
 These records are the ONLY information the assistant will have about past interactions once the raw conversation is compacted out of context. Anything you fail to preserve may be forgotten. Anything you distort may be remembered wrong. Take this seriously. Over-reflection is also memory distortion: it makes transient details look durable and crowds out the few facts future runs actually need.
@@ -15,7 +16,7 @@ What to emit:
 - High and critical observations deserve careful review, not automatic reflection. Many high observations are still active working evidence and should remain observations until completed, superseded, or generalized into a durable decision, invariant, or rationale.
 - Ignore low observations unless a repeated pattern across many low observations is itself significant.
 - Do not lightly reword existing reflections. Rewording creates a separate reflection, so only use different wording when the durable meaning is materially different, more specific, or corrects/refines an existing reflection.
-- Do not emit a near-duplicate of an existing reflection with swapped word order or merged sentences. If a candidate reflection would sit next to an existing one and a reader could not tell which one is authoritative, emit nothing — the existing reflection already carries the meaning.
+- Do not emit a near-duplicate of an existing reflection with swapped word order or merged sentences. If a candidate reflection would sit next to an existing one and a reader could not tell which one is authoritative, emit nothing — the existing reflection already carries the meaning — unless the candidate corrects a fact that has since changed (a blocker resolved, a failing check now passing, a decision reversed, a preference changed). A correction states the current fact in full; leaving the stale reflection as the only record is worse than a correction.
 - Do not emit update-style records or provenance metadata. Reflections are plain durable facts, not patches.
 - It is fine to emit zero reflections when nothing new is stable enough; in that case do not call the tool and reply briefly.
 - Set complete=true only when the full active observation set has been reviewed and no further reflections remain. Set complete=false when another batch or correction is needed.
@@ -83,3 +84,34 @@ Examples:
 - GOOD: User prefers short answers without generic summaries.
 - ZERO REFLECTIONS: The only new observations are files inspected, commands run, failed attempts, partial implementation, transient debugging, or current working state with no durable conclusion yet.
 - ZERO REFLECTIONS: The only new observations are routine command outputs, transient debugging attempts, or partial work with no durable conclusion yet.`;
+
+export function buildReflectorSystem(opts: { timestamps: boolean; supersedes: boolean }): string {
+  // Fail loudly when a base-prompt rewording orphans an anchor: String.replace
+  // is a silent no-op on miss, which would drop guidance the tool schema still
+  // advertises (notably the supersedes contract).
+  const replaceAnchor = (prompt: string, anchor: string, replacement: string): string => {
+    const next = prompt.replace(anchor, replacement);
+    if (next === prompt) throw new Error(`reflector prompt anchor missing: ${anchor}`);
+    return next;
+  };
+  let prompt = REFLECTOR_SYSTEM;
+  if (opts.timestamps)
+    prompt = replaceAnchor(
+      prompt,
+      "You receive:",
+      "You receive:\n- Reflection lines may start with YYYY-MM-DD HH:MM evidence timestamps; reflection content still carries no timestamp.",
+    );
+  if (opts.supersedes) {
+    prompt = replaceAnchor(
+      prompt,
+      "Do not emit update-style records or provenance metadata. Reflections are plain durable facts, not patches.",
+      "Reflection content is a plain durable fact, not a patch: state the current fact in full. When it replaces an existing reflection whose status changed (a failing check now passes, a blocker resolved, a decision reversed), list that reflection's id in supersedes. Never list a reflection that is still true.",
+    );
+    prompt = replaceAnchor(
+      prompt,
+      "You receive:",
+      "You receive:\n- Reflection lines may end with (supersedes <id>), a replacement note: the listed reflection is retired from compacted memory.",
+    );
+  }
+  return prompt;
+}

@@ -24,6 +24,8 @@ export type NormalizedBlock =
       name: string;
       text: string;
       isError: boolean;
+      /** Structured details for explicitly recognized user-question tool names. */
+      details?: unknown;
       sourceIndex?: number;
     }
   | {

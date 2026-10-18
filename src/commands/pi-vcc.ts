@@ -192,7 +192,7 @@ export const registerPiVccCommand = (pi: ExtensionAPI, runtime: Runtime) => {
             ? [pending.observation]
             : [];
         for (const batch of obsBatches) {
-          pi.appendEntry(OM_OBSERVATIONS_RECORDED, batch.data);
+          pi.appendEntry(batch.customType ?? OM_OBSERVATIONS_RECORDED, batch.data);
         }
         // Write all accumulated reflection batches (or latest single batch
         // as fallback for legacy pending.json without batch arrays).

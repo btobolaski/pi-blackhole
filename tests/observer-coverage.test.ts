@@ -27,6 +27,8 @@ import {
 import { Runtime } from "../src/om/runtime.js";
 import { WorkerStreamError } from "../src/om/retryable-error.js";
 import { clearPendingState, readPendingState, savePendingUnanchored } from "../src/om/pending.js";
+import { observedPrefixIndex } from "../src/core/observation-boundary.js";
+import { OM_OBSERVATIONS_COVERAGE } from "../src/om/ledger/types.js";
 import {
   observation,
   observationsRecordedEntry,
@@ -114,6 +116,7 @@ function observedInput(callIndex = 0): ObserverStageInput {
 const emptyResult = () => ({
   observations: [],
   emptyReason: { kind: "no_new_content" as const },
+  coverageComplete: true,
 });
 
 /** Agent-level shape for a capped run whose citations form no head-anchored prefix. */
@@ -138,6 +141,158 @@ afterAll(() => {
 });
 
 describe("observer never covers source entries it was never shown", () => {
+  test("persists a complete empty chunk as explicit delivered coverage", async () => {
+    runObserverSpy.mockResolvedValueOnce({ ...emptyResult(), coverageComplete: true });
+    const entries = [rawMessage("s0", text("EMPTY"))];
+    const runtime = makeRuntime(1, 2000);
+    const appendEntry = vi.fn((customType: string, data: unknown) => {
+      entries.push({
+        type: "custom",
+        id: "om-empty-coverage",
+        parentId: null,
+        timestamp: "2026-05-02T10:00:00.000Z",
+        customType,
+        data,
+      });
+    });
+
+    await runStage(runtime, entries, resolveModelSession(), { appendEntry });
+
+    expect(appendEntry).toHaveBeenCalledWith(OM_OBSERVATIONS_COVERAGE, {
+      coversFromId: "s0",
+      coversUpToId: "s0",
+    });
+  });
+
+  test("records the delivered range independently from observation citations", async () => {
+    runObserverSpy.mockResolvedValueOnce({
+      observations: [observation("dddddddddddd", { sourceEntryIds: ["fact"] })],
+    });
+    const entries = [rawMessage("routine", text("ROUTINE")), rawMessage("fact", text("FACT"))];
+    const appendEntry = vi.fn();
+
+    await runStage(makeRuntime(1, 2000), entries, resolveModelSession(), { appendEntry });
+
+    expect(appendEntry).toHaveBeenCalledWith(
+      "om.observations.recorded",
+      expect.objectContaining({
+        coversFromId: "routine",
+        coversUpToId: "fact",
+      }),
+    );
+  });
+
+  test("does not persist coverage for an incomplete empty observer result", async () => {
+    runObserverSpy.mockResolvedValueOnce({
+      observations: undefined,
+      emptyReason: { kind: "tool_not_called" },
+      coverageComplete: false,
+    });
+    const runtime = makeRuntime(1, 2000);
+    const advance = vi.spyOn(runtime, "advanceCursor");
+    const appendEntry = vi.fn();
+
+    await runStage(runtime, [rawMessage("s0", text("INCOMPLETE"))], resolveModelSession(), {
+      appendEntry,
+    });
+
+    expect(appendEntry).not.toHaveBeenCalled();
+    expect(advance).not.toHaveBeenCalled();
+  });
+
+  test("does not infer completion from a no_new_content label without proof", async () => {
+    runObserverSpy.mockResolvedValueOnce({
+      observations: undefined,
+      emptyReason: { kind: "no_new_content" },
+    });
+    const runtime = makeRuntime(1, 2000);
+    const appendEntry = vi.fn();
+
+    await runStage(runtime, [rawMessage("s0", text("UNPROVEN"))], resolveModelSession(), {
+      appendEntry,
+    });
+
+    expect(appendEntry).not.toHaveBeenCalled();
+    expect(observedPrefixIndex([rawMessage("s0", text("UNPROVEN"))])).toBe(-1);
+  });
+
+  test("preserve mode replays a cursor ahead of the durable delivered prefix", async () => {
+    const entries = [rawMessage("s0", text("LEGACY-GAP")), rawMessage("s1", text("NEXT"))];
+    const runtime = makeRuntime(1, 2000);
+    runtime.config.tailBehavior = "unobserved";
+    runtime.advanceCursor("observer", "s0", "empty");
+
+    await runStage(runtime, entries);
+
+    expect(observedInput(0).allowedSourceEntryIds).toEqual(["s0", "s1"]);
+  });
+
+  test("manual pending observations do not become branch coverage", async () => {
+    runObserverSpy.mockResolvedValueOnce({
+      observations: [observation("bbbbbbbbbbbb", { sourceEntryIds: ["s0"] })],
+    });
+    const entries = [rawMessage("s0", text("MANUAL"))];
+    const runtime = makeRuntime(1, 2000);
+    runtime.config.compaction = "manual";
+    const appendEntry = vi.fn();
+
+    await runStage(runtime, entries, resolveModelSession(), { appendEntry });
+
+    expect(appendEntry).not.toHaveBeenCalled();
+    expect(readPendingState("test-session").observationBatches).toHaveLength(1);
+    expect(observedPrefixIndex(entries)).toBe(-1);
+  });
+
+  test("manual empty and fact batches preserve ordered coverage through restart and flush", async () => {
+    const entries = [rawMessage("s0", text("EMPTY"))];
+    const firstRuntime = makeRuntime(1, 2000);
+    firstRuntime.config.compaction = "manual";
+    firstRuntime.config.tailBehavior = "unobserved";
+    runObserverSpy.mockResolvedValueOnce({ ...emptyResult(), coverageComplete: true });
+
+    await runStage(firstRuntime, entries);
+
+    expect(observedPrefixIndex(entries)).toBe(-1);
+    expect(readPendingState("test-session").observationBatches).toEqual([
+      {
+        coversUpToId: "s0",
+        data: { coversFromId: "s0", coversUpToId: "s0" },
+        customType: OM_OBSERVATIONS_COVERAGE,
+      },
+    ]);
+    firstRuntime.saveCursorsToPending("test-session");
+
+    entries.push(rawMessage("s1", text("FACT")));
+    const restartedRuntime = makeRuntime(1, 2000);
+    restartedRuntime.config.compaction = "manual";
+    restartedRuntime.config.tailBehavior = "unobserved";
+    restartedRuntime.loadCursorsFromPending("test-session");
+    runObserverSpy.mockResolvedValueOnce({
+      observations: [observation("cccccccccccc", { sourceEntryIds: ["s1"] })],
+    });
+
+    await runStage(restartedRuntime, entries);
+
+    expect(observedInput(1).allowedSourceEntryIds).toEqual(["s1"]);
+    const batches = readPendingState("test-session").observationBatches ?? [];
+    expect(batches.map((batch) => batch.customType ?? "om.observations.recorded")).toEqual([
+      OM_OBSERVATIONS_COVERAGE,
+      "om.observations.recorded",
+    ]);
+    expect(observedPrefixIndex(entries)).toBe(-1);
+
+    const flushed = [
+      ...entries,
+      ...batches.map((batch, index) => ({
+        type: "custom",
+        id: `flushed-${index}`,
+        customType: batch.customType ?? "om.observations.recorded",
+        data: batch.data,
+      })),
+    ];
+    expect(observedPrefixIndex(flushed)).toBe(1);
+  });
+
   test("the first batch is the oldest prefix, not the branch tip", async () => {
     const entries = [
       rawMessage("s0", text("OLD-A")),
@@ -645,6 +800,36 @@ describe("observer never covers source entries it was never shown", () => {
     expect(observedInput(0).priorObservations.join("\n")).toContain("manual kept fact");
   });
 
+  test("manual observer preamble omits a pending observation superseded in the same pending pool", async () => {
+    const entries = [rawMessage("s0", text("OLD-A")), rawMessage("s1", text("OLD-B"))];
+    const runtime = makeRuntime(100, 10_000);
+    runtime.config.compaction = "manual";
+    const stale = observation("aaaaaaaaaaaa", {
+      content: "unresolved: manual build fails",
+      sourceEntryIds: ["s0"],
+      tokenCount: 10,
+    });
+    const fresh = {
+      ...observation("bbbbbbbbbbbb", {
+        content: "resolved: manual build fails",
+        sourceEntryIds: ["s1"],
+        tokenCount: 10,
+      }),
+      supersedes: [stale.id],
+    };
+    savePendingUnanchored("test-session", {
+      data: { observations: [stale, fresh] },
+    });
+    runObserverSpy.mockResolvedValueOnce(emptyResult());
+
+    await runStage(runtime, entries);
+
+    expect(observedInput(0).priorObservations.join("\n")).toContain("resolved: manual build fails");
+    expect(observedInput(0).priorObservations.join("\n")).not.toContain(
+      "unresolved: manual build fails",
+    );
+  });
+
   test("a halve retry re-emitting the kept fact stores no second wrapper", async () => {
     const entries = [
       rawMessage("s0", text("OLD-A")),
@@ -740,7 +925,10 @@ describe("observer never covers source entries it was never shown", () => {
 
     await runStage(runtime, entries, resolveModelSession(), pi);
 
-    expect(pi.appendEntry).not.toHaveBeenCalled();
+    expect(pi.appendEntry.mock.calls).toEqual([
+      [OM_OBSERVATIONS_COVERAGE, { coversFromId: "s0", coversUpToId: "s1" }],
+      [OM_OBSERVATIONS_COVERAGE, { coversFromId: "s2", coversUpToId: "s3" }],
+    ]);
     expect(observedInput(1).allowedSourceEntryIds).toEqual(["s0", "s1"]);
     // Nothing was kept, so the toast must not claim a keep: it falls back to
     // the same plain halving line the discard path emits.

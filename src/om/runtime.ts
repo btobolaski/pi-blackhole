@@ -19,7 +19,12 @@ import {
   sanitizeCooldownReason,
   getCooldownEntry,
 } from "./cooldown.js";
-import { isDeterministicError } from "./retryable-error.js";
+import {
+  isDeterministicError,
+  isRetryableError,
+  isLocalExecutionError,
+  isRequestLocalError,
+} from "./retryable-error.js";
 import { readPendingCursors, writePendingCursors } from "./pending.js";
 import type { PendingOMState } from "./pending.js";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
@@ -271,17 +276,45 @@ export class Runtime {
   private generation = 0;
   private sessionIdentity: string | undefined;
   private disposed = false;
+  // Shutdown may outlive the host's own deadline. Its live-context check must
+  // also guard already-running stages, which captured a detached context.
+  // The predicate includes the deadline signal, before disposal can run.
+  private shutdownContextIsActive: (() => boolean) | undefined;
   private lifecycleController = new AbortController();
   private compactionTimer: ReturnType<typeof setTimeout> | undefined;
+
+  guardShutdownContext(isActive: () => boolean): void {
+    this.shutdownContextIsActive = isActive;
+  }
+
+  private isShutdownContextActive(): boolean {
+    if (!this.shutdownContextIsActive) return true;
+    try {
+      return this.shutdownContextIsActive();
+    } catch {
+      return false;
+    }
+  }
 
   /**
    * Called on session_start. Increments the generation counter and aborts the
    * lifecycle signal when the session identity changes.  Cancels any pending
    * deferred compaction timer.  The old extension's deferred work is thereby
    * invalidated.
+   *
+   * Revives after a shutdown dispose: new/resume/fork tear down the old
+   * session and start a new one in the same process with the same Runtime
+   * object, so a permanent dispose would wedge every later session. The
+   * shutdown guard is scoped to the session that installed it and is cleared
+   * here (dispose intentionally keeps it so queued cursor flushes from the
+   * torn-down session stay blocked).
    */
   startSession(sessionIdentity: string | undefined): void {
-    if (this.disposed) return;
+    if (this.disposed) {
+      this.disposed = false;
+      this.lifecycleController = new AbortController();
+    }
+    this.shutdownContextIsActive = undefined;
     // A new session gets a fresh notice collection so the previous session's
     // dedupe cannot suppress the new session's first announcements. Same-id
     // repeats keep the collection (per-run reset stays on agent_start).
@@ -321,6 +354,7 @@ export class Runtime {
   isGenerationActive(captured: RuntimeGeneration): boolean {
     return (
       !this.disposed &&
+      this.isShutdownContextActive() &&
       !captured.signal.aborted &&
       captured.generation === this.generation &&
       (this.sessionIdentity === undefined || captured.sessionIdentity === this.sessionIdentity)
@@ -353,6 +387,11 @@ export class Runtime {
    * Called on session_shutdown.  Aborts the lifecycle signal, increments
    * the generation counter, and clears the compaction timer.  All deferred
    * work is thereby invalidated.
+   *
+   * The shutdown guard is intentionally kept (cleared by the next
+   * startSession): queued cursor flushes from the torn-down session must
+   * still see it after disposal. A later startSession revives the runtime
+   * for new/resume/fork in the same process.
    */
   dispose(): void {
     if (this.disposed) return;
@@ -929,7 +968,9 @@ export class Runtime {
    * (not the session model).  If it's the session model we don't cool it down.
    *
    * When cooldownHours is explicitly 0, the model is tracked in-memory for the
-   * current consolidation stage (no disk writes). Otherwise a persisted cooldown
+   * current consolidation stage (no disk writes). Local execution errors/aborts
+   * and request-local size/option errors
+   * are also in-cycle only. Otherwise a persisted cooldown
    * is recorded.
    */
   recordRetryableError(
@@ -941,7 +982,11 @@ export class Runtime {
     // Thinking-only modifiers carry no identity to cool down; the session
     // model's deterministic errors are handled via recordDeterministicError.
     if (!hasModelIdentity(modelConfig)) return;
-    if (modelConfig.cooldownHours === 0) {
+    if (
+      modelConfig.cooldownHours === 0 ||
+      isLocalExecutionError(error) ||
+      isRequestLocalError(error)
+    ) {
       // In-memory only: skip this model for the rest of this stage.
       // No disk writes, no persistent cooldown.
       this.failedInCycle.add(modelKey(modelConfig));
@@ -953,7 +998,13 @@ export class Runtime {
     // cooldown log never stores a full page and the skip toast stays short.
     // recordCooldown re-sanitizes as defense-in-depth.
     const brief = sanitizeCooldownReason(rawReason);
-    recordCooldown(modelConfig, brief, stage);
+    const causeClass = isDeterministicError(error)
+      ? "provider_configuration"
+      : isRetryableError(error) ||
+          /\b(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENOTFOUND)\b/.test(rawReason)
+        ? "provider_transient"
+        : "unknown";
+    recordCooldown(modelConfig, brief, stage, causeClass);
   }
 
   /**
@@ -972,15 +1023,20 @@ export class Runtime {
     error: unknown,
     stage: ConsolidationPhase,
   ): void {
-    if (!isDeterministicError(error)) return;
     const model = resolvedModel as { provider?: unknown; id?: unknown } | null | undefined;
     if (typeof model?.provider !== "string" || typeof model?.id !== "string") return;
+    if (isLocalExecutionError(error) || isRequestLocalError(error)) {
+      this.skipFailedForCycle({ provider: model.provider, id: model.id });
+      return;
+    }
+    if (!isDeterministicError(error)) return;
     const rawReason = error instanceof Error ? error.message : String(error || "unknown error");
     // recordCooldown sanitizes + defaults to a 1h window when cooldownHours is unset.
     recordCooldown(
       { provider: model.provider, id: model.id },
       sanitizeCooldownReason(rawReason),
       stage,
+      "provider_configuration",
     );
   }
 
@@ -1061,6 +1117,10 @@ export class Runtime {
   scheduleCursorFlush(sessionId: string): void {
     const cursors = { ...this.cursors };
     queueMicrotask(() => {
+      // Only the opted-in shutdown path adds this gate. A queued flush from
+      // its in-flight pipeline must not outlive host invalidation or disposal.
+      if (this.shutdownContextIsActive && (this.disposed || !this.isShutdownContextActive()))
+        return;
       try {
         writePendingCursors(sessionId, cursors as PendingOMState["cursors"]);
       } catch {

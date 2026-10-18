@@ -46,16 +46,16 @@ Then `/reload` or restart Pi. The config file at `~/.pi/agent/pi-blackhole/pi-bl
 
 ## ✨ What's new
 
-> **Latest release: [0.5.13](CHANGELOG.md)**
+> **Latest release: [0.5.14](CHANGELOG.md#0514---2026-10-18)**
 >
-> - **A capped observer run keeps its partial work instead of cooling the model** — the stage commits the cited-prefix checkpoint and drains the remaining backlog in-run, skipping only the current cycle; a batch with no head-anchored prefix is halved and retried rather than discarded.
-> - **Prefix-less observations are kept, not thrown away** — a capped batch whose citations form no head-anchored prefix is stored as coverage-inert `unanchoredObservations`, read by the pool, preamble, and reflector/dropper inputs.
-> - **Thinking-only worker models** — `observerModel`/`reflectorModel`/`dropperModel` (and `model`) accept `{ "thinking": "low" }` without `provider`/`id` as a pure thinking-level modifier while the worker tracks the session model ([#153](https://github.com/k0valik/pi-blackhole/pull/153)).
-> - **Quieter, more useful diagnostics** — resolve-time notices emit once per run with an end-of-run summary, and foreign custom session entries no longer flood the debug log with one line each.
-> - **Pi 1.x is supported** — the declared peer range widens to `<2.0.0`, so Pi 1.0/1.1 installs no longer report an out-of-range peer.
-> - **Mid-run inline compaction keeps the turn open for RPC/SDK clients** — the compaction event no longer advertises itself as a user-initiated `/compact`, so `pi --mode rpc` frontends stop ending the run mid-turn ([#150](https://github.com/k0valik/pi-blackhole/issues/150)).
+> - **Timeline and scheduled memory exports** — `/blackhole-export days:7 mode:timeline` produces a chronological rolling snapshot. Use `pi --no-session --blackhole-export "days:7 mode:timeline out:memory/weekly.md" -p` for scheduled exports; distilled export remains the default.
+> - **Keep unobserved original context** — opt into `tailBehavior: "unobserved"` to retain the raw history the observer has not completed. The default remains `"minimal"`; oversized protected tails defer compaction safely.
+> - **Optional context-pressure fallback** — `contextPressureFallback: "vcc"` can bridge older retained context while keeping a recent raw suffix. It is independent of tail policy and defaults to `"off"`.
+> - **Answers to question tools survive compaction** — best-effort recognition covers six inspected tool families, preserving confirmed choices and scoped user notes while excluding cancellation and timeout defaults.
+> - **Timestamped reflections and replacement tracking** — reflection evidence time is shown by default (`reflectionTimestamps: true`); opt into `reflectionSupersedes: true` to retire replaced reflections from active memory views.
+> - **Optional memory capture before leaving a session** — `observeOnShutdown: true` allows one bounded observer attempt before quit, new, resume or fork. It defaults to `false`.
 >
-> See [`CHANGELOG.md`](CHANGELOG.md) for the full history.
+> See [`CHANGELOG.md`](CHANGELOG.md) for detailed fixes and contribution history.
 
 ---
 
@@ -70,25 +70,31 @@ Long engineering sessions degrade. Pi's native `/compact` calls an LLM to write 
 
 Both halves share a single hook and a single output. Together they keep the agent's context sharp across arbitrarily long sessions — without the cost, drift, or erosion of repeated LLM-based summarization.
 
+Blackhole also preserves confirmed answers from several common question-tool result formats in deterministic compaction and observer context. This is best-effort and shape-guarded: cancellations, drafts, timeouts, and control actions are not treated as user decisions.
+
 ---
 
 ## Commands
 
-| Command                     | Description & Options                                                                                                                                   |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/blackhole`                | Manual compact — deterministic structural summary                                                                                                       |
-| `/blackhole settings`       | Open the configuration overlay _(Alias: `/blackhole configure`)_                                                                                        |
-| `/blackhole changelog`      | Open the in-app changelog viewer                                                                                                                        |
-| `/blackhole cleanup`        | Remove orphaned pending files                                                                                                                           |
-| `/blackhole om-off`         | Disable observational memory                                                                                                                            |
-| `/blackhole om-on`          | Enable observational memory                                                                                                                             |
-| `/blackhole-memory`         | Memory pipeline status & token counters _(Same as `/blackhole-memory status`)_                                                                          |
-| `/blackhole-memory view`    | Show visible observations and reflections (after compaction trimming), copied to clipboard                                                              |
-| `/blackhole-memory full`    | Show **all** recorded memory (including dropped observations), copied to clipboard                                                                      |
-| `/blackhole-recall <query>` | Search session history. Supports `page:N`, `scope:all`, `mode:file                                                                                      | touched`, regex *(Also available to agent as `recall` tool)* |
-| `/blackhole-export`         | Export distilled project memory (observations/reflections across past sessions + pending buffers) to import-ready markdown _(Options: `out:<path>.md`)_ |
+| Command                     | Description & Options                                                                                                                                                                                                                                           |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/blackhole`                | Manual compact — deterministic structural summary                                                                                                                                                                                                               |
+| `/blackhole settings`       | Open the configuration overlay _(Alias: `/blackhole configure`)_                                                                                                                                                                                                |
+| `/blackhole changelog`      | Open the in-app changelog viewer                                                                                                                                                                                                                                |
+| `/blackhole cleanup`        | Remove orphaned pending files                                                                                                                                                                                                                                   |
+| `/blackhole om-off`         | Disable observational memory                                                                                                                                                                                                                                    |
+| `/blackhole om-on`          | Enable observational memory                                                                                                                                                                                                                                     |
+| `/blackhole-memory`         | Memory pipeline status & token counters _(Same as `/blackhole-memory status`)_                                                                                                                                                                                  |
+| `/blackhole-memory view`    | Show visible observations and reflections (after compaction trimming), copied to clipboard                                                                                                                                                                      |
+| `/blackhole-memory full`    | Show **all** recorded memory (including dropped observations), copied to clipboard                                                                                                                                                                              |
+| `/blackhole-recall <query>` | Search session history. Supports `page:N`, `scope:all`, `mode:file\|touched`, regex _(Also available to the agent as the `recall` tool)_                                                                                                                        |
+| `/blackhole-export`         | Export distilled project memory (observations/reflections across past sessions + pending buffers) to import-ready markdown _(Options: `out:<path>.md` `days:<N>` `mode:distilled\|timeline` — e.g. `days:7 mode:timeline` for the recent chronological stream)_ |
 
 All commands work regardless of `compaction` mode — only _when_ auto-compaction fires changes. See [Compaction modes](#compaction-modes) below.
+
+> `days:N` is a rolling snapshot, not exactly-once replication: the still-active session stays excluded and its memory can age out of the window before it becomes eligible.
+
+Headless runs for cron/systemd timers reuse the same argument grammar: `pi --no-session --blackhole-export "days:7 mode:timeline out:memory/weekly.md" -p` (run from the project root). The summary prints to stdout, parse/IO failures exit non-zero, and the snapshot semantics above apply unchanged. Pass `--no-session` to guarantee no session file is created (message-less probe runs persisted none, but session persistence is host behavior).
 
 <details>
 <summary>The `recall` tool (agent-facing)</summary>
@@ -146,6 +152,18 @@ With the default `compactionEngine: "blackhole"`, blackhole's `session_before_co
 `/blackhole` is essentially a single `/compact` that just works — especially in manual mode.
 
 ---
+
+### Unobserved raw tail (opt-in)
+
+`tailBehavior: "unobserved"` retains original messages after trustworthy completed OM observation coverage, backing up to a complete user turn to avoid splitting tool interactions. Missing, invalid or disconnected coverage retains extra original history. Compaction and VCC never advance OM coverage. Pending observer input remains the original branch, including across restart and repeated compactions; no blocking observer flush is added.
+
+The default remains `"minimal"`; `"pi-default"` is unchanged. This mode does not truncate retained tool outputs. If the raw tail plus summary cannot fit the model context minus Pi's `reserveTokens`, capacity is unknown, or no useful summary exists, Blackhole explicitly defers compaction rather than dropping the tail or invoking native summarization. Token estimates are not a provider acceptance guarantee.
+
+### Reusable VCC pressure fallback (opt-in)
+
+`contextPressureFallback: "vcc"` enables a pressure fallback independently of `tailBehavior`; the default is `"off"`, so existing modes retain their behavior. A preferred context that fits is left alone. Otherwise VCC bridges older retained messages and keeps a recent raw suffix bounded by Pi's `keepRecentTokens`, using the model window minus `reserveTokens` and the current system prompt. Whole user-turn boundaries conservatively keep tool interactions together. If the newest turn cannot fit, capacity is unknown, or no useful summary is available, compaction explicitly defers. No native fallback silently drops the protected backlog.
+
+Compaction records `om.preserveSourceHistory` as continuity intent, not observed coverage. The observer still reads original branch source entries, not VCC summaries, across compactions and restart. Pending work remains eligible even after the opt-in is disabled. No blocking observer flush is added. Estimates do not prove provider acceptance; tool schemas and provider-specific overhead can still cause an overflow.
 
 ## How it works
 
@@ -211,6 +229,8 @@ Three background workers (separate LLM calls) run automatically during the sessi
 
 Each worker uses an `agentLoop` with tool-calling capabilities — they don't just make a single LLM call. The observer, for example, can call `record_observations` multiple times per run to work through a chunk incrementally.
 
+Optional `observeOnShutdown` (default `false`) makes at most one observer request on an eligible persisted session's unobserved tail before quit, new, resume or fork. The minimum is 200 raw tokens; one shared 20-second deadline covers waiting for in-flight consolidation and the request. No new reflector, dropper, retry or multi-chunk drain is launched. Reload is skipped. Forced exits and hosts with shorter shutdown deadlines may prevent completion. See [shutdown observation](docs/observational-memory.md#session-shutdown-observation).
+
 If any stage fails (model error, rate limit, timeout), remaining stages are skipped and the full pipeline retries on the next `agent_start` or `turn_end`. A 30-second retry gate prevents hammering failing APIs. Within each stage, the runtime tries all configured fallback models before giving up — each failed model is cooled down and skipped in subsequent attempts.
 
 ---
@@ -262,7 +282,7 @@ Use `recall` to search the session history. Do not redo work already completed.
 ----
 Bracketed ids in reflections and observations connect to their source session entries.
 These are condensed memories from earlier in this session.
-When entries conflict, the most recent observation reflects the latest known state.
+When entries conflict, the entry with the latest timestamp reflects the latest known state.
 Use `recall` with an id to retrieve original context.
 ----
 ```
@@ -343,6 +363,16 @@ What blackhole adds and reworks on top:
 - **Improved observer/reflector/dropper prompts** — each heavily customized with detailed extraction rules, relevance guidance, and error handling.
 - **OM-recall coupling** — when expanding session entries via `recall`, related observations and reflections are automatically shown.
 - **Thinking level support** — per-model `thinking` field for reasoning effort control, including `max` where supported by the provider.
+
+## Reflection evidence time
+
+Reflection lines show their latest supporting observation timestamp by default
+(`reflectionTimestamps: true`). Legacy reflections remain unchanged. Optional
+`reflectionSupersedes: true` adds `(supersedes <id>)` notes on new reflections and
+retires the replaced reflection from compaction output (the ledger keeps it). Both
+keys add no model calls.
+Use `PI_BLACKHOLE_REFLECTION_TIMESTAMPS` and `PI_BLACKHOLE_REFLECTION_SUPERSEDES`
+for environment overrides. Export prefers reflection evidence time but omits notes.
 
 ## License
 

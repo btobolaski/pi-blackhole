@@ -2,7 +2,7 @@
  * Test fixtures — helpers for building test observations, reflections, and session entries.
  *
  * Upstream: https://github.com/elpapi42/pi-observational-memory (tests/fixtures/session.ts)
- * Ported and adapted for pi-blackhole.
+ * Modified and adapted for pi-blackhole.
  */
 
 export type TestEntry = {
@@ -29,12 +29,7 @@ export type TestObservation = {
 	tokenCount: number;
 };
 
-export type TestReflection = {
-	id: string;
-	content: string;
-	supportingObservationIds: string[];
-	tokenCount: number;
-};
+export type TestReflection = import("../../src/om/ledger/types.js").Reflection;
 
 export const V3_OBSERVATIONS_RECORDED = "om.observations.recorded";
 export const V3_REFLECTIONS_RECORDED = "om.reflections.recorded";

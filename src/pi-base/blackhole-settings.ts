@@ -1,5 +1,6 @@
 /**
  * Blackhole settings — modal-based configuration via ConfigManager.
+ * Modified: register reflection timestamp and supersede settings.
  *
  * The single config UI: pi-base's ConfigManager + openConfigFlow
  * (scope-selector → edit/display-all modal). `/blackhole configure` is a
@@ -89,13 +90,23 @@ export const config = new ConfigManager<UnifiedConfig>({
       type: "enum",
       label: "Visible tail",
       description:
-        "minimal=keep last user message only (default), pi-default=keep Pi's preserved visible context",
+        "minimal=keep last user message (default), pi-default=keep Pi's visible context, unobserved=retain original unobserved history",
       value: cfg.tailBehavior,
-      options: ["minimal", "pi-default"],
+      options: ["minimal", "pi-default", "unobserved"],
       optionLabels: {
         minimal: "minimal — keep last user message only (default)",
+        unobserved: "unobserved — retain original messages not yet observed",
         "pi-default": "pi-default — keep Pi's preserved visible context",
       },
+    },
+    {
+      key: "contextPressureFallback",
+      type: "enum",
+      label: "Context pressure fallback",
+      description:
+        "off=unchanged tail policy, vcc=bridge older retained tail only when preferred context cannot fit",
+      value: cfg.contextPressureFallback,
+      options: ["off", "vcc"],
     },
     {
       key: "midRunCompaction",
@@ -377,12 +388,35 @@ export const config = new ConfigManager<UnifiedConfig>({
       step: 1000,
     },
     {
+      key: "observeOnShutdown",
+      type: "boolean",
+      label: "Observe on shutdown",
+      description: "Observe unprocessed session tail once before exit (up to 20 seconds)",
+      value: cfg.observeOnShutdown ?? false,
+    },
+    {
       key: "fullFoldAlways",
       type: "boolean",
       label: "Preserve OM on first compaction",
       description:
         "When true, early reflections/drops survive the first compaction in a fresh session",
       value: cfg.fullFoldAlways,
+    },
+
+    {
+      key: "reflectionTimestamps",
+      type: "boolean",
+      label: "Reflection timestamps",
+      description: "Show evidence timestamps on reflection lines",
+      value: cfg.reflectionTimestamps,
+    },
+    {
+      key: "reflectionSupersedes",
+      type: "boolean",
+      label: "Reflection supersedes notes",
+      description:
+        "Reflections may replace earlier ones; replaced reflections are retired from compaction output",
+      value: cfg.reflectionSupersedes,
     },
 
     // ── UI ──
@@ -430,6 +464,8 @@ export const config = new ConfigManager<UnifiedConfig>({
    */
   validate: (raw) => {
     const parsed = { ...raw } as Partial<UnifiedConfig>;
+    if (parsed.contextPressureFallback !== "off" && parsed.contextPressureFallback !== "vcc")
+      delete parsed.contextPressureFallback;
 
     // ── Migration: legacy keys → new surface ──
     if (parsed.compaction === undefined && parsed.compactionEngine === undefined) {

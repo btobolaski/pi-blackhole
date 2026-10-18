@@ -5,6 +5,8 @@
  * Unmodified.
  */
 import type { Message, TextContent, ToolResultMessage } from "@earendil-works/pi-ai";
+import { projectUserDecision } from "../extract/user-decisions.js";
+import type { NormalizedBlock } from "../types.js";
 
 function pad(n: number): string {
   return n.toString().padStart(2, "0");
@@ -94,7 +96,21 @@ export function serializeConversation(messages: Message[]): string {
         return `[Assistant @ ${time}]: ${body}`;
       }
       const text = textOnly(msg.content);
-      return `[Tool result for ${(msg as ToolResultMessage).toolName} @ ${time}]: ${text}`;
+      const toolResult = msg as ToolResultMessage & { details?: unknown };
+      const name = toolResult.toolName;
+      const projection: NormalizedBlock = {
+        kind: "tool_result",
+        name,
+        text,
+        isError: toolResult.isError,
+        ...(toolResult.details !== undefined ? { details: toolResult.details } : {}),
+      };
+      const decision = projectUserDecision(projection);
+      const additions = [
+        ...decision.lines.map((line) => `[Recognized decision projection: ${line}]`),
+        ...(decision.status ? [`[Decision capture: ${decision.status}]`] : []),
+      ];
+      return `[Tool result for ${name} @ ${time}]: ${[text, ...additions].filter(Boolean).join("\n")}`;
     })
     .filter((line): line is string => line !== null)
     .join("\n\n");

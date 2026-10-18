@@ -1,0 +1,385 @@
+{
+  "repository": "https://github.com/k0valik/pi-blackhole",
+  "captured": "2026-10-18",
+  "integration_base": "8ac87dd3922ad79c3f69de37ab26542ff558ff0f",
+  "excluded": [149, 158],
+  "prs": [
+    {
+      "pr": 159,
+      "title": "fix(compaction): minimal tail honors Pi's later cut in single-prompt windows",
+      "head": "7010923c5b91a10afc9a3e136b365a27b2218dbc",
+      "base": "a0cc3c15a2184adda9cb81fa91733df829bed807",
+      "merge_base": "a0cc3c15a2184adda9cb81fa91733df829bed807",
+      "files": [
+        "CHANGELOG.md",
+        "docs/CONFIG.md",
+        "src/hooks/before-compact.ts",
+        "tests/vcc-own-cut-robust.test.ts"
+      ],
+      "commits": [
+        "7010923c5b91a10afc9a3e136b365a27b2218dbc sonSunnoi <5573794+sonSunnoi@users.noreply.github.com> fix(compaction): minimal tail honors Pi's later cut in single-prompt windows"
+      ],
+      "classification": "ACCEPT",
+      "merge_commit": "82f0d300bc10d0749efba633449b6188cd490a81",
+      "note": "Later Pi cut retained in single-prompt minimal windows.",
+      "pinned_source_focused_tests": 60
+    },
+    {
+      "pr": 160,
+      "title": "fix(om): keep pre-cut observations of a batch that straddles the compaction cut",
+      "head": "45dc7fd70ef9d393a34874ca7180d88b7d6ee1ca",
+      "base": "a0cc3c15a2184adda9cb81fa91733df829bed807",
+      "merge_base": "a0cc3c15a2184adda9cb81fa91733df829bed807",
+      "files": [
+        "CHANGELOG.md",
+        "docs/observational-memory.md",
+        "src/om/ledger/projection.ts",
+        "tests/projection-cut-observations.test.ts"
+      ],
+      "commits": [
+        "45dc7fd70ef9d393a34874ca7180d88b7d6ee1ca sonSunnoi <5573794+sonSunnoi@users.noreply.github.com> fix(om): keep pre-cut observations of a batch that straddles the compaction cut"
+      ],
+      "classification": "ACCEPT_WITH_FIX",
+      "merge_commit": "5b2b2deff6bd6b44f26a0c0fc0e6598b5c5d2675",
+      "note": "Valid unknown-source fixture/control and combined cut/supersession tests.",
+      "pinned_source_focused_tests": 40
+    },
+    {
+      "pr": 161,
+      "title": "fix(om): keep reflections whose evidence lies before the compaction boundary",
+      "head": "fc685114ddb7a5c3148e289f75e324dce1076ccb",
+      "base": "a0cc3c15a2184adda9cb81fa91733df829bed807",
+      "merge_base": "a0cc3c15a2184adda9cb81fa91733df829bed807",
+      "files": [
+        "CHANGELOG.md",
+        "docs/observational-memory.md",
+        "src/om/ledger/projection.ts",
+        "tests/projection-cut-reflections.test.ts"
+      ],
+      "commits": [
+        "fc685114ddb7a5c3148e289f75e324dce1076ccb sonSunnoi <5573794+sonSunnoi@users.noreply.github.com> fix(om): keep reflections whose evidence lies before the compaction boundary"
+      ],
+      "classification": "ACCEPT",
+      "merge_commit": "3576d341d72c2fbfcb38e534a86b81f6ce787f2c",
+      "note": "Admit pre-boundary reflection evidence; preserve maintenance boundary.",
+      "pinned_source_focused_tests": 38
+    },
+    {
+      "pr": 162,
+      "title": "fix(om): let observations supersede the stale observations they replace",
+      "head": "26302585c1510cb784b4ff528a4c1b4413ea5adc",
+      "base": "a0cc3c15a2184adda9cb81fa91733df829bed807",
+      "merge_base": "a0cc3c15a2184adda9cb81fa91733df829bed807",
+      "files": [
+        "CHANGELOG.md",
+        "docs/observational-memory.md",
+        "src/om/agents/observer/agent.ts",
+        "src/om/agents/observer/prompts.ts",
+        "src/om/agents/observer/tool-schema.ts",
+        "src/om/consolidation.ts",
+        "src/om/ledger/fold.ts",
+        "src/om/ledger/progress.ts",
+        "src/om/ledger/projection.ts",
+        "src/om/ledger/types.ts",
+        "tests/om-observation-supersedes.test.ts"
+      ],
+      "commits": [
+        "26302585c1510cb784b4ff528a4c1b4413ea5adc sonSunnoi <5573794+sonSunnoi@users.noreply.github.com> fix(om): let observations supersede the stale observations they replace"
+      ],
+      "classification": "ACCEPT_WITH_FIX",
+      "merge_commit": "0ec6aee4a922cd731ca482f3151000ee120093fd",
+      "note": "Manual pending worker context fix 82e9815; later-source fixture f2f53e9; cross-boundary tests 86d46a6.",
+      "pinned_source_focused_tests": 76
+    },
+    {
+      "pr": 163,
+      "title": "fix(om): let the reflector record corrections of changed facts",
+      "head": "3dcdf59d21d1ad0cc4a8e6e94beb70dccd84a64e",
+      "base": "a0cc3c15a2184adda9cb81fa91733df829bed807",
+      "merge_base": "a0cc3c15a2184adda9cb81fa91733df829bed807",
+      "files": [
+        "CHANGELOG.md",
+        "docs/observational-memory.md",
+        "src/om/agents/reflector/prompts.ts",
+        "tests/fixtures/reflector-prompt-golden.ts",
+        "tests/reflector.test.ts"
+      ],
+      "commits": [
+        "3dcdf59d21d1ad0cc4a8e6e94beb70dccd84a64e sonSunnoi <5573794+sonSunnoi@users.noreply.github.com> fix(om): let the reflector record corrections of changed facts"
+      ],
+      "classification": "ACCEPT",
+      "merge_commit": "c9bf5632d70145218895fa1a1f15bfde84b6c785",
+      "note": "Prompt allows full current-fact corrections; no new calls or schema.",
+      "pinned_source_focused_tests": 46
+    },
+    {
+      "pr": 164,
+      "title": "feat(om): retire superseded reflections from compaction when reflectionSupersedes is on",
+      "head": "8d9eee2911cdfd16eee95876c10d516a8ab9687c",
+      "base": "a0cc3c15a2184adda9cb81fa91733df829bed807",
+      "merge_base": "a0cc3c15a2184adda9cb81fa91733df829bed807",
+      "files": [
+        "CHANGELOG.md",
+        "README.md",
+        "docs/APPEND_COMPACTION.md",
+        "docs/CONFIG.md",
+        "docs/observational-memory.md",
+        "llms.txt",
+        "src/commands/memory.ts",
+        "src/om/agents/reflector/prompts.ts",
+        "src/om/consolidation.ts",
+        "src/om/ledger/projection.ts",
+        "src/om/ledger/render-summary.ts",
+        "src/om/ledger/types.ts",
+        "src/pi-base/blackhole-settings.ts",
+        "tests/append-before-compact.test.ts",
+        "tests/om-reflection-retirement.test.ts",
+        "tests/reflector.test.ts",
+        "tests/render-summary.test.ts"
+      ],
+      "commits": [
+        "8d9eee2911cdfd16eee95876c10d516a8ab9687c sonSunnoi <5573794+sonSunnoi@users.noreply.github.com> feat(om): retire superseded reflections from compaction when reflectionSupersedes is on"
+      ],
+      "classification": "ACCEPT_WITH_FIX",
+      "merge_commit": "6809f7dffc1fead5abcc35e6e17699e9bf517eb8",
+      "note": "Visible projection option threaded in 0ce3cb2; default remains false.",
+      "pinned_source_focused_tests": 90
+    },
+    {
+      "pr": 165,
+      "title": "feat(vcc): keep ask_user_question answers as a User Decisions section",
+      "head": "19512ecc5549f315b8429ca8e5d387852b4a2da6",
+      "base": "a0cc3c15a2184adda9cb81fa91733df829bed807",
+      "merge_base": "a0cc3c15a2184adda9cb81fa91733df829bed807",
+      "files": [
+        "CHANGELOG.md",
+        "docs/architecture.md",
+        "docs/vcc-compaction.md",
+        "src/core/build-sections.ts",
+        "src/core/format.ts",
+        "src/core/normalize.ts",
+        "src/core/summarize.ts",
+        "src/extract/user-decisions.ts",
+        "src/sections.ts",
+        "src/types.ts",
+        "tests/vcc-format.test.ts",
+        "tests/vcc-user-decisions.test.ts"
+      ],
+      "commits": [
+        "19512ecc5549f315b8429ca8e5d387852b4a2da6 sonSunnoi <5573794+sonSunnoi@users.noreply.github.com> feat(vcc): keep ask_user_question answers as a User Decisions section"
+      ],
+      "classification": "ACCEPT_WITH_FIX",
+      "merge_commit": "c8493bc597db65b9778b45e0cba81dc80c65866a",
+      "note": "Cancellation authoritative, opaque preview status lines, eight-item merge cap: 6f4945a.",
+      "pinned_source_focused_tests": 33
+    },
+    {
+      "pr": 166,
+      "title": "feat(om): tell the observer to record ask_user_question choices",
+      "head": "7fa7c206daf08cdba3df16a585cfe26392b22514",
+      "base": "a0cc3c15a2184adda9cb81fa91733df829bed807",
+      "merge_base": "a0cc3c15a2184adda9cb81fa91733df829bed807",
+      "files": [
+        "CHANGELOG.md",
+        "docs/observational-memory.md",
+        "src/om/agents/observer/prompts.ts",
+        "tests/observer-ask-user-rule.test.ts"
+      ],
+      "commits": [
+        "7fa7c206daf08cdba3df16a585cfe26392b22514 sonSunnoi <5573794+sonSunnoi@users.noreply.github.com> feat(om): tell the observer to record ask_user_question choices"
+      ],
+      "classification": "ACCEPT",
+      "merge_commit": "5313c76b477ae31ec027c3da8677feebc65d9a35",
+      "note": "Prompt/serialization checked; live-model compliance not established.",
+      "pinned_source_focused_tests": 64
+    },
+    {
+      "pr": 167,
+      "title": "fix(om): keep reflector and dropper turn caps out of cooldowns",
+      "head": "8db7fcf411215a84509f7d4458f724963fcaa714",
+      "base": "a0cc3c15a2184adda9cb81fa91733df829bed807",
+      "merge_base": "a0cc3c15a2184adda9cb81fa91733df829bed807",
+      "files": [
+        "CHANGELOG.md",
+        "docs/observational-memory.md",
+        "src/om/consolidation.ts",
+        "tests/consolidation.test.ts",
+        "tests/dropper-shrink.test.ts",
+        "tests/reflector-shrink.test.ts",
+        "tests/turn-cap-cooldown.test.ts"
+      ],
+      "commits": [
+        "8db7fcf411215a84509f7d4458f724963fcaa714 sonSunnoi <5573794+sonSunnoi@users.noreply.github.com> fix(om): keep reflector and dropper turn caps out of cooldowns"
+      ],
+      "classification": "ACCEPT",
+      "merge_commit": "cbcacd9496397211bf7004aecaa4c94095f4bd6f",
+      "note": "Turn caps skip in-cycle; no persistent cooldown or coverage advance.",
+      "pinned_source_focused_tests": 103
+    },
+    {
+      "pr": 168,
+      "title": "fix(om): avoid cooldowns for local errors and active-generation aborts",
+      "head": "3a24675edf83f0f8bf72b90ac2f45c841f77c586",
+      "base": "a0cc3c15a2184adda9cb81fa91733df829bed807",
+      "merge_base": "a0cc3c15a2184adda9cb81fa91733df829bed807",
+      "files": [
+        "CHANGELOG.md",
+        "docs/observational-memory.md",
+        "src/om/consolidation.ts",
+        "src/om/retryable-error.ts",
+        "src/om/runtime.ts",
+        "tests/cooldown-local-errors-no-cooldown.test.ts"
+      ],
+      "commits": [
+        "3a24675edf83f0f8bf72b90ac2f45c841f77c586 sonSunnoi <5573794+sonSunnoi@users.noreply.github.com> fix(om): avoid cooldowns for local errors and active-generation aborts"
+      ],
+      "classification": "ACCEPT",
+      "merge_commit": "b9395f3f58651de14749988d0f1e80287b52738d",
+      "note": "Local errors and active aborts skip in-cycle; provider/network controls preserved.",
+      "pinned_source_focused_tests": 128
+    },
+    {
+      "pr": 169,
+      "title": "feat(om): log classified cooldown writes at the persistence owner",
+      "head": "e77f4de32804e95d5d8f455f035e5f817085f123",
+      "base": "a0cc3c15a2184adda9cb81fa91733df829bed807",
+      "merge_base": "a0cc3c15a2184adda9cb81fa91733df829bed807",
+      "files": [
+        "CHANGELOG.md",
+        "docs/observational-memory.md",
+        "src/om/cooldown.ts",
+        "src/om/runtime.ts",
+        "tests/cooldown-write-log.test.ts"
+      ],
+      "commits": [
+        "e77f4de32804e95d5d8f455f035e5f817085f123 sonSunnoi <5573794+sonSunnoi@users.noreply.github.com> feat(om): log classified cooldown writes at the persistence owner"
+      ],
+      "classification": "ACCEPT",
+      "merge_commit": "4b165042183658754ac55390d6e95385a1d34e0f",
+      "note": "Persistence-owner diagnostics remain sanitized; only successful writes log.",
+      "pinned_source_focused_tests": 98
+    },
+    {
+      "pr": 170,
+      "title": "fix(om): avoid cooldowns for unsplittable output-length batches",
+      "head": "8372d6faf264f7daccf0ee40e3719d2405b8f58a",
+      "base": "a0cc3c15a2184adda9cb81fa91733df829bed807",
+      "merge_base": "a0cc3c15a2184adda9cb81fa91733df829bed807",
+      "files": [
+        "CHANGELOG.md",
+        "docs/observational-memory.md",
+        "src/om/consolidation.ts",
+        "tests/dropper-shrink.test.ts",
+        "tests/reflector-shrink.test.ts"
+      ],
+      "commits": [
+        "8372d6faf264f7daccf0ee40e3719d2405b8f58a sonSunnoi <5573794+sonSunnoi@users.noreply.github.com> fix(om): avoid cooldowns for unsplittable output-length batches"
+      ],
+      "classification": "ACCEPT",
+      "merge_commit": "bf72b3d65acc3edaa9a0f3208d9f669df1c16978",
+      "note": "Unsplittable output-length skips combine with turn-cap guard.",
+      "pinned_source_focused_tests": 98
+    },
+    {
+      "pr": 171,
+      "title": "fix(om): keep request incompatibility out of model cooldowns",
+      "head": "b391c80e9e9723d82a5a273ec34a8a3346b92592",
+      "base": "a0cc3c15a2184adda9cb81fa91733df829bed807",
+      "merge_base": "a0cc3c15a2184adda9cb81fa91733df829bed807",
+      "files": [
+        "CHANGELOG.md",
+        "docs/observational-memory.md",
+        "src/om/consolidation.ts",
+        "src/om/retryable-error.ts",
+        "src/om/runtime.ts",
+        "tests/cooldown-request-errors-no-cooldown.test.ts",
+        "tests/request-cooldown-peer-floor.test.ts"
+      ],
+      "commits": [
+        "b391c80e9e9723d82a5a273ec34a8a3346b92592 sonSunnoi <5573794+sonSunnoi@users.noreply.github.com> fix(om): keep request incompatibility out of model cooldowns"
+      ],
+      "classification": "ACCEPT",
+      "merge_commit": "5bfe5bbd66307bca0a5dd34656f6e2e38943d1da",
+      "note": "Request-local plus local predicates and persistence diagnostics combined.",
+      "pinned_source_focused_tests": 150
+    },
+    {
+      "pr": 172,
+      "title": "feat(compaction): retain unobserved raw tail at completed OM coverage",
+      "head": "c71d0ad3f1a867179fba7caff4ba1253f22e81a5",
+      "base": "a0cc3c15a2184adda9cb81fa91733df829bed807",
+      "merge_base": "a0cc3c15a2184adda9cb81fa91733df829bed807",
+      "files": [
+        "CHANGELOG.md",
+        "README.md",
+        "docs/CONFIG.md",
+        "docs/observational-memory.md",
+        "docs/vcc-compaction.md",
+        "llms.txt",
+        "src/core/observation-boundary.ts",
+        "src/core/tool-safe-cut.ts",
+        "src/core/unified-config.ts",
+        "src/hooks/before-compact.ts",
+        "src/om/consolidation.ts",
+        "src/pi-base/blackhole-settings.ts",
+        "tests/append-config.test.ts",
+        "tests/consolidation.test.ts",
+        "tests/unobserved-tail.test.ts",
+        "tests/vcc-before-compact-hook.test.ts"
+      ],
+      "commits": [
+        "c71d0ad3f1a867179fba7caff4ba1253f22e81a5 sonSunnoi <5573794+sonSunnoi@users.noreply.github.com> feat(compaction): retain unobserved original tail safely"
+      ],
+      "classification": "ACCEPT_WITH_FIX",
+      "merge_commit": "9096ce1a1bcfc3842124e1c56aad3c0d28344ce5",
+      "note": "Reconciled with #173; shared stale-cursor fix 015d9b2 and docs placement.",
+      "pinned_source_focused_tests": 156
+    },
+    {
+      "pr": 173,
+      "title": "feat(compaction): add reusable opt-in VCC fallback under context pressure",
+      "head": "5deec736ece23f18d2ee420808424d582786c536",
+      "base": "a0cc3c15a2184adda9cb81fa91733df829bed807",
+      "merge_base": "a0cc3c15a2184adda9cb81fa91733df829bed807",
+      "files": [
+        "CHANGELOG.md",
+        "README.md",
+        "docs/CONFIG.md",
+        "docs/observational-memory.md",
+        "docs/vcc-compaction.md",
+        "example-config.json",
+        "llms.txt",
+        "src/core/context-pressure.ts",
+        "src/core/observation-boundary.ts",
+        "src/core/tool-safe-cut.ts",
+        "src/core/unified-config.ts",
+        "src/hooks/before-compact.ts",
+        "src/om/consolidation.ts",
+        "src/pi-base/blackhole-settings.ts",
+        "tests/append-config.test.ts",
+        "tests/consolidation.test.ts",
+        "tests/context-pressure.test.ts",
+        "tests/vcc-before-compact-hook.test.ts"
+      ],
+      "commits": [
+        "5deec736ece23f18d2ee420808424d582786c536 sonSunnoi <5573794+sonSunnoi@users.noreply.github.com> feat(compaction): add opt-in reusable VCC pressure fallback"
+      ],
+      "classification": "ACCEPT_WITH_FIX",
+      "merge_commit": "3f44b3879ad22862f305926edca15e9a994e876d",
+      "note": "Reconciled both policy gates, candidate OM boundary, source continuity; stale cursor 015d9b2.",
+      "pinned_source_focused_tests": 157
+    }
+  ],
+  "validated_code_head": "806b6fdbeb4ac500ddd2dfe13e6257579393d787",
+  "validation": {
+    "node": "26.1.0",
+    "pnpm": "12.10.0",
+    "baseline_tests": 2797,
+    "integration_tests": 3007,
+    "integration_test_files": 158,
+    "build": "passed",
+    "verify": "passed",
+    "format_check": "passed",
+    "production_install_import": "passed with devDependencies omitted, hoist false, Pi peers pinned 1.3.0"
+  }
+}

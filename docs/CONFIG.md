@@ -21,7 +21,8 @@ The config file must contain **valid JSON**. A trailing comma, partial write, or
   // ── Compaction ──
   "compaction": "auto",           // "auto" | "manual" | "off"
   "compactionEngine": "blackhole", // "blackhole" | "pi-default"
-  "tailBehavior": "minimal",   // "pi-default" | "minimal"
+  "tailBehavior": "minimal",   // "pi-default" | "minimal" | "unobserved"
+  "contextPressureFallback": "off", // "off" | "vcc"
   "showPreCompactionMessage": true, // Display-only copy of the newest dropped assistant output (max 16 KiB)
   "midRunCompaction": "off",    // "resume" | "pause" | "off" (default: off)
   "compactionSummaryMode": "default", // "default" | "append" (default: "default")
@@ -46,6 +47,9 @@ The config file must contain **valid JSON**. A trailing comma, partial write, or
   // ── Observational Memory ──
   "memory": true,                 // Enable OM workers + content injection
   "sessionFallback": true,        // Fall back to session model when OM models fail
+  "reflectionTimestamps": true,  // Show reflection evidence time
+  "reflectionSupersedes": false, // Replacement notes; replaced reflections leave compaction output
+  "observeOnShutdown": false,    // One bounded observer attempt before session exit
   "fullFoldAlways": true,         // Treat first compaction as full-fold boundary
   "statusBar": true,              // Footer token gauges (O/P/X) + worker events
   "showWorkerNotifications": true, // Routine observer/reflector/dropper progress toasts
@@ -132,7 +136,8 @@ Controls how much of the recent transcript stays *visible* after compaction. Onl
 | Value | Behavior |
 |-------|----------|
 | `"pi-default"` | Use Pi's `firstKeptEntryId` — respects Pi's `keepRecentTokens` (~20k tokens kept). Messages before Pi's cut are compiled into the summary and removed from view. |
-| `"minimal"` | Keep only the last user message, unless Pi provides a later safe split-turn boundary for an oversized current turn. Everything before the chosen boundary gets compiled and removed (default for both auto-triggered and manual `/blackhole`). |
+| `"minimal"` | Keep only the last user message, unless Pi provides a later safe split-turn boundary for an oversized current turn. Everything before the chosen boundary gets compiled and removed (default for both auto-triggered and manual `/blackhole`). When the live window has no user message after its first message (one long run), Pi's cut applies; with no usable Pi cut (for example overflow recovery that finds none), everything is compiled and no tail is kept. |
+| `"unobserved"` | Keep original context after completed observer coverage, backing up to a safe user-turn boundary. Unknown or incomplete coverage keeps extra context; an oversized protected tail defers compaction. Opt-in; default stays `"minimal"`. |
 
 **Visual comparison:**
 
@@ -156,6 +161,7 @@ minimal (last user at m5):
 | Manual `/blackhole` | `"pi-default"` | `"pi-default"` |
 | Auto-triggered | not set | `"minimal"` (aggressive) |
 | Auto-triggered | `"minimal"` | `"minimal"` |
+| Manual or auto-triggered | `"unobserved"` | `"unobserved"` |
 
 **Examples:**
 
@@ -165,6 +171,14 @@ minimal (last user at m5):
 
 // Use Pi's gentler cut for both auto and manual
 { "tailBehavior": "pi-default" }
+```
+
+### `contextPressureFallback`
+
+Default: `"off"`. Set `"vcc"` to bridge older retained context with a deterministic summary when the preferred projection does not fit, keeping a recent raw suffix bounded by Pi's `keepRecentTokens`. This works independently of `tailBehavior`. The observer still reads original history; fallback summaries never establish observation coverage. Unknown capacity or an oversized newest turn defers compaction. See [pressure fallback details](#reusable-vcc-pressure-fallback-opt-in).
+
+```json
+{ "contextPressureFallback": "vcc" }
 ```
 
 ### `showPreCompactionMessage`
@@ -393,6 +407,30 @@ Defaults to `true`: when all OM model candidates are exhausted, the stage falls 
 | Type | Default |
 |------|---------|
 | boolean | `true` |
+
+### `reflectionTimestamps`
+
+Boolean, default `true`. Show evidence time on reflection lines in compaction memory,
+worker prompts, and `/blackhole-memory`. New reflections always store the latest usable
+supporting observation timestamp, derived in code, even when display is off. Legacy
+reflections without timestamps remain unchanged. Export prefers stored evidence time.
+
+### `reflectionSupersedes`
+
+Boolean, default `false`. Allow the reflector to cite earlier shown reflection ids
+that a new fact replaces. The new line displays `(supersedes <id>)` and the replaced
+reflection is retired from compaction projections and the observer preamble. Retired
+reflections stay in the ledger, worker inputs, coverage, export and recall. Only the new reflection stores the annotation. Export and recall do not display
+the suffix. With both reflection keys off, rendering, reflector prompt and tool schema
+match the legacy output. Toggle changes affect the next compaction, not stored segments.
+
+### `observeOnShutdown`
+
+Default: `false`. Env: `PI_BLACKHOLE_OBSERVE_ON_SHUTDOWN`.
+
+When enabled, persisted sessions get at most one observer request on quit, new, resume or fork. The unobserved tail must contain at least 200 raw tokens. A shared 20-second deadline covers waiting for in-flight consolidation and the observer request (`maxTurns: 1`). These bounds are code constants, not settings. The first model returned by normal observer resolution is used; request errors do not trigger a fallback or retry. No new reflector or dropper is launched. Reload, memory-off, skipped providers, legacy passive mode and retry-gated sessions are skipped. Cursors and observations use normal branch or manual-mode pending persistence. If the host session is closed before the flush completes, nothing is written for it (no observation, pending batch or cursor): the tail stays unobserved until a later session observes it. Shutdown always disposes the runtime, including on error or timeout.
+
+Exit can be delayed up to 20 seconds. Forced termination, direct SDK disposal without a shutdown event and non-persisted sessions are not covered. A large tail is limited to one normal observer chunk; turn-cap checkpoints may cover only its cited prefix. This is best-effort, not a guarantee that the whole tail appears in export (export viability filters still apply).
 
 ### `fullFoldAlways`
 
@@ -681,6 +719,9 @@ Boolean fields:
 | `PI_BLACKHOLE_DEBUG` | `debug` (debug snapshots) |
 | `PI_BLACKHOLE_DEBUG_LOG` | `debugLog` (JSONL logging) |
 | `PI_BLACKHOLE_SESSION_FALLBACK` | `sessionFallback` |
+| `PI_BLACKHOLE_REFLECTION_TIMESTAMPS` | `reflectionTimestamps` |
+| `PI_BLACKHOLE_REFLECTION_SUPERSEDES` | `reflectionSupersedes` |
+| `PI_BLACKHOLE_OBSERVE_ON_SHUTDOWN` | `observeOnShutdown` |
 | `PI_BLACKHOLE_FULL_FOLD_ALWAYS` | `fullFoldAlways` |
 | `PI_BLACKHOLE_STATUSBAR` | `statusBar` |
 | `PI_BLACKHOLE_SHOW_WORKER_NOTIFICATIONS` | `showWorkerNotifications` |
@@ -838,3 +879,14 @@ Controls how auto-compaction summaries are stored and presented to the model. On
 ```
 
 See [`docs/APPEND_COMPACTION.md`](docs/APPEND_COMPACTION.md) for the fallback, branch, observational-memory, and cache-measurement rules.
+
+### Unobserved raw tail (opt-in)
+
+`tailBehavior: "unobserved"` retains original messages after trustworthy completed OM observation coverage, backing up to a complete user turn to avoid splitting tool interactions. Missing, invalid or disconnected coverage retains extra original history. Compaction and VCC never advance OM coverage. Pending observer input remains the original branch, including across restart and repeated compactions; no blocking observer flush is added.
+
+The default remains `"minimal"`; `"pi-default"` is unchanged. This mode does not truncate retained tool outputs. If the raw tail plus summary cannot fit the model context minus Pi's `reserveTokens`, capacity is unknown, or no useful summary exists, Blackhole explicitly defers compaction rather than dropping the tail or invoking native summarization. Token estimates are not a provider acceptance guarantee.
+### Reusable VCC pressure fallback (opt-in)
+
+`contextPressureFallback: "vcc"` enables a pressure fallback independently of `tailBehavior`; the default is `"off"`, so existing modes retain their behavior. A preferred context that fits is left alone. Otherwise VCC bridges older retained messages and keeps a recent raw suffix bounded by Pi's `keepRecentTokens`, using the model window minus `reserveTokens` and the current system prompt. Whole user-turn boundaries conservatively keep tool interactions together. If the newest turn cannot fit, capacity is unknown, or no useful summary is available, compaction explicitly defers. No native fallback silently drops the protected backlog.
+
+Compaction records `om.preserveSourceHistory` as continuity intent, not observed coverage. The observer still reads original branch source entries, not VCC summaries, across compactions and restart. Pending work remains eligible even after the opt-in is disabled. No blocking observer flush is added. Estimates do not prove provider acceptance; tool schemas and provider-specific overhead can still cause an overflow.
