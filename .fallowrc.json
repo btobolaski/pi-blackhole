@@ -17,6 +17,12 @@
   // pnpm override pinning a transitive tool version; no source imports it.
   "ignoreDependencyOverrides": [{ "package": "js-yaml", "source": "pnpm-workspace.yaml" }],
 
+  // typebox is host-provided by pi's extension loader (peer "*"), pinned in
+  // devDependencies only for the local build, typecheck and tests. Fallow sees
+  // the manifest, not the host supply, so its devDependency findings for
+  // typebox are expected.
+  "ignoreDependencies": ["typebox"],
+
   // Duplication: only copy-paste worth refactoring — 15+ lines, appearing 3+
   // times. Pair-only clones below that bar are reported nowhere.
   "duplicates": { "minLines": 15, "minOccurrences": 3 },
