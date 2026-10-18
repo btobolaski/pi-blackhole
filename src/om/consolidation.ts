@@ -2081,6 +2081,10 @@ export async function runReflectorStage(
       const candidateConfig = stageModelForBatch;
       if (error instanceof WorkerStreamError && error.turnCapExhausted) {
         runtime.skipFailedForCycle(candidateConfig ?? bestModel, "turn_cap");
+      } else if (error instanceof WorkerStreamError && error.lengthCut) {
+        // The smallest batch still exceeded the output allowance. Like the
+        // normal catch, this is an input-size skip, not model unavailability.
+        runtime.skipOversizedForCycle(candidateConfig ?? bestModel);
       } else {
         runtime.recordRetryableError(candidateConfig, error, "reflector");
         if (!candidateConfig) runtime.recordDeterministicError(bestModel, error, "reflector");
@@ -2757,6 +2761,10 @@ export async function runDropperStage(
       const candidateConfig = stageModelForBatch;
       if (error instanceof WorkerStreamError && error.turnCapExhausted) {
         runtime.skipFailedForCycle(candidateConfig ?? bestModel, "turn_cap");
+      } else if (error instanceof WorkerStreamError && error.lengthCut) {
+        // The smallest batch still exceeded the output allowance. Like the
+        // normal catch, this is an input-size skip, not model unavailability.
+        runtime.skipOversizedForCycle(candidateConfig ?? bestModel);
       } else {
         runtime.recordRetryableError(candidateConfig, error, "dropper");
         if (!candidateConfig) runtime.recordDeterministicError(bestModel, error, "dropper");

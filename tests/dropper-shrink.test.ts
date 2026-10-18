@@ -156,6 +156,23 @@ async function runStage(runtime: Runtime, entries: TestEntry[], registry: unknow
 }
 
 describe("dropper shrink-to-fit batching", () => {
+  test("unsplittable output-length batch skips by size without cooling or advancing", async () => {
+    const { entries } = poolBranch(13, 10_000, 10_000);
+    const runtime = makeRuntime();
+    runtime.config.dropperModel = { provider: "test-shr", id: "length-cut" };
+    runtime.config.observationsPoolMaxTokens = 2000;
+    runDropperSpy.mockRejectedValue(
+      new WorkerStreamError("dropper API error: length", 0, false, true),
+    );
+    const { outcome, appendEntry } = await runStage(runtime, entries, fakeRegistry(50_000, 2000));
+    expect(outcome).toBe("abort");
+    expect(runDropperSpy.mock.calls.length).toBeGreaterThan(1);
+    expect(runDropperSpy.mock.calls.at(-1)?.[0].observations).toHaveLength(1);
+    expect(appendEntry).not.toHaveBeenCalled();
+    expect(recordCooldownSpy).not.toHaveBeenCalled();
+    expect(runtime.sizeSkippedInCycle.has("test-shr/length-cut")).toBe(true);
+  });
+
   test("unsplittable turn-cap batch skips in-cycle without cooling or advancing", async () => {
     const { entries } = poolBranch(13, 10_000, 10_000);
     const runtime = makeRuntime();

@@ -226,6 +226,8 @@ Before calling each worker, the pipeline estimates the full first-turn input —
 
 Reflector and dropper turn-cap exhaustion also skips the model only within the current stage, like the observer. This includes a single-item batch that cannot be split further. It never creates a persisted cooldown; incomplete work does not advance coverage, and a later cycle can try the model again. Existing shrink-to-fit retries remain bounded.
 
+An output-length cut in a reflector/dropper batch that cannot be split further is also a size skip, not a model cooldown. The incomplete batched run leaves coverage unchanged; a later cycle or smaller request can use the model again.
+
 A model that cannot hold the input is skipped for the rest of the run. A too-small window is not a broken model, so the skip never writes a persisted cooldown — the model stays available for smaller inputs and later cycles.
 
 When no candidate fits anything, the stage shrinks to the largest resolved window instead of aborting — but only on a pure size-mismatch record; any runtime failure keeps error semantics and aborts exactly as before:
