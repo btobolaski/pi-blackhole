@@ -8,7 +8,7 @@ Three background workers run automatically when `memory: true` (default). Each u
 
 ### Observer
 
-Reads conversation since the last observation marker and extracts timestamped facts. Input capped to `observerChunkMaxTokens` as an oldest-first prefix; overflow stays in the backlog and drains in bounded follow-up batches within the same run, so coverage only ever advances over entries the model was shown. Runs most frequently.
+Reads conversation since the last observation marker and extracts timestamped facts. Input capped to `observerChunkMaxTokens` as an oldest-first prefix; overflow stays in the backlog and drains in bounded follow-up batches within the same run, so coverage only ever advances over entries the model was shown. Runs most frequently; successful catch-up continues in further bounded consolidation cycles even while the main agent is idle.
 
 The observer can call `record_observations` multiple times per run to work through a chunk incrementally. Observations include `sourceEntryIds` linking back to the conversation entries they were extracted from.
 
@@ -190,7 +190,7 @@ Coverage is recomputed every run from the live sets and follows a few load-beari
 
 ## Consolidation pipeline
 
-The consolidation pipeline runs Observer → Reflector → Dropper on `agent_start` and `turn_end` events. Defined in [[src/om/consolidation.ts]].
+The consolidation pipeline starts Observer → Reflector → Dropper on `agent_start` and `turn_end` events, then continues catch-up cycles without another event while observation coverage advances and source backlog remains. Defined in [[src/om/consolidation.ts]].
 
 ### Trigger conditions
 
@@ -213,6 +213,10 @@ Setting `observeAfterTokens` above `observerChunkMaxTokens` makes every observat
 3. **Dropper** — `runDropperStage()`: collect active observations, run dropper agent loop, append/save drops
 
 Each stage clears `failedInCycle` between stages. Cursor state is flushed to pending file after all stages complete.
+
+Each cycle keeps the observer's existing limit of one initial chunk plus at most three drain chunks, then gives reflector/dropper their normal due checks. If observer coverage advanced and more source entries remain, another cycle starts automatically, even while the main agent is idle and even when the final remainder is below `observeAfterTokens`. The same in-flight guard covers the entire catch-up, so cycles and worker requests do not overlap.
+
+Catch-up stops when the observer reaches the source tip, makes no coverage progress, a stage aborts, memory is disabled, or the session becomes invalid. Failed or stalled work waits for a later normal trigger; existing failure retry gates still apply. There is no total catch-up cycle cap, so a large backlog can sustain background model usage after foreground work ends.
 
 ### Usage logging
 

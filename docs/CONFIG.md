@@ -497,7 +497,7 @@ Rolling window cap for dropper prompt tokens.
 
 ### `observerChunkMaxTokens`
 
-Max source-entry tokens sent to the observer per chunk. The chunk is the oldest contiguous prefix of unobserved entries; overflow stays in the backlog and drains in bounded follow-up batches (same run, at most 3), so the coverage cursor never advances past entries the model was not shown.
+Max source-entry tokens sent to the observer per chunk. The chunk is the oldest contiguous prefix of unobserved entries; each consolidation cycle runs one initial chunk plus at most three drain chunks, so coverage never advances past entries the model was not shown. While coverage advances and backlog remains, another bounded cycle starts automatically without waiting for another foreground event, including a final remainder below `observeAfterTokens`. Reflector/dropper retain their normal due checks between passes. Catch-up stops on completion, stalled coverage, a stage abort, disabled memory, or session invalidation; large backlogs can keep background model calls running while the main agent is idle.
 
 | Type | Default |
 |------|---------|

@@ -3,6 +3,7 @@ import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Runtime } from "../src/om/runtime.js";
+import * as debugLogging from "../src/om/debug-log.js";
 import {
   makeModelResolver,
   runConsolidationPipeline,
@@ -904,6 +905,7 @@ function makePipelineFixture(options: {
   observeAfterTokens: number;
   runtime?: Runtime;
   entries?: TestEntry[];
+  getBranch?: () => TestEntry[];
   modelRegistry?: ConsolidationCtx["modelRegistry"];
   useRuntimeModelResolver?: boolean;
   sessionModel?: ConsolidationCtx["model"];
@@ -944,7 +946,7 @@ function makePipelineFixture(options: {
     model: options.sessionModel,
     modelRegistry: options.modelRegistry ?? {},
     sessionManager: {
-      getBranch: () => entries,
+      getBranch: options.getBranch ?? (() => entries),
       getSessionId: () => "cursor-session",
       getSessionDir: () => "/tmp",
     },
@@ -1633,6 +1635,200 @@ describe("repeated consolidation pipeline cycles", () => {
     expect(input.allowedSourceEntryIds).toEqual(["m1", "big-1"]);
     expect(restored.runtime.getCursor("observer")).toEqual({ entryId: "big-1", state: "empty" });
   });
+});
+
+describe("automatic observer catch-up", () => {
+  function catchUpFixture(count = 9): PipelineFixture {
+    const fixture = makePipelineFixture({
+      observeAfterTokens: 500,
+      entries: Array.from({ length: count }, (_, index) =>
+        rawMessage(`source-${index}`, "x".repeat(1200)),
+      ),
+    });
+    fixture.runtime.config.tailBehavior = "unobserved";
+    fixture.runtime.config.observerChunkMaxTokens = 350;
+    fixture.runtime.config.usageLog = false;
+    return fixture;
+  }
+
+  test("continues beyond one bounded cycle without another agent event", async () => {
+    const fixture = catchUpFixture();
+
+    await fixture.run();
+
+    expect(agents.runObserver.mock.calls.flatMap(([input]) => input.allowedSourceEntryIds)).toEqual(
+      Array.from({ length: 9 }, (_, index) => `source-${index}`),
+    );
+  });
+
+  test("finishes a below-threshold remainder after the cycle budget is spent", async () => {
+    const fixture = catchUpFixture(5);
+
+    await fixture.run();
+
+    expect(observerChunkArg(4).allowedSourceEntryIds).toEqual(["source-4"]);
+  });
+
+  test("measures replay progress even when legacy coverage is already at the tip", async () => {
+    const fixture = catchUpFixture();
+    fixture.entries.push(
+      observationsRecordedEntry("legacy", {
+        observations: [observation("aaaaaaaaaaaa", { sourceEntryIds: ["source-8"] })],
+        coversUpToId: "source-8",
+      }),
+    );
+
+    await fixture.run();
+
+    expect(observerChunkArg(8).allowedSourceEntryIds).toEqual(["source-8"]);
+  });
+
+  test("runs reflector and dropper between bounded observer passes", async () => {
+    const fixture = catchUpFixture();
+    fixture.runtime.config.reflectAfterTokens = 1;
+    fixture.runtime.config.observationsPoolMaxTokens = 40;
+    fixture.runtime.config.dropperPressureThreshold = 1;
+    const stages: string[] = [];
+    let observationNumber = 0;
+    agents.runObserver.mockImplementation(async (input) => {
+      stages.push("observer");
+      observationNumber += 1;
+      return {
+        observations: [
+          observation(observationNumber.toString(16).padStart(12, "0"), {
+            sourceEntryIds: input.allowedSourceEntryIds,
+          }),
+        ],
+      };
+    });
+    agents.runReflector.mockImplementation(async () => {
+      stages.push("reflector");
+      return { reflections: [] };
+    });
+    agents.runDropper.mockImplementation(async ({ observations }) => {
+      stages.push("dropper");
+      return observations.slice(0, 1).map((entry) => entry.id);
+    });
+
+    await fixture.run();
+
+    expect(stages).toEqual([
+      "observer",
+      "observer",
+      "observer",
+      "observer",
+      "reflector",
+      "dropper",
+      "observer",
+      "observer",
+      "observer",
+      "observer",
+      "reflector",
+      "dropper",
+      "observer",
+      "reflector",
+      "dropper",
+    ]);
+  });
+
+  test("logs and stops when branch access becomes stale between cycles", async () => {
+    const entries = [rawMessage("source", "x".repeat(1200))];
+    const error = new Error("extension ctx is stale");
+    let stale = false;
+    const fixture = makePipelineFixture({
+      observeAfterTokens: 1,
+      entries,
+      getBranch: () => {
+        if (stale) throw error;
+        return entries;
+      },
+    });
+    fixture.runtime.config.usageLog = false;
+    fixture.runtime.scheduleCursorFlush = () => {
+      stale = true;
+    };
+    const log = vi.spyOn(debugLogging, "debugLog");
+    try {
+      await fixture.run();
+
+      expect(log).toHaveBeenCalledWith("pipeline.stale_ctx", { error: String(error) });
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  test("stops when the observer makes no durable coverage progress", async () => {
+    const fixture = catchUpFixture();
+    agents.runObserver.mockResolvedValue({
+      observations: [],
+      emptyReason: { kind: "tool_not_called" },
+      coverageComplete: false,
+    });
+
+    await fixture.run();
+
+    expect(agents.runObserver).toHaveBeenCalledOnce();
+  });
+
+  test.each(["reflector", "dropper"] as const)(
+    "stops after a failed %s stage despite successful observation",
+    async (stage) => {
+      const fixture = catchUpFixture();
+      fixture.runtime.config.reflectAfterTokens = 1;
+      agents.runObserver.mockImplementation(async (input) => ({
+        observations: [
+          observation("aaaaaaaaaaaa", { sourceEntryIds: input.allowedSourceEntryIds }),
+        ],
+      }));
+      const worker = stage === "reflector" ? agents.runReflector : agents.runDropper;
+      worker.mockRejectedValue(new Error("worker unavailable"));
+
+      await fixture.run();
+
+      expect(agents.runObserver).toHaveBeenCalledTimes(4);
+    },
+  );
+
+  test.each(["disposed runtime", "changed session"] as const)(
+    "does not flush cursors after the dropper sees a %s",
+    async (reason) => {
+      const fixture = catchUpFixture();
+      fixture.runtime.startSession("cursor-session");
+      fixture.runtime.config.reflectAfterTokens = 1;
+      const flush = vi.spyOn(fixture.runtime, "scheduleCursorFlush");
+      agents.runObserver.mockImplementation(async (input) => ({
+        observations: [
+          observation("aaaaaaaaaaaa", { sourceEntryIds: input.allowedSourceEntryIds }),
+        ],
+      }));
+      agents.runDropper.mockImplementation(async () => {
+        if (reason === "disposed runtime") fixture.runtime.dispose();
+        else fixture.runtime.startSession("another-session");
+        return [];
+      });
+
+      await fixture.run();
+
+      expect(flush).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each(["disabled memory", "disposed runtime", "changed session"] as const)(
+    "stops between cycles after %s",
+    async (reason) => {
+      const fixture = catchUpFixture();
+      fixture.runtime.startSession("cursor-session");
+      fixture.runtime.scheduleCursorFlush = () => {
+        if (reason === "disabled memory") fixture.runtime.config.memory = false;
+        else if (reason === "disposed runtime") fixture.runtime.dispose();
+        else fixture.runtime.startSession("another-session");
+      };
+
+      await fixture.run();
+
+      expect(agents.runObserver).toHaveBeenCalledTimes(4);
+    },
+  );
 });
 
 describe("capSourceEntriesToTokens", () => {

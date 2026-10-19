@@ -148,9 +148,8 @@ const MAX_STAGE_ATTEMPTS = 10;
 
 /**
  * How many drain batches one observer pipeline run may add after its initial
- * batch. The backlog beyond this bound waits for the next cycle with the
- * cursor at the last delivered entry — a delay, never a loss (F1 of
- * work_docs/plan-observer-coverage-completion.md).
+ * batch. Remaining backlog continues in another bounded cycle while coverage
+ * advances. See docs/observational-memory.md#pipeline-execution.
  */
 export const OBSERVER_DRAIN_MAX_BATCHES = 3;
 
@@ -801,7 +800,35 @@ export async function runConsolidationPipeline(
   ctx: ConsolidationCtx,
   generation: RuntimeGeneration,
 ): Promise<void> {
-  if (!runtime.isGenerationActive(generation)) return;
+  let drainObserver = false;
+  try {
+    while (runtime.isGenerationActive(generation) && runtime.config.memory !== false) {
+      const before = observerStartIndex(ctx.sessionManager.getBranch() as Entry[], runtime);
+      const outcome = await runConsolidationCycle(pi, runtime, ctx, generation, drainObserver);
+      if (outcome === "abort" || !runtime.isGenerationActive(generation)) return;
+
+      const entries = ctx.sessionManager.getBranch() as Entry[];
+      const after = observerStartIndex(entries, runtime);
+      if (after <= before || sourceEntriesAfter(entries, after).length === 0) return;
+      // Later cycles bypass the token trigger so even a below-threshold
+      // remainder is delivered after the initial bounded pass.
+      drainObserver = true;
+    }
+  } catch (error) {
+    if (!isStaleExtensionContextError(error)) throw error;
+    debugLog("pipeline.stale_ctx", { error: String(error) });
+  }
+}
+
+/** Run one bounded observer→reflector→dropper pass; abort on stage or lifecycle failure. */
+async function runConsolidationCycle(
+  pi: ExtensionAPI,
+  runtime: Runtime,
+  ctx: ConsolidationCtx,
+  generation: RuntimeGeneration,
+  drainObserver: boolean,
+): Promise<StageOutcome> {
+  if (!runtime.isGenerationActive(generation)) return "abort";
   const resolveModel = makeModelResolver(runtime, ctx, generation);
 
   // One usage logger is shared across all stages and fallback attempts so every
@@ -812,7 +839,7 @@ export async function runConsolidationPipeline(
   } catch (error) {
     if (isStaleExtensionContextError(error)) {
       debugLog("pipeline.stale_ctx", { error: String(error) });
-      return;
+      return "abort";
     }
     throw error;
   }
@@ -829,18 +856,18 @@ export async function runConsolidationPipeline(
       ctx,
       generation,
       resolveModel,
-      false,
+      drainObserver,
       undefined,
       undefined,
       usageLogger,
     );
-    if (!runtime.isGenerationActive(generation) || observerOutcome === "abort") return;
+    if (!runtime.isGenerationActive(generation) || observerOutcome === "abort") return "abort";
   } catch (error) {
-    if (!runtime.isGenerationActive(generation)) return;
+    if (!runtime.isGenerationActive(generation)) return "abort";
     debugLog("observer.error", {
       errorMessage: runtime.recordConsolidationStageError(ctx, "observer", error),
     });
-    return;
+    return "abort";
   }
 
   runtime.consolidationPhase = "reflector";
@@ -858,13 +885,14 @@ export async function runConsolidationPipeline(
       resolveModel,
       usageLogger,
     );
-    if (!runtime.isGenerationActive(generation) || reflectorResult.outcome === "abort") return;
+    if (!runtime.isGenerationActive(generation) || reflectorResult.outcome === "abort")
+      return "abort";
   } catch (error) {
-    if (!runtime.isGenerationActive(generation)) return;
+    if (!runtime.isGenerationActive(generation)) return "abort";
     debugLog("reflector.error", {
       errorMessage: runtime.recordConsolidationStageError(ctx, "reflector", error),
     });
-    return;
+    return "abort";
   }
 
   runtime.consolidationPhase = "dropper";
@@ -872,8 +900,9 @@ export async function runConsolidationPipeline(
   runtime.turnCapSkippedInCycle.clear();
   runtime.sizeSkippedInCycle.clear();
   runtime.resolveFailureNotified = false;
+  let dropperOutcome: StageOutcome;
   try {
-    await runDropperStage(
+    dropperOutcome = await runDropperStage(
       pi,
       runtime,
       ctx,
@@ -884,11 +913,14 @@ export async function runConsolidationPipeline(
       usageLogger,
     );
   } catch (error) {
-    if (!runtime.isGenerationActive(generation)) return;
+    if (!runtime.isGenerationActive(generation)) return "abort";
     debugLog("dropper.error", {
       errorMessage: runtime.recordConsolidationStageError(ctx, "dropper", error),
     });
+    dropperOutcome = "abort";
   }
+
+  if (!runtime.isGenerationActive(generation)) return "abort";
 
   // Flush cursors to pending file after all stages complete (non‑blocking)
   let sessionId: string;
@@ -897,7 +929,7 @@ export async function runConsolidationPipeline(
   } catch (error) {
     if (isStaleExtensionContextError(error)) {
       debugLog("pipeline.stale_ctx", { error: String(error) });
-      return;
+      return "abort";
     }
     throw error;
   }
@@ -908,6 +940,7 @@ export async function runConsolidationPipeline(
     reflector: c.reflector ?? null,
     dropper: c.dropper ?? null,
   });
+  return dropperOutcome;
 }
 
 // ── Kept-close error handling (observer + reflector) ─────────────────────────

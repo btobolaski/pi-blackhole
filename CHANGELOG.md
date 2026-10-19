@@ -6,6 +6,7 @@
 
 ### Fixed
 
+- **Observer catch-up continues while the main agent is idle.** After a bounded observer pass, consolidation runs reflector/dropper due checks and automatically starts another cycle while coverage advances and source backlog remains, including below-threshold remainders. The existing single-pipeline guard prevents overlap; catch-up stops on completion, stalled coverage, stage abort, disabled memory, or session invalidation. No new setting is required, and a large backlog can sustain background model usage after foreground work ends.
 - **OM usage logs no longer compete with real sessions during resume.** New logs live in `{sessionDir}/memory-logs/`, which pi's session discovery does not scan. They remain under the sessions tree with the same filename, UUID, and JSONL format for recursive usage reporting. Existing flat `*_memory.jsonl` files are not migrated and can still cause resume collisions until manually relocated into the corresponding `memory-logs/` subdirectory. Do not overwrite an existing destination log. See the `usageLog` notes in `docs/CONFIG.md`.
 
 ### Changed
