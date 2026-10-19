@@ -35,6 +35,16 @@ test("unobserved cuts summarize only the active window after prior compaction", 
   ).toMatchObject({ ok: true, selectedIds: ["m3", "m4"], firstKeptEntryId: "m5" });
 });
 
+test("Pi's earlier cut cannot resurrect the summarized prefix", () => {
+  expect(
+    buildOwnCut(
+      [...history(), compactionEntry("c1", { firstKeptEntryId: "m3" }), covered("m4")],
+      "m1",
+      "unobserved",
+    ),
+  ).toMatchObject({ firstKeptEntryId: "m5", selectedIds: ["m3", "m4"] });
+});
+
 test("lagging observation coverage cannot resurrect the summarized prefix", () => {
   expect(
     buildOwnCut(

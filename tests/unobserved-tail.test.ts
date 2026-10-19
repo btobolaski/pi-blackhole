@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
-import { buildOwnCut } from "../src/hooks/before-compact.js";
+import { buildOwnCut, unobservedCompactionState } from "../src/hooks/before-compact.js";
+import { DEFAULTS } from "../src/core/unified-config.js";
 import {
   observation,
   observationsRecordedEntry,
@@ -20,10 +21,52 @@ const history = () => [
   rawMessage("m5", "latest request"),
 ];
 
+describe("unobserved no-progress fingerprint", () => {
+  const baseline = () => [...history(), covered()];
+  const state = (
+    entries = baseline(),
+    config = DEFAULTS,
+    model = { provider: "test", id: "test" },
+    prompt = "system",
+  ) => unobservedCompactionState(entries, config, model, prompt);
+
+  test("raw suffix growth leaves the fingerprint unchanged", () => {
+    expect(state([...baseline(), rawMessage("m6", "new raw suffix")])).toBe(state());
+  });
+  test("ledger changes invalidate the fingerprint", () => {
+    const marker = observationsRecordedEntry("om2", {
+      coversUpToId: "m4",
+      observations: [observation("bbbbbbbbbbbb", { sourceEntryIds: ["m3", "m4"] })],
+    });
+    expect(state([...baseline(), marker])).not.toBe(state());
+  });
+  test("a same-cut compaction invalidates the lineage fingerprint", () => {
+    const entries = baseline();
+    expect(state([...entries, compactionEntry("c1", { firstKeptEntryId: "m3" })])).not.toBe(
+      state(entries),
+    );
+  });
+  test("configuration changes invalidate the fingerprint", () => {
+    expect(state(undefined, { ...DEFAULTS, memory: false })).not.toBe(state());
+  });
+  test("model changes invalidate the fingerprint", () => {
+    expect(state(undefined, undefined, { provider: "test", id: "other" })).not.toBe(state());
+  });
+  test("system prompt changes invalidate the fingerprint", () => {
+    expect(state(undefined, undefined, undefined, "different system")).not.toBe(state());
+  });
+});
+
 describe("unobserved tail", () => {
   test("cuts only completed OM coverage, not Pi's later cut", () => {
     expect(buildOwnCut([...history(), covered()], "m5", "unobserved")).toMatchObject({
       ok: true,
+      firstKeptEntryId: "m3",
+      selectedIds: ["m1", "m2"],
+    });
+  });
+  test("a Pi metadata cut after the last source cannot replace the coverage cut", () => {
+    expect(buildOwnCut([...history(), covered()], "om1", "unobserved")).toMatchObject({
       firstKeptEntryId: "m3",
       selectedIds: ["m1", "m2"],
     });
@@ -53,7 +96,7 @@ describe("unobserved tail", () => {
       ),
     ).toMatchObject({ ok: true, firstKeptEntryId: "m5", selectedIds: [] });
   });
-  test("backs up to user turn rather than splitting tool call/result", () => {
+  test("backs up only to the tool call rather than the whole user turn", () => {
     const entries = history();
     entries[1] = rawMessage("m2", "", {
       message: {
@@ -71,8 +114,8 @@ describe("unobserved tail", () => {
     });
     expect(buildOwnCut([...entries, covered()], "m5", "unobserved")).toMatchObject({
       ok: true,
-      firstKeptEntryId: "m1",
-      selectedIds: [],
+      firstKeptEntryId: "m2",
+      selectedIds: ["m1"],
     });
   });
   test("unanchored facts do not count as completed coverage", () => {
@@ -133,7 +176,72 @@ test("a user message inside an unfinished tool interaction is not a safe cut", (
     covered(),
   ];
   expect(buildOwnCut(entries, "m3", "unobserved")).toMatchObject({
-    firstKeptEntryId: "m1",
-    selectedIds: [],
+    firstKeptEntryId: "m2",
+    selectedIds: ["m1"],
+  });
+});
+
+test("retains Pi's token-sized tail when it starts before the unobserved suffix", () => {
+  expect(buildOwnCut([...history(), covered("m4")], "m2", "unobserved")).toMatchObject({
+    firstKeptEntryId: "m2",
+    selectedIds: ["m1"],
+  });
+});
+
+test.each([undefined, "missing"])(
+  "without a usable Pi cut (%s), uses the safe coverage cut",
+  (piCut) => {
+    expect(buildOwnCut([...history(), covered()], piCut, "unobserved")).toMatchObject({
+      firstKeptEntryId: "m3",
+      selectedIds: ["m1", "m2"],
+    });
+  },
+);
+
+test("one user turn can shed covered tool cycles", () => {
+  const entries = history();
+  entries[2] = rawMessage("m3", "result", {
+    message: { role: "toolResult", toolCallId: "t1", content: [{ type: "text", text: "result" }] },
+  });
+  entries[1] = rawMessage("m2", "", {
+    message: {
+      role: "assistant",
+      content: [{ type: "toolCall", id: "t1", name: "read", arguments: {} }],
+    },
+  });
+  entries[3] = rawMessage("m4", "", {
+    message: {
+      role: "assistant",
+      content: [{ type: "toolCall", id: "t2", name: "read", arguments: {} }],
+    },
+  });
+  entries[4] = rawMessage("m5", "result", {
+    message: { role: "toolResult", toolCallId: "t2", content: [{ type: "text", text: "result" }] },
+  });
+  expect(buildOwnCut([...entries, covered("m3")], "m4", "unobserved")).toMatchObject({
+    firstKeptEntryId: "m4",
+    selectedIds: ["m1", "m2", "m3"],
+  });
+});
+
+test("partial coverage of multiple calls retains the shared assistant and every result", () => {
+  const entries = [
+    rawMessage("m1", "start"),
+    rawMessage("m2", "", {
+      message: {
+        role: "assistant",
+        content: [
+          { type: "toolCall", id: "t1", name: "read", arguments: {} },
+          { type: "toolCall", id: "t2", name: "read", arguments: {} },
+        ],
+      },
+    }),
+    rawMessage("m3", "", { message: { role: "toolResult", toolCallId: "t1", content: [] } }),
+    rawMessage("m4", "", { message: { role: "toolResult", toolCallId: "t2", content: [] } }),
+    covered("m3"),
+  ];
+  expect(buildOwnCut(entries, "m4", "unobserved")).toMatchObject({
+    firstKeptEntryId: "m2",
+    selectedIds: ["m1"],
   });
 });

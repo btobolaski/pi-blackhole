@@ -1,4 +1,19 @@
-import { convertToLlm, estimateTokens } from "@earendil-works/pi-coding-agent";
+import {
+  convertToLlm,
+  estimateTokens,
+  type CompactionResult,
+  type SessionBeforeCompactResult,
+} from "@earendil-works/pi-coding-agent";
+import { Runtime } from "../src/om/runtime.js";
+import { registerCompactionTrigger } from "../src/om/compaction-trigger.js";
+import { stripOMContent } from "../src/core/summarize.js";
+import {
+  compactionEntry,
+  observation,
+  observationsRecordedEntry,
+  rawMessage,
+  type TestEntry,
+} from "./fixtures/session.js";
 /**
  * Ported from upstream pi-vcc
  * Changes:
@@ -36,6 +51,7 @@ function createMockPi(
   systemPrompt = "",
 ) {
   let handler: ((event: any, ctx: any) => any) | undefined;
+  const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
   const notifyCalls: Array<{ msg: string; level: string }> = [];
   const config = {
     overrideDefaultCompaction: false,
@@ -64,9 +80,12 @@ function createMockPi(
     pi: {
       on: (eventName: string, h: (e: any, c: any) => any) => {
         if (eventName === "session_before_compact") handler = h;
+        handlers.set(eventName, h);
       },
     } as any,
     invoke: (event: any) => handler!(event, ctx),
+    emit: (name: string, event: unknown) => handlers.get(name)?.(event, ctx),
+    ctx,
     notifyCalls,
     omRuntime,
     config,
@@ -573,6 +592,289 @@ describe("registerBeforeCompactHook: provider-aware skip", () => {
   });
 });
 
+describe("unobserved cross-hook progress", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  function setup(mode: "resume" | "pause" | "off" = "resume") {
+    const harness = createMockPi({}, { provider: "test", id: "test", contextWindow: 100_000 });
+    const runtime = new Runtime();
+    runtime.ensureConfig = vi.fn();
+    Object.assign(runtime.config, {
+      compaction: "auto",
+      compactionEngine: "blackhole",
+      tailBehavior: "unobserved",
+      midRunCompaction: mode,
+      compactAfterTokens: 100,
+      memory: true,
+    });
+    const entries: TestEntry[] = [
+      rawMessage("u1", "Build the feature"),
+      rawMessage("a1", "", {
+        message: {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "t1", name: "read", arguments: {} }],
+        },
+      }),
+      rawMessage("r1", "", {
+        message: {
+          role: "toolResult",
+          toolCallId: "t1",
+          toolName: "read",
+          content: [{ type: "text", text: "first result" }],
+        },
+      }),
+      rawMessage("a2", "", {
+        message: {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "t2", name: "read", arguments: {} }],
+        },
+      }),
+      rawMessage("r2", "", {
+        message: {
+          role: "toolResult",
+          toolCallId: "t2",
+          toolName: "read",
+          content: [{ type: "text", text: "second result" }],
+        },
+      }),
+      observationsRecordedEntry("om1", {
+        coversUpToId: "r1",
+        observations: [
+          observation("aaaaaaaaaaaa", {
+            sourceEntryIds: ["u1", "r1"],
+            content: "Initial goal recorded",
+          }),
+        ],
+      }),
+    ];
+    const committed: CompactionResult[] = [];
+    registerBeforeCompactHook(harness.pi, runtime);
+    let piCut: string | undefined;
+    const invokeCurrent = (): SessionBeforeCompactResult | undefined => {
+      const event = makeEvent(entries);
+      return harness.invoke({
+        ...event,
+        preparation: {
+          ...event.preparation,
+          previousSummary: committed.at(-1)?.summary,
+          // Default host token cut is later than coverage; tests can limit it.
+          firstKeptEntryId: piCut ?? entries.findLast((e) => e.type === "message")?.id,
+        },
+      });
+    };
+    const attempt = vi.fn(async (): Promise<CompactionResult> => {
+      const result = invokeCurrent();
+      if (!result?.compaction) throw new Error("Compaction cancelled");
+      committed.push(result.compaction);
+      entries.push(compactionEntry(`c${committed.length}`, result.compaction));
+      return result.compaction;
+    });
+    const compact = vi.fn(
+      (options: {
+        onComplete?: (result: CompactionResult) => void;
+        onError?: (error: Error) => void;
+      }) => {
+        void attempt().then(options.onComplete, options.onError);
+      },
+    );
+    Object.assign(harness.ctx, {
+      sessionManager: {
+        getBranch: () => entries,
+        getEntries: () => entries,
+        getSessionId: () => "long-turn",
+      },
+      isIdle: () => true,
+      compact,
+    });
+    registerCompactionTrigger(harness.pi, runtime, attempt);
+    let cycle = 0;
+    const appendCycle = () => {
+      entries.push(
+        rawMessage(`cycle${++cycle}`, "", {
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "still working" }],
+            usage: { input: 1000, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 1010 },
+          },
+        }),
+      );
+    };
+    const turn = async () => {
+      await harness.emit("turn_end", {});
+    };
+    const settle = async () => {
+      await harness.emit("agent_end", { messages: [] });
+      await vi.advanceTimersByTimeAsync(0);
+    };
+    return {
+      ...harness,
+      runtime,
+      entries,
+      committed,
+      attempt,
+      compact,
+      appendCycle,
+      turn,
+      settle,
+      invokeCurrent,
+      setPiCut: (id: string) => {
+        piCut = id;
+      },
+    };
+  }
+
+  test("the real hook commits an intra-turn cut through the mid-run trigger", async () => {
+    const h = setup();
+    h.appendCycle();
+    await h.turn();
+    expect(h.committed.map((c) => c.firstKeptEntryId)).toEqual(["a2"]);
+    expect(h.committed[0]?.details).toMatchObject({
+      sourceMessageCount: 3,
+      "om.preserveSourceHistory": true,
+    });
+  });
+
+  test.each(["resume", "pause", "off"] as const)(
+    "%s suppresses stalled attempts even after retry backoff expires",
+    async (mode) => {
+      const h = setup(mode);
+      const run = mode === "off" ? h.settle : h.turn;
+      h.appendCycle();
+      await run();
+      h.appendCycle();
+      await run();
+      for (let i = 0; i < 3; i++) {
+        await vi.advanceTimersByTimeAsync(31_000);
+        h.appendCycle();
+        await run();
+      }
+      expect(h.committed.map((c) => c.firstKeptEntryId)).toEqual(["a2"]);
+      expect(h.attempt).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  test("a Pi-token-tail-limited no-op cancels without latching coverage suppression", async () => {
+    const h = setup();
+    h.setPiCut("a1");
+    h.appendCycle();
+    await h.turn();
+    h.appendCycle();
+    await h.turn();
+    expect(h.runtime.unobservedCompactionNoProgress).toBeUndefined();
+    expect(h.notifyCalls.at(-1)).toEqual({
+      msg: expect.stringContaining("raw tail and summary are unchanged"),
+      level: "info",
+    });
+  });
+
+  test("raw growth can move a Pi-token-tail-limited cut without new coverage", async () => {
+    const h = setup();
+    h.setPiCut("a1");
+    h.appendCycle();
+    await h.turn();
+    h.appendCycle();
+    await h.turn();
+    await vi.advanceTimersByTimeAsync(31_000);
+    h.setPiCut("a2");
+    h.appendCycle();
+    await h.turn();
+    expect(h.committed.map((c) => c.firstKeptEntryId)).toEqual(["a1", "a2"]);
+  });
+
+  test("a no-op latched during the idle wait cancels the deferred compaction", async () => {
+    const h = setup("off");
+    h.appendCycle();
+    await h.settle();
+    h.appendCycle();
+    await h.emit("agent_end", { messages: [] });
+    expect(h.runtime.compactInFlight).toBe(true);
+    // Exercise the real hook while the scheduled compaction is still waiting.
+    expect(h.invokeCurrent()).toEqual({ cancel: true });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.compact).toHaveBeenCalledTimes(1);
+    expect(h.runtime.compactInFlight).toBe(false);
+    expect(h.runtime.autoCompactionController).toBeNull();
+  });
+
+  test("new user messages after the uncovered suffix do not unlock stalled compaction", async () => {
+    const h = setup();
+    h.appendCycle();
+    await h.turn();
+    h.appendCycle();
+    await h.turn();
+    h.entries.push(rawMessage("interruption", "continue"));
+    await vi.advanceTimersByTimeAsync(31_000);
+    h.appendCycle();
+    await h.turn();
+    expect(h.attempt).toHaveBeenCalledTimes(2);
+  });
+
+  test("later contiguous coverage unlocks compaction without a new user turn", async () => {
+    const h = setup();
+    h.appendCycle();
+    await h.turn();
+    h.appendCycle();
+    await h.turn();
+    h.entries.push(
+      observationsRecordedEntry("om2", {
+        coversUpToId: "r2",
+        observations: [observation("bbbbbbbbbbbb", { sourceEntryIds: ["a2", "r2"] })],
+      }),
+    );
+    // Coverage, not a timeout, must make the next attempt possible.
+    h.appendCycle();
+    await h.turn();
+    expect(h.committed.map((c) => c.firstKeptEntryId)).toEqual(["a2", "cycle1"]);
+  });
+
+  test("OM-only updates preserve the previous VCC summary verbatim", async () => {
+    const h = setup();
+    h.appendCycle();
+    await h.turn();
+    const previous = h.committed.at(-1)?.summary;
+    if (!previous) throw new Error("Initial compaction did not commit");
+    h.entries.push(
+      observationsRecordedEntry("om2", {
+        coversUpToId: "a2",
+        observations: [
+          observation("bbbbbbbbbbbb", { sourceEntryIds: ["a2"], content: "Another durable fact" }),
+        ],
+      }),
+    );
+    h.appendCycle();
+    await h.turn();
+    expect(h.committed).toHaveLength(2);
+    const updated = h.committed.at(-1)?.summary;
+    if (!updated) throw new Error("OM update did not commit");
+    expect(stripOMContent(updated)).toBe(stripOMContent(previous));
+  });
+
+  test("OM-only changes can commit with an unchanged cut and zero new messages", async () => {
+    const h = setup();
+    h.appendCycle();
+    await h.turn();
+    h.appendCycle();
+    await h.turn();
+    h.entries.push(
+      observationsRecordedEntry("om2", {
+        coversUpToId: "a2",
+        observations: [
+          observation("bbbbbbbbbbbb", {
+            sourceEntryIds: ["a2"],
+            content: "New durable fact about the pending tool",
+          }),
+        ],
+      }),
+    );
+    h.appendCycle();
+    await h.turn();
+    expect(h.committed.at(-1)?.details).toMatchObject({ sourceMessageCount: 0 });
+    expect(h.committed.at(-1)?.summary).toContain("New durable fact about the pending tool");
+    expect(h.committed).toHaveLength(2);
+  });
+});
+
 describe("unobserved safe deferral", () => {
   test("oversized original tail cancels instead of delegating or dropping", () => {
     const { pi, invoke, omRuntime, notifyCalls } = createMockPi(
@@ -753,7 +1055,7 @@ test("completed OM batch survives a tool-safe cut inside its coverage", () => {
     },
   ];
   const result = invoke(makeEvent(entries, PI_VCC_COMPACT_INSTRUCTION));
-  expect(result.compaction.firstKeptEntryId).toBe("m3");
+  expect(result.compaction.firstKeptEntryId).toBe("m4");
   expect(result.compaction.details["om.folded"].observations.map((item) => item.id)).toEqual([
     "aaaaaaaaaaaa",
   ]);

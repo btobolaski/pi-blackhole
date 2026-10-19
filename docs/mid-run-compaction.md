@@ -57,7 +57,7 @@ Entry points: [[src/om/inline-compaction.ts]] (`compactInlineAtTurnBoundary`, `i
 
 ## Config matrix
 
-Effective behavior per session kind. The shared gates — `compaction: off/manual`, `compactionEngine: pi-default`, legacy `passive`/`noAutoCompact`/`overrideDefaultCompaction` guards, `compactInFlight`, threshold, retry backoff, eligibility — apply identically on both paths. The aborted-run-signal check (`signal.aborted`) exists **only on the `turn_end` path**; the settled path instead relies on the `isIdle()` wait and the `agent_start` abort of the pending wait. Every permutation therefore stays coherent, with the mode decision made after the shared gates:
+Effective behavior per session kind. The shared gates — `compaction: off/manual`, `compactionEngine: pi-default`, legacy `passive`/`noAutoCompact`/`overrideDefaultCompaction` guards, `compactInFlight`, threshold, retry backoff, no-progress suppression, eligibility — apply identically on both paths. The aborted-run-signal check (`signal.aborted`) exists **only on the `turn_end` path**; the settled path instead relies on the `isIdle()` wait and the `agent_start` abort of the pending wait. Every permutation therefore stays coherent, with the mode decision made after the shared gates:
 
 | `midRunCompaction` | Persisted (TUI, file-backed) | Non-persisted (`SessionManager.inMemory()`) |
 |---|---|---|
@@ -67,7 +67,7 @@ Effective behavior per session kind. The shared gates — `compaction: off/manua
 
 Why the non-persisted column collapses to inline: those sessions are typically disposed by their parent right after `agent_end`, so the deferred settled compaction reliably loses the race and bails on a stale ctx — under `"off"` they would never compact; and `"pause"`'s run-interrupting compact is pure [#40](https://github.com/k0valik/pi-blackhole/issues/40) child-side breakage headless. Persisted sessions never change semantics.
 
-The settled `agent_end` path remains unchanged for persisted sessions, and serves as the backstop for pressure that only crosses the threshold on a run's final turn (where no further `turn_end` occurs).
+For persisted sessions, the settled `agent_end` path is the backstop when pressure only crosses the threshold on a run's final turn (where no further `turn_end` occurs).
 
 ### Threshold
 
@@ -75,11 +75,11 @@ Derived per evaluation (issue [#60](https://github.com/k0valik/pi-blackhole/issu
 
 ### Retry / backoff
 
-Failed mid-run attempts back off exponentially (1s, 2s, … capped at 30s) so a persistent failure doesn't thrash the run at every turn. Successful compactions and pressure relief reset it. Adapter unavailability is classified once as permanent and never retried at that pressure level.
+Failed mid-run attempts back off exponentially (1s, 2s, … capped at 30s) so a persistent failure doesn't thrash the run at every turn. Successful compactions and pressure relief reset it. After a proven unchanged raw cut and rendered summary in `unobserved` mode, coverage-limited automatic attempts wait for changed compaction inputs; that change clears both the no-progress gate and retry backoff on reevaluation. New raw messages unlock that gate only if they move the safe cut, for example after fully covered history. Pi-token-tail-limited cuts remain retryable as raw history grows. Adapter unavailability is classified once as permanent and never retried at that pressure level.
 
 ## What users see
 
-- `info` notices (one per turn, gated): threshold reached, compaction complete/paused.
+- `info` notices (one per turn, gated): threshold reached, compaction complete/paused. The `unobserved` before-compact hook separately emits `blackhole: compaction deferred; raw tail and summary are unchanged.` on a proven no-op; subsequent coverage-limited auto retries are skipped until inputs change.
 - `warning` notices: mid-run compaction unavailable (once per process), scheduled compaction skipped due to a stale ctx (once per session). Both are UI-only (`ui.notify`): headless sessions (subagents, flows) have no channel back to the operator — a `console.warn` would leak into the subagent transcript where nothing can act on it, and the parent session cannot be reached without knowing which subagent host is in use. Headless operators must watch `debug.ndjson` (`inline_adapter_unsupported`, `inline_adapter_unavailable`, `microtask.bail { reason: "stale_ctx" }`) instead.
 - `/blackhole-memory` status: `Skipped compactions (disposed ctx): N` — process-wide counter of stale-ctx skips, so a parent TUI surfaces nested in-memory session skips. Line appears only when nonzero.
 - After a mid-run inline compaction, Pi's native `Working` indicator is restored while the run continues ([#52](https://github.com/k0valik/pi-blackhole/issues/52)).
@@ -90,10 +90,10 @@ Enable with `debugLog: true` → `~/.pi/agent/pi-blackhole/debug.ndjson`. The ev
 
 | Event | Meaning |
 |---|---|
-| `agent_end` (event) | Settled-path evaluation started. Its skips emit as **`compaction_trigger.skip`** (no `agent_end.skip` event exists) with `reason`: config guards, `compactInFlight`, `below_threshold`, `mid_run_retry_backoff`, `not_eligible` |
-| `turn_end.skip` | Mid-run evaluation skipped; same gate family plus `midRunCompaction_off`, `active_run_aborted`, `inline_retry_backoff`, `inline_adapter_unsupported` |
+| `agent_end` (event) | Settled-path evaluation started. Its skips emit as **`compaction_trigger.skip`** (no `agent_end.skip` event exists) with `reason`: config guards, `compactInFlight`, `below_threshold`, `mid_run_retry_backoff`, `no_compaction_progress`, `not_eligible` |
+| `turn_end.skip` | Mid-run evaluation skipped; same gate family plus `midRunCompaction_off`, `active_run_aborted`, `inline_retry_backoff`, `inline_adapter_unsupported`, `no_compaction_progress` |
 | `threshold_reached` | Pressure crossed (settled path carries `tokens`/`sessionId`/`hasUI`; mid-run carries `tokens`/`threshold`/`mode`/`nonPersisted`) |
-| `scheduled` / `microtask.*` | Settled path: deferral armed; `idle_check`, `session_check`, `recheck_tokens`, `bail` (`aborted_agent_start`, `session_changed`, `pressure_relieved`, `not_eligible`, **`stale_ctx`**) |
+| `scheduled` / `microtask.*` | Settled path: deferral armed; `idle_check`, `session_check`, `recheck_tokens`, `bail` (`aborted_agent_start`, `session_changed`, `pressure_relieved`, `no_compaction_progress`, `not_eligible`, **`stale_ctx`**) |
 | `calling_compact` / `onComplete` / `onError` | `ctx.compact()` lifecycle |
 | `inline_complete` / `inline_error` / `inline_adapter_unavailable` | Inline attempt lifecycle |
 
@@ -101,6 +101,7 @@ Common symptoms:
 
 - **`microtask.bail { reason: "stale_ctx" }`** on a session with no file under `~/.pi/agent/sessions/` — an in-memory session disposed by its parent before the deferred compaction ran. This used to be fully silent; it is now counted and warned once per session. If the parent is a subagent/SDK flow, the non-persisted `turn_end` fallback should have compacted earlier — check for `inline_adapter_unsupported` (adapter couldn't discover the host) which fail-closes to skips.
 - **`turn_end.skip { reason: "inline_adapter_unsupported" }`** every turn while over threshold — the adapter never became available for this host. Only surfaced once via the startup warning; per-turn skips are debug-logged deliberately (they would inflate a counter denominated in scheduled compactions).
+- **`no_compaction_progress`** on `skip`, `turn_end.skip` or `microtask.bail` — an `unobserved` attempt already proved its coverage-limited raw cut and rendered summary unchanged. Waiting for changed safe-cut/OM/config/model/prompt/compaction-lineage inputs is intentional; raw growth helps only if it moves the safe cut, for example after fully covered history.
 - **`inline_retry_backoff`** repeating — the inline attempt keeps failing (e.g. provider errors); backoff self-heals, but check `inline_error` messages for the root cause.
 - **Parent saw a truncated `completed` subagent result** — the #38-era abort mechanism. Should be impossible on the inline path; if reproducible, it is a regression and needs the reproduction steps from [#40](https://github.com/k0valik/pi-blackhole/issues/40).
 

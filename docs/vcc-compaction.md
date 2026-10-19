@@ -150,7 +150,9 @@ Formats `SectionData` into a human-readable summary with TUI-safe wrapping. Defi
 
 ### Merge previous summary
 
-When compaction runs on an already-compacted session, `compile()` merges the new summary with the previous one:
+In `unobserved` mode with zero selected messages and a previous summary, the hook skips `compile()` and reuses the previous VCC text verbatim. OM content is stripped and re-rendered, allowing an OM-only update without merging an empty transcript.
+
+Otherwise, when compaction runs on an already-compacted session, `compile()` merges the new summary with the previous one:
 
 - Sections merged line-by-line, capped at 8-15 items per section
 - File merge: Dedup Modified/Created/Read paths
@@ -179,8 +181,9 @@ The `buildOwnCut()` function determines which messages to compile:
 - **Tail behavior**:
   - `pi-default`: Use Pi's `firstKeptEntryId` (respects `keepRecentTokens`, ~20k tokens)
   - `minimal`: Keep only last user message (aggressive, original pi-vcc behavior)
-- **Compact-all**: Single user prompt → compact everything, `firstKeptEntryId=""` sentinel
-- **Too few messages**: Cancel if <3 messages (or <2 with pi-default tail)
+  - `unobserved`: Keep the larger of Pi's token-sized tail and the suffix after completed observer coverage; back up only while `isToolSafeCut` fails. The cut source entry becomes `firstKeptEntryId`; no usable Pi cut means the safe coverage boundary is used.
+- **Compact-all (`minimal`/`pi-default`)**: Single user prompt → compact everything, `firstKeptEntryId=""` sentinel
+- **Too few messages (`minimal`/`pi-default`)**: Cancel if <3 messages (or <2 with pi-default tail)
 
 ### Ownership and native fallback
 
@@ -190,7 +193,7 @@ Defensive delegation: `compile()` returns `""` when everything before the cut is
 
 ### Cancellation flag
 
-Every `{ cancel: true }` return (own-cut guards, legacy `noAutoCompact`) sets `runtime.lastCompactCancelled = true` so the failure handler can attribute the aborted compaction.
+Every `{ cancel: true }` return (own-cut guards, the `unobserved` unchanged-cut/unchanged-summary no-op, legacy `noAutoCompact`) sets `runtime.lastCompactCancelled = true` so the failure handler can attribute the aborted compaction.
 
 At the start of each attempt, `lastCompactCancelled` resets and `compactWasPiVcc` is overwritten from the `/blackhole` marker. Success consumes the origin marker; failure captures and clears both flags. This attributes hook cancellations correctly without leaking `/blackhole` state into later pi-default attempts — see [[observational-memory#Compaction trigger#Compact-failure handling]].
 
@@ -268,7 +271,9 @@ This prevents broken state after manual session editing.
 
 ### Unobserved raw tail (opt-in)
 
-`tailBehavior: "unobserved"` retains original messages after trustworthy completed OM observation coverage, backing up to a complete user turn to avoid splitting tool interactions. Missing, invalid or disconnected coverage retains extra original history. Compaction and VCC never advance OM coverage. Pending observer input remains the original branch, including across restart and repeated compactions; no blocking observer flush is added.
+`tailBehavior: "unobserved"` keeps the larger of Pi's token-sized recent tail (`keepRecentTokens`) and the original history after trustworthy completed OM observation coverage. Cuts may fall inside a user turn, but back up as needed to retain tool calls with their results. Missing, invalid or disconnected coverage retains extra original history; without a usable Pi cut, the safe coverage boundary is used. Compaction and VCC never advance OM coverage. Pending observer input remains the original branch, including across restart and repeated compactions; no blocking observer flush is added.
+
+An unchanged raw cut and unchanged rendered summary are deferred rather than recorded as a successful compaction. Automatic retries of a coverage-limited no-op wait for changed safe-cut, OM ledger, configuration, model, system prompt or compaction-lineage inputs. Raw growth can unlock fully covered history when it advances the safe cut; otherwise another assistant/tool cycle or user interruption alone does not. A Pi-token-tail-limited cut remains retryable as raw history grows. Summary/OM-only updates remain allowed even when zero new messages are selected.
 
 The default remains `"minimal"`; `"pi-default"` is unchanged. This mode does not truncate retained tool outputs. If the raw tail plus summary cannot fit the model context minus Pi's `reserveTokens`, capacity is unknown, or no useful summary exists, Blackhole explicitly defers compaction rather than dropping the tail or invoking native summarization. Token estimates are not a provider acceptance guarantee.
 ### Reusable VCC pressure fallback (opt-in)

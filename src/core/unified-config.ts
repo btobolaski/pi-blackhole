@@ -124,7 +124,7 @@ export interface UnifiedConfig {
   /** How much recent transcript to keep visible after compaction.
    *  "pi-default" — use Pi's firstKeptEntryId (respects Pi's keepRecentTokens)
    *  "minimal"    — keep only last user message (current agressive pi-vcc behavior)
-   *  "unobserved" — retain raw messages beyond completed OM coverage
+   *  "unobserved" — keep Pi's recent token tail plus all unobserved originals, tool-safe
    *  ONLY applies when compactionEngine: "blackhole" */
   tailBehavior: "pi-default" | "minimal" | "unobserved";
 

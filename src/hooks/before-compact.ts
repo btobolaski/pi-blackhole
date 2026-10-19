@@ -39,6 +39,7 @@ import { loadGitFileTags } from "../extract/git-status.js";
 import { collectFilesTouched } from "../extract/file-touch.js";
 
 import { isSourceEntry } from "../om/ledger/progress.js";
+import type { Entry } from "../om/ledger/types.js";
 import { isToolSafeCut } from "../core/tool-safe-cut.js";
 import { observedPrefixIndex } from "../core/observation-boundary.js";
 import { selectPressureTail } from "../core/context-pressure.js";
@@ -175,33 +176,32 @@ export function buildOwnCut(
     const keptIndex = lastKeptId ? branchEntries.findIndex((entry) => entry.id === lastKeptId) : -1;
     const liveStart =
       lastCompactionIdx < 0 ? 0 : keptIndex >= 0 ? keptIndex : lastCompactionIdx + 1;
-    const messages = branchEntries
-      .slice(liveStart)
-      .filter((entry) => entry.type === "message" && entry.message);
-    if (messages.length === 0) return { ok: false, reason: "no_live_messages" };
+    const sources = branchEntries
+      .map((entry, index) => ({ entry, index }))
+      .filter(({ entry, index }) => index >= liveStart && isSourceEntry(entry));
+    if (!sources.some(({ entry }) => entry.type === "message" && entry.message))
+      return { ok: false, reason: "no_live_messages" };
     const boundary = observedPrefixIndex(branchEntries);
-    let cut = messages.findIndex((entry) => branchEntries.indexOf(entry) > boundary);
-    if (cut < 0) cut = messages.length - 1;
-    // A whole user turn is the conservative validity boundary. In particular,
-    // an observed tool call must not be separated from its pending result.
-    while (
-      cut > 0 &&
-      (messages[cut].message.role !== "user" ||
-        !isToolSafeCut(branchEntries, branchEntries.indexOf(messages[cut])))
-    )
-      cut--;
+    let cut = sources.findIndex(({ index }) => index > boundary);
+    if (cut < 0) cut = sources.length - 1;
+    // Pi's prepared cut already accounts for its effective keepRecentTokens.
+    // Keep the larger of that tail and the unobserved suffix, never resurrecting
+    // retired sources. A metadata anchor resolves to the next live source.
+    const piIndex = branchEntries.findIndex((entry) => entry.id === piFirstKeptEntryId);
+    if (piIndex >= liveStart) {
+      const piCut = sources.findIndex(({ index }) => index >= piIndex);
+      if (piCut >= 0) cut = Math.min(cut, piCut);
+    }
+    // User turns need not stay whole; only retained tool interactions do.
+    while (cut > 0 && !isToolSafeCut(branchEntries, sources[cut].index)) cut--;
+    const selected = sources
+      .slice(0, cut)
+      .filter(({ entry }) => entry.type === "message" && entry.message);
     return {
       ok: true,
-      messages: messages.slice(0, cut).map((entry) => entry.message),
-      selectedIds: messages.slice(0, cut).map((entry) => entry.id),
-      firstKeptEntryId:
-        branchEntries.find(
-          (entry, index) =>
-            index >= liveStart &&
-            index > boundary &&
-            index < branchEntries.indexOf(messages[cut]) &&
-            isSourceEntry(entry),
-        )?.id ?? messages[cut].id,
+      messages: selected.map(({ entry }) => entry.message),
+      selectedIds: selected.map(({ entry }) => entry.id),
+      firstKeptEntryId: sources[cut].entry.id,
       compactAll: false,
     };
   }
@@ -349,6 +349,32 @@ export function buildOwnCut(
     firstKeptEntryId: liveMessages[cutIdx].entry.id,
     compactAll: false,
   };
+}
+
+/** Ignore new raw suffix entries: they cannot unlock a coverage-limited cut.
+ * Ledger edits, a changed safe cut, config/model/prompt changes or a different
+ * compaction/branch can. Only used after a proven no-progress attempt.
+ */
+export function unobservedCompactionState(
+  entries: Entry[],
+  config: Runtime["config"],
+  model: unknown,
+  systemPrompt: string,
+  cut = buildOwnCut(entries, undefined, "unobserved"),
+): string {
+  return JSON.stringify([
+    cut.ok ? cut.firstKeptEntryId : cut.reason,
+    entries
+      .filter(
+        (entry) =>
+          entry.type === "compaction" ||
+          (entry.type === "custom" && entry.customType?.startsWith("om.")),
+      )
+      .map((entry) => entry.id),
+    config,
+    model,
+    systemPrompt,
+  ]);
 }
 
 const REASON_MESSAGES: Record<OwnCutCancelReason, string> = {
@@ -743,15 +769,22 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI, omRuntime: Runtime) 
     // Git working-tree tags for fresh-window annotations; empty (no
     // annotations) outside a repo or if git fails.
     const gitTags = loadGitFileTags(ctx.cwd ?? process.cwd());
-    const summary = compile({
-      messages,
-      previousSummary: preparation.previousSummary,
-      fileOps,
-      sourceIndices,
-      touchMessages: agentMessages,
-      cwd: ctx.cwd ?? process.cwd(),
-      gitTags,
-    });
+    // With no new sources, retain VCC verbatim rather than repeatedly merging
+    // it with an empty transcript. OM-only updates are still rendered below.
+    const summary =
+      effectiveTailBehavior === "unobserved" &&
+      agentMessages.length === 0 &&
+      preparation.previousSummary
+        ? stripOMContent(preparation.previousSummary)
+        : compile({
+            messages,
+            previousSummary: preparation.previousSummary,
+            fileOps,
+            sourceIndices,
+            touchMessages: agentMessages,
+            cwd: ctx.cwd ?? process.cwd(),
+            gitTags,
+          });
     const freshSegmentSummary =
       omRuntime.config.compactionSummaryMode === "append"
         ? compileSegment({
@@ -1074,6 +1107,62 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI, omRuntime: Runtime) 
         omRuntime.lastCompactCancelled = true;
         return { cancel: true };
       }
+    }
+    if (effectiveTailBehavior === "unobserved") {
+      const previous = [...branchEntries].reverse().find((entry) => entry.type === "compaction");
+      if (previous?.firstKeptEntryId === firstKeptEntryId && typeof previous.summary === "string") {
+        let candidateId = "blackhole-progress-candidate";
+        while (branchEntries.some((entry) => entry.id === candidateId)) candidateId += "-";
+        // Compare actual summary context, including append segments; a rebase or
+        // OM-only update can be useful even when no raw messages are selected.
+        const summaryState = (
+          text: string,
+          entries: Parameters<typeof projectAppendOnlyContext>[1],
+        ) =>
+          JSON.stringify(
+            convertToLlm(
+              projectAppendOnlyContext(
+                [{ role: "compactionSummary", summary: text, tokensBefore: 0, timestamp: 0 }],
+                entries,
+              ),
+            ).map(({ role, content }) => ({ role, content })),
+          );
+        const candidate = [
+          ...branchEntries,
+          {
+            id: candidateId,
+            type: "compaction",
+            summary: fallbackSummary,
+            firstKeptEntryId,
+            details,
+          },
+        ];
+        if (
+          summaryState(previous.summary, branchEntries) === summaryState(fallbackSummary, candidate)
+        ) {
+          const coverageCut = buildOwnCut(branchEntries, undefined, "unobserved");
+          // If Pi's token tail alone limited the cut, raw growth can unlock it;
+          // don't latch that case until the coverage-limited cut is reached.
+          omRuntime.unobservedCompactionNoProgress =
+            coverageCut.ok && coverageCut.firstKeptEntryId === firstKeptEntryId
+              ? unobservedCompactionState(
+                  branchEntries,
+                  omRuntime.config,
+                  ctx.model,
+                  ctx.getSystemPrompt?.() ?? "",
+                  coverageCut,
+                )
+              : undefined;
+          trace("before_compact.cancel", { reason: "no_compaction_progress", firstKeptEntryId });
+          ctx.ui?.notify?.(
+            "blackhole: compaction deferred; raw tail and summary are unchanged.",
+            "info",
+          );
+          omRuntime.lastCompactCancelled = true;
+          return { cancel: true };
+        }
+      }
+      omRuntime.unobservedCompactionNoProgress = undefined;
     }
     return {
       compaction: {

@@ -4,6 +4,7 @@ import { autoCompactThreshold } from "./model-budget.js";
 import type { Runtime } from "./runtime.js";
 import { debugLog } from "./debug-log.js";
 import { RETRYABLE_ERROR_RE } from "./retryable-error.js";
+import { unobservedCompactionState } from "../hooks/before-compact.js";
 import {
   compactInlineAtTurnBoundary,
   InlineCompactionUnavailableError,
@@ -125,6 +126,24 @@ export function recordMidRunFailure(runtime: RetryRuntime): number {
 
 const retryInSeconds = (delayMs: number) => `; retrying in ${Math.ceil(delayMs / 1000)}s`;
 
+function compactionProgressStalled(
+  ctx: { model?: unknown; getSystemPrompt?: () => string },
+  runtime: Runtime,
+  entries: Entry[],
+): boolean {
+  if (runtime.unobservedCompactionNoProgress === undefined) return false;
+  if (
+    runtime.config.tailBehavior === "unobserved" &&
+    runtime.unobservedCompactionNoProgress ===
+      unobservedCompactionState(entries, runtime.config, ctx.model, ctx.getSystemPrompt?.() ?? "")
+  )
+    return true;
+  runtime.unobservedCompactionNoProgress = undefined;
+  // New coverage/summary inputs should not have to wait out a no-progress retry.
+  resetMidRunRetry(runtime);
+  return false;
+}
+
 export function registerCompactionTrigger(
   pi: ExtensionAPI,
   runtime: Runtime,
@@ -242,6 +261,10 @@ async function handleTurnEnd(
   if (tokens < threshold) {
     // Pressure relieved (a compaction ran) — clear any failure backoff.
     resetMidRunRetry(runtime);
+    return;
+  }
+  if (compactionProgressStalled(ctx, runtime, entries)) {
+    dbg("compaction_trigger.turn_end.skip", { reason: "no_compaction_progress" });
     return;
   }
   if (Date.now() < runtime.midRunCompactionRetry.retryAfter) {
@@ -472,6 +495,10 @@ function handleAgentEnd(event: any, ctx: any, runtime: Runtime): void {
     });
     return;
   }
+  if (compactionProgressStalled(ctx, runtime, entries)) {
+    dbg("compaction_trigger.skip", { reason: "no_compaction_progress" });
+    return;
+  }
   if (Date.now() < runtime.midRunCompactionRetry.retryAfter) {
     dbg("compaction_trigger.skip", {
       reason: "mid_run_retry_backoff",
@@ -621,6 +648,12 @@ function handleAgentEnd(event: any, ctx: any, runtime: Runtime): void {
         return;
       }
 
+      if (compactionProgressStalled(ctx, runtime, currentEntries)) {
+        runtime.compactInFlight = false;
+        runtime.autoCompactionController = null;
+        dbg("compaction_trigger.microtask.bail", { reason: "no_compaction_progress" });
+        return;
+      }
       if (!isCompactionEligible(ctx.sessionManager, currentEntries, undefined, ctx.model)) {
         runtime.compactInFlight = false;
         runtime.autoCompactionController = null;

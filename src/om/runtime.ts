@@ -188,6 +188,8 @@ export class Runtime {
    * Set when handleAgentEnd schedules a wait; cleared on abort, success, or terminal bail.
    * agent_start handlers read this to abort the pending wait when a new turn starts. */
   autoCompactionController: AbortController | null = null;
+  /** Proven unchanged unobserved cut + summary; auto retries wait for new inputs. */
+  unobservedCompactionNoProgress?: string;
   /** Exponential backoff state for failed/cancelled mid-run compaction attempts.
    * `retryAfter` gates re-triggering; failures reset when a compaction succeeds,
    * pressure drops below the threshold, or an auto-compaction completes.

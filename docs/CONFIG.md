@@ -139,7 +139,7 @@ Controls how much of the recent transcript stays *visible* after compaction. Onl
 |-------|----------|
 | `"pi-default"` | Use Pi's `firstKeptEntryId` — respects Pi's `keepRecentTokens` (~20k tokens kept). Messages before Pi's cut are compiled into the summary and removed from view. |
 | `"minimal"` | Keep only the last user message, unless Pi provides a later safe split-turn boundary for an oversized current turn. Everything before the chosen boundary gets compiled and removed (default for both auto-triggered and manual `/blackhole`). When the live window has no user message after its first message (one long run), Pi's cut applies; with no usable Pi cut (for example overflow recovery that finds none), everything is compiled and no tail is kept. |
-| `"unobserved"` | Keep original context after completed observer coverage, backing up to a safe user-turn boundary. Unknown or incomplete coverage keeps extra context; an oversized protected tail defers compaction. Opt-in; default stays `"minimal"`. |
+| `"unobserved"` | Keep the larger of Pi's token-sized tail and original context after completed observer coverage. Cuts may split a user turn, never retained tool call/result pairs. Without a usable Pi cut, use the safe coverage boundary. Unknown or incomplete coverage keeps extra context; oversized tails or unchanged cut/summary defer compaction. Coverage-limited no-op retries wait for changed compaction inputs. Opt-in; default stays `"minimal"`. |
 
 **Visual comparison:**
 
@@ -889,7 +889,9 @@ See [`docs/APPEND_COMPACTION.md`](docs/APPEND_COMPACTION.md) for the fallback, b
 
 ### Unobserved raw tail (opt-in)
 
-`tailBehavior: "unobserved"` retains original messages after trustworthy completed OM observation coverage, backing up to a complete user turn to avoid splitting tool interactions. Missing, invalid or disconnected coverage retains extra original history. Compaction and VCC never advance OM coverage. Pending observer input remains the original branch, including across restart and repeated compactions; no blocking observer flush is added.
+`tailBehavior: "unobserved"` keeps the larger of Pi's token-sized recent tail (`keepRecentTokens`) and the original history after trustworthy completed OM observation coverage. Cuts may fall inside a user turn, but back up as needed to retain tool calls with their results. Missing, invalid or disconnected coverage retains extra original history; without a usable Pi cut, the safe coverage boundary is used. Compaction and VCC never advance OM coverage. Pending observer input remains the original branch, including across restart and repeated compactions; no blocking observer flush is added.
+
+An unchanged raw cut and unchanged rendered summary are deferred rather than recorded as a successful compaction. Automatic retries of a coverage-limited no-op wait for changed safe-cut, OM ledger, configuration, model, system prompt or compaction-lineage inputs. Raw growth can unlock fully covered history when it advances the safe cut; otherwise another assistant/tool cycle or user interruption alone does not. A Pi-token-tail-limited cut remains retryable as raw history grows. Summary/OM-only updates remain allowed even when zero new messages are selected.
 
 The default remains `"minimal"`; `"pi-default"` is unchanged. This mode does not truncate retained tool outputs. If the raw tail plus summary cannot fit the model context minus Pi's `reserveTokens`, capacity is unknown, or no useful summary exists, Blackhole explicitly defers compaction rather than dropping the tail or invoking native summarization. Token estimates are not a provider acceptance guarantee.
 ### Reusable VCC pressure fallback (opt-in)
