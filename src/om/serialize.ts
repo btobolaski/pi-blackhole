@@ -2,11 +2,13 @@
  * Serialize branch entries and render source-addressed chunks.
  *
  * Upstream: https://github.com/elpapi42/pi-observational-memory (src/serialize.ts)
- * Unmodified.
+ * Modified: render empty assistant messages explicitly so source coverage stays contiguous.
  */
 import type { Message, TextContent, ToolResultMessage } from "@earendil-works/pi-ai";
 import { projectUserDecision } from "../extract/user-decisions.js";
 import type { NormalizedBlock } from "../types.js";
+
+const EMPTY_ASSISTANT_CONTENT = "[No visible assistant content]";
 
 function pad(n: number): string {
   return n.toString().padStart(2, "0");
@@ -78,7 +80,7 @@ function textOnly(content: unknown): string {
 
 export function serializeConversation(messages: Message[]): string {
   return messages
-    .map((msg): string | null => {
+    .map((msg): string => {
       const time = formatTimestamp(msg.timestamp);
       if (msg.role === "user") {
         const text = textOnly(msg.content);
@@ -92,8 +94,7 @@ export function serializeConversation(messages: Message[]): string {
           .split("\n")
           .filter(Boolean)
           .join("\n");
-        if (!body) return null;
-        return `[Assistant @ ${time}]: ${body}`;
+        return `[Assistant @ ${time}]: ${body || EMPTY_ASSISTANT_CONTENT}`;
       }
       const text = textOnly(msg.content);
       const toolResult = msg as ToolResultMessage & { details?: unknown };
@@ -112,7 +113,6 @@ export function serializeConversation(messages: Message[]): string {
       ];
       return `[Tool result for ${name} @ ${time}]: ${[text, ...additions].filter(Boolean).join("\n")}`;
     })
-    .filter((line): line is string => line !== null)
     .join("\n\n");
 }
 
@@ -236,8 +236,7 @@ function renderRecallMessage(entry: RenderableEntry): string | null {
       .split("\n")
       .filter(Boolean)
       .join("\n");
-    if (!body) return null;
-    return `[Assistant @ ${time}]: ${body}`;
+    return `[Assistant @ ${time}]: ${body || EMPTY_ASSISTANT_CONTENT}`;
   }
   return `[Tool result: ${(msg as ToolResultMessage).toolName} @ ${time}]: ${textAndPlaceholders(msg.content)}`;
 }

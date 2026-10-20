@@ -659,28 +659,74 @@ describe("observer never covers source entries it was never shown", () => {
     expect(runtime.getCursor("observer")?.entryId).toBe("s0");
   });
 
-  test("an unrenderable trailing entry neither blocks coverage nor loops the drain", async () => {
+  test("delivers an empty assistant as an explicit source", async () => {
+    const timestamp = new Date(2026, 0, 1, 12).getTime();
     const entries = [
       rawMessage("s0", text("SENT")),
-      // An assistant message with an empty body renders to nothing, so the
-      // serializer drops it and it is never sent (a user-role message would
-      // still render its timestamp header and count as sent).
-      rawMessage("s1", "", { message: { role: "assistant", content: [] } }),
+      rawMessage("s1", "", {
+        message: { role: "assistant", content: [], stopReason: "aborted", timestamp },
+      }),
     ];
-    const runtime = makeRuntime(100, 10_000);
 
-    const outcome = await runStage(runtime, entries);
+    await runStage(makeRuntime(100, 10_000), entries);
 
-    // One model call: the serializer skips the empty entry, so the drain's
-    // second batch has nothing to send and returns before resolving a model
-    // (termination proof — an infinite drain would exhaust the vitest timeout).
-    expect(outcome).toBe("continue");
+    expect(observedInput(0).allowedSourceEntryIds).toEqual(["s0", "s1"]);
+    expect(observedInput(0).chunk).toContain(
+      "[Source entry id: s1]\n[Assistant @ 2026-01-01 12:00]: [No visible assistant content]",
+    );
     expect(runObserverSpy).toHaveBeenCalledTimes(1);
-    expect(observedInput(0).allowedSourceEntryIds).toEqual(["s0"]);
-    // Coverage claims the last SENT id; the unsent tail stays beyond the
-    // cursor and is re-measured next cycle.
-    expect(runtime.getCursor("observer")?.entryId).toBe("s0");
   });
+
+  test.each(["empty", "recorded"])(
+    "preserve mode repairs a skipped empty assistant gap with %s coverage",
+    async (resultKind) => {
+      const entries: TestEntry[] = [
+        rawMessage("covered", text("COVERED")),
+        rawMessage("aborted", "", {
+          message: { role: "assistant", content: [], stopReason: "aborted" },
+        }),
+        rawMessage("later", text("LATER")),
+        {
+          type: "custom",
+          id: "prior-coverage",
+          parentId: null,
+          timestamp: "2026-05-02T10:00:00.000Z",
+          customType: OM_OBSERVATIONS_COVERAGE,
+          data: { coversFromId: "covered", coversUpToId: "covered" },
+        },
+        {
+          type: "custom",
+          id: "skipped-gap-coverage",
+          parentId: null,
+          timestamp: "2026-05-02T10:00:00.000Z",
+          customType: OM_OBSERVATIONS_COVERAGE,
+          data: { coversFromId: "later", coversUpToId: "later" },
+        },
+      ];
+      const runtime = makeRuntime(1, 10_000);
+      runtime.config.tailBehavior = "unobserved";
+      runtime.advanceCursor("observer", "later", "recorded");
+      if (resultKind === "recorded") {
+        runObserverSpy.mockResolvedValue({
+          observations: [observation("aaaaaaaaaaaa", { sourceEntryIds: ["later"] })],
+        });
+      }
+      const appendEntry = (customType: string, data: unknown) => {
+        entries.push({
+          type: "custom",
+          id: `repaired-${entries.length}`,
+          parentId: null,
+          timestamp: "2026-05-02T10:00:00.000Z",
+          customType,
+          data,
+        });
+      };
+
+      await runStage(runtime, entries, resolveModelSession(), { appendEntry });
+
+      expect(observedPrefixIndex(entries)).toBe(2);
+    },
+  );
 
   test("a turn-cap checkpoint stays visible even when the info gate is spent", async () => {
     const entries = [

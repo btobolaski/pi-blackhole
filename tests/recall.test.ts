@@ -7,6 +7,7 @@
 
 import { describe, it, expect } from "vitest";
 import type { Entry, Observation, Reflection } from "../src/om/ledger/types.js";
+import { renderRecallSourceEntries } from "../src/om/serialize.js";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -119,6 +120,25 @@ describe("recallMemorySources", () => {
       expect(result.sourceEntries).toHaveLength(1);
       expect(result.sourceEntries[0].id).toBe("src0000000001");
     }
+  });
+
+  it("renders an empty assistant source cited by an observation", async () => {
+    const { recallMemorySources } = await import("../src/om/ledger/recall.js");
+    const timestamp = new Date(2026, 0, 1, 12).getTime();
+    const source = makeEntry("empty-assistant", "message", {
+      timestamp: new Date(timestamp).toISOString(),
+      message: { role: "assistant", content: [], stopReason: "aborted", timestamp },
+    });
+    const obsId = hexId("empty-source-obs");
+    const result = recallMemorySources(
+      [source, recordEntry("recorded", [makeObservation(obsId, [source.id])], source.id)],
+      obsId,
+    );
+    if (result.status !== "found") throw new Error("expected the observation to resolve");
+
+    expect(renderRecallSourceEntries(result.sourceEntries)).toBe(
+      "[Assistant @ 2026-01-01 12:00]: [No visible assistant content]",
+    );
   });
 
   it("finds a kept unanchored observation by id", async () => {
